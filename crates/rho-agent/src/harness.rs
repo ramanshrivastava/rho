@@ -406,27 +406,73 @@ impl AgentHarness {
             clock: clock.clone(),
         });
 
+        // The cleanup (tau harness.py:185-190 `finally`) must run whether the
+        // stream is exhausted *or dropped mid-run*: `async-stream` never executes
+        // post-loop code when the future is dropped at a `yield`, so a UI that
+        // abandons a run would otherwise leave `running` stuck true forever and
+        // the signal/repair unhandled. An RAII guard captured by the stream runs
+        // the cleanup on drop; the explicit `.run()` at normal exhaustion keeps
+        // the timing identical to tau (cleanup at generator completion), and the
+        // idempotence flag makes the later drop a no-op.
+        let cleanup = RunCleanup {
+            done: false,
+            running,
+            current_signal,
+            signal,
+            messages,
+            clock,
+        };
         Box::pin(stream! {
+            let mut cleanup = cleanup;
             futures::pin_mut!(inner);
             while let Some(event) = inner.next().await {
                 notify(&listeners, &event);
                 yield event;
             }
-            // finally: repair on cancellation, clear the signal, unset running.
-            if signal.is_cancelled() {
-                append_interrupted_tool_results(&messages, clock.as_ref());
-            }
-            {
-                let mut current = current_signal.lock().expect("signal lock");
-                if current
-                    .as_ref()
-                    .is_some_and(|active| Arc::ptr_eq(active, &signal))
-                {
-                    *current = None;
-                }
-            }
-            running.store(false, Ordering::SeqCst);
+            cleanup.run();
         })
+    }
+}
+
+/// RAII guard that runs a run's end-of-life cleanup (tau's harness `finally`)
+/// exactly once — on normal exhaustion (via [`RunCleanup::run`]) or on the
+/// stream being dropped mid-run (via `Drop`). Idempotent through `done`.
+struct RunCleanup {
+    done: bool,
+    running: Arc<AtomicBool>,
+    current_signal: Arc<Mutex<Option<Arc<SimpleCancellationToken>>>>,
+    signal: Arc<SimpleCancellationToken>,
+    messages: Arc<Mutex<Vec<AgentMessage>>>,
+    clock: Arc<dyn Clock>,
+}
+
+impl RunCleanup {
+    fn run(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        // Repair interrupted tool calls only when cancelled (tau gates on
+        // `signal.is_cancelled()`); abandon-without-cancel just clears state.
+        if self.signal.is_cancelled() {
+            append_interrupted_tool_results(&self.messages, self.clock.as_ref());
+        }
+        {
+            let mut current = self.current_signal.lock().expect("signal lock");
+            if current
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(active, &self.signal))
+            {
+                *current = None;
+            }
+        }
+        self.running.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for RunCleanup {
+    fn drop(&mut self) {
+        self.run();
     }
 }
 
