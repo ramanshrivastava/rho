@@ -1,0 +1,24 @@
+<svg width="1280" height="420" viewBox="0 0 1280 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="rho — a Rust coding-agent harness. pi to tau to rho.">
+  <!-- Paper: same cream as tau's header — rho is family. -->
+  <rect width="1280" height="420" fill="#FFFEF0"/>
+
+  <!-- Graph-paper grid, every 50px. tau rules its paper in periwinkle;
+       rho rules it in oxidized iron. -->
+  <g stroke="#C8582B" stroke-width="1" opacity="0.11">
+    <path d="M0 20.5H1280M0 70.5H1280M0 120.5H1280M0 170.5H1280M0 220.5H1280M0 270.5H1280M0 320.5H1280M0 370.5H1280"/>
+    <path d="M40.5 0V420M90.5 0V420M140.5 0V420M190.5 0V420M240.5 0V420M290.5 0V420M340.5 0V420M390.5 0V420M440.5 0V420M490.5 0V420M540.5 0V420M590.5 0V420M640.5 0V420M690.5 0V420M740.5 0V420M790.5 0V420M840.5 0V420M890.5 0V420M940.5 0V420M990.5 0V420M1040.5 0V420M1090.5 0V420M1140.5 0V420M1190.5 0V420M1240.5 0V420"/>
+  </g>
+
+  <!-- The glyph: italic rho in a math text face, rust-oxide ink. -->
+  <text x="640" y="268" text-anchor="middle"
+        font-family="'STIX Two Text','Cambria Math','Georgia','Times New Roman',serif"
+        font-style="italic" font-size="270" fill="#B3391F">&#961;</text>
+
+  <!-- Lineage caption -->
+  <text x="640" y="352" text-anchor="middle"
+        font-family="'SF Mono','JetBrains Mono','Fira Code','Menlo','Consolas',monospace"
+        font-size="26" letter-spacing="6" fill="#2B2B2B">&#960; &#8594; &#964; &#8594; &#961;</text>
+  <text x="640" y="390" text-anchor="middle"
+        font-family="'SF Mono','JetBrains Mono','Fira Code','Menlo','Consolas',monospace"
+        font-size="17" letter-spacing="2" fill="#8A7A6A">a coding-agent harness, oxidized</text>
+</svg>
