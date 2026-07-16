@@ -326,3 +326,93 @@ fn repairs_interrupted_tool_calls() {
     assert!(repair.is_error);
     assert_eq!(repair.text(), "Tool call interrupted by user");
 }
+
+#[tokio::test]
+async fn dropping_stream_mid_run_resets_running_state() {
+    // Regression: abandoning the EventStream mid-run must still run the harness
+    // cleanup (RAII guard), or `running` stays true forever and every later
+    // prompt() is rejected. tau's `finally` runs on generator close.
+    let assistant = AssistantMessage::new(vec![AssistantContent::Text(TextContent::new("Hi"))]);
+    let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider::new(vec![vec![
+        assistant_start(),
+        assistant_done(assistant),
+    ]]));
+    let harness = AgentHarness::new(config(provider), Vec::new());
+
+    {
+        let mut stream = harness.prompt("first").unwrap();
+        // Poll one event, then abandon the stream (drop) without exhausting it.
+        let _ = stream.next().await;
+        assert!(harness.is_running());
+    } // stream dropped here → cleanup guard runs
+
+    assert!(
+        !harness.is_running(),
+        "running must reset after stream drop"
+    );
+    // A fresh prompt must now be accepted (not AlreadyRunning).
+    assert!(harness.prompt("second").is_ok());
+}
+
+#[tokio::test]
+async fn dropping_stream_after_cancel_repairs_interrupted_tools() {
+    // When a run is cancelled and then abandoned before the tool result is
+    // produced, the drop-guard's cleanup must append the synthetic interrupted
+    // tool result (tau's cancelled `finally`).
+    let execute: ToolExecutor = Arc::new(
+        |_id,
+         _arguments,
+         _signal,
+         _on_update: ToolUpdateCallback|
+         -> BoxFuture<'static, Result<AgentToolResult, ToolError>> {
+            Box::pin(async move {
+                Ok(AgentToolResult::new(vec![ToolResultContent::Text(
+                    TextContent::new("ok"),
+                )]))
+            })
+        },
+    );
+    let tool = AgentTool::new(
+        "work",
+        "Work",
+        "Run work.",
+        match serde_json::json!({"type": "object"}) {
+            serde_json::Value::Object(m) => m,
+            _ => JsonMap::new(),
+        },
+        execute,
+    );
+    let call = ToolCall::new("call-1", "work", JsonMap::new());
+    let assistant = AssistantMessage::new(vec![AssistantContent::ToolCall(call.clone())]);
+    let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider::new(vec![vec![
+        assistant_start(),
+        tool_call_end(call),
+        assistant_done_reason(assistant, "toolUse"),
+    ]]));
+    let harness = AgentHarness::new(config(provider).with_tools(vec![tool]), Vec::new());
+
+    {
+        let mut stream = harness.prompt("go").unwrap();
+        // Poll until the assistant (with the tool call) is in the transcript but
+        // the tool has not yet produced a result.
+        while let Some(event) = stream.next().await {
+            if event.event_type() == "tool_execution_start" {
+                break;
+            }
+        }
+        harness.cancel();
+        // stream dropped here → cancelled cleanup repairs the interrupted call
+    }
+
+    assert!(!harness.is_running());
+    let repair = harness.messages().last().cloned().unwrap();
+    let AgentMessage::ToolResult(repair) = repair else {
+        panic!(
+            "expected interrupted tool result after cancel+drop, got {:?}",
+            repair.role()
+        );
+    };
+    assert!(repair.is_error);
+    assert_eq!(repair.text(), "Tool call interrupted by user");
+    assert_eq!(repair.tool_call_id, "call-1");
+}
