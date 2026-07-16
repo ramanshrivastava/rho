@@ -1,0 +1,1 @@
+{"type":"message","id":"R2","parent_id":"R1","timestamp":1731234567.0,"message":{"role":"tool","name":"bash","tool_call_id":"c","ok":true,"content":"","error":"","timestamp":1731234567890}}

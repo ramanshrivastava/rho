@@ -115,6 +115,40 @@ LEGACY_CASES: dict[str, dict] = {
             "display": False, "timestamp": 1731234567890,
         },
     },
+    # --- Regression cases (PR #2 review): validators + Python truthiness -------
+    # role "assistant": usage is *null* -> Usage() (mode="before" validator, not
+    # just the migration). Pins usage:null vs a merely-absent key.
+    "assistant_usage_null": {
+        "type": "message", "id": "R1", "parent_id": None, "timestamp": 1731234567.0,
+        "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "hi"}],
+            "usage": None, "model": "m", "timestamp": 1731234567890,
+        },
+    },
+    # role "tool": empty-string error is *falsy* -> ignored (content stays []).
+    "tool_error_empty_string": {
+        "type": "message", "id": "R2", "parent_id": "R1", "timestamp": 1731234567.0,
+        "message": {
+            "role": "tool", "name": "bash", "tool_call_id": "c", "ok": True,
+            "content": "", "error": "", "timestamp": 1731234567890,
+        },
+    },
+    # role "tool": falsy ok (0) -> not bool(0) -> isError:true.
+    "tool_ok_falsy_zero": {
+        "type": "message", "id": "R3", "parent_id": "R2", "timestamp": 1731234567.0,
+        "message": {
+            "role": "tool", "name": "bash", "tool_call_id": "c", "ok": 0,
+            "content": "out", "timestamp": 1731234567890,
+        },
+    },
+    # role "assistant": bare string content -> single text block (validator).
+    "assistant_string_content_only": {
+        "type": "message", "id": "R4", "parent_id": "R3", "timestamp": 1731234567.0,
+        "message": {
+            "role": "assistant", "content": "just text", "model": "m",
+            "timestamp": 1731234567890,
+        },
+    },
 }
 
 
