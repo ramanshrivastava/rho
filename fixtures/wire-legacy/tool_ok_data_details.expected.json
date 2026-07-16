@@ -1,0 +1,1 @@
+{"id":"L1","timestamp":1731234567.0,"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"read_file","content":[{"type":"text","text":"file body"}],"details":{"path":"README.md","extra":1},"isError":false,"timestamp":1731234567890}}

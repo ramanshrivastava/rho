@@ -1,0 +1,1 @@
+{"contents":[{"role":"user","parts":[{"text":"run ls"}]}],"systemInstruction":{"parts":[{"text":"You are Tau."}]},"tools":[{"functionDeclarations":[{"name":"bash","description":"Run a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}]}]}

@@ -1,0 +1,10 @@
+data: {"type":"message_start","message":{"content":[],"usage":{"input_tokens":10,"output_tokens":0}}}
+
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}
+
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}
+
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
+
+data: {"type":"message_stop"}
+

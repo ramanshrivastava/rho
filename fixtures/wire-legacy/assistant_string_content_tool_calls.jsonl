@@ -1,0 +1,1 @@
+{"type":"message","id":"L4","parent_id":"L3","timestamp":1731234567.0,"message":{"role":"assistant","content":"I'll read it","tool_calls":[{"type":"toolCall","id":"c1","name":"read_file","arguments":{"path":"x"}}],"model":"legacy-model","usage":{"input":1,"output":2,"cost":null},"timestamp":1731234567890}}

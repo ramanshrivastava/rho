@@ -1,0 +1,8 @@
+data: {"type":"response.reasoning.delta","delta":"trace "}
+
+data: {"type":"response.reasoning_text.delta","delta":"details"}
+
+data: {"type":"response.output_text.delta","delta":"Done"}
+
+data: {"type":"response.completed","response":{"status":"completed"}}
+

@@ -1,0 +1,9 @@
+{"id":"k0","timestamp":1731234567.0,"type":"session_info","created_at":1731234567.0,"cwd":"/work","title":"Everything"}
+{"id":"k1","parent_id":"k0","timestamp":1731234568.0,"type":"label","label":"My Session"}
+{"id":"k2","parent_id":"k1","timestamp":1731234569.0,"type":"model_change","model":"claude-sonnet"}
+{"id":"k3","parent_id":"k2","timestamp":1731234570.0,"type":"thinking_level_change","thinking_level":"high"}
+{"id":"k4","parent_id":"k3","timestamp":1731234571.0,"type":"message","message":{"role":"user","content":"hi 🌍","timestamp":1731234567000}}
+{"id":"k5","parent_id":"k4","timestamp":1731234572.0,"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"hello 世界"}],"api":"unknown","provider":"unknown","model":"claude-sonnet","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":1731234567000}}
+{"id":"k6","parent_id":"k5","timestamp":1731234573.0,"type":"custom","namespace":"ext.todo","data":{"items":["a","b"],"done":false}}
+{"id":"k7","parent_id":"k6","timestamp":1731234574.0,"type":"thinking_level_change"}
+{"id":"k8","parent_id":"k7","timestamp":1731234575.0,"type":"leaf","entry_id":"k5"}

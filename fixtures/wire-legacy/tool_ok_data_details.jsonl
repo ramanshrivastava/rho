@@ -1,0 +1,1 @@
+{"type":"message","id":"L1","parent_id":null,"timestamp":1731234567.0,"message":{"role":"tool","name":"read_file","tool_call_id":"c1","ok":true,"content":"file body","data":{"path":"README.md"},"details":{"extra":1},"timestamp":1731234567890}}

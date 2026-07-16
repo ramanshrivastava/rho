@@ -1,0 +1,1 @@
+{"id":"L2","parent_id":"L1","timestamp":1731234567.0,"type":"message","message":{"role":"toolResult","toolCallId":"c2","toolName":"bash","content":[{"type":"text","text":"command failed"}],"isError":true,"timestamp":1731234567890}}

@@ -1,0 +1,6 @@
+{"id":"s0","timestamp":1731234567.0,"type":"session_info","created_at":1731234567.0,"cwd":"/work","title":"Linear demo"}
+{"id":"s1","parent_id":"s0","timestamp":1731234568.0,"type":"message","message":{"role":"user","content":"What is 2+2?","timestamp":1731234567000}}
+{"id":"s2","parent_id":"s1","timestamp":1731234569.0,"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"4"}],"api":"unknown","provider":"unknown","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":1731234567000}}
+{"id":"s3","parent_id":"s2","timestamp":1731234570.0,"type":"message","message":{"role":"user","content":"And 3+3?","timestamp":1731234567000}}
+{"id":"s4","parent_id":"s3","timestamp":1731234571.0,"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"6"}],"api":"unknown","provider":"unknown","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":1731234567000}}
+{"id":"s5","parent_id":"s4","timestamp":1731234572.0,"type":"leaf","entry_id":"s4"}

@@ -1,0 +1,1 @@
+{"model":"gpt-x","stream":true,"messages":[{"role":"system","content":"You are Tau."},{"role":"user","content":"run ls"}],"stream_options":{"include_usage":true},"store":false,"tools":[{"type":"function","function":{"name":"read_file","description":"Read a file","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}

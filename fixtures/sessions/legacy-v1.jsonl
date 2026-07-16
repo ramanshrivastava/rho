@@ -1,0 +1,5 @@
+{"type":"message","id":"v0","parent_id":null,"timestamp":1731234567.0,"message":{"role":"user","content":"start","timestamp":1731234567000}}
+{"type":"message","id":"v1","parent_id":"v0","timestamp":1731234567.0,"message":{"role":"assistant","content":"on it","tool_calls":[{"type":"toolCall","id":"t1","name":"read","arguments":{"path":"a"}}],"usage":{"input":3,"output":4,"cost":null},"model":"old","timestamp":1731234567000}}
+{"type":"message","id":"v2","parent_id":"v1","timestamp":1731234567.0,"message":{"role":"tool","name":"read","tool_call_id":"t1","ok":true,"content":"contents","data":{"path":"a"},"timestamp":1731234567000}}
+{"type":"message","id":"v3","parent_id":"v2","timestamp":1731234567.0,"message":{"role":"user","content":"note to self","custom_type":"reminder","timestamp":1731234567000}}
+{"type":"label","id":"v4","parent_id":"v3","timestamp":1731234567.0,"label":"legacy session"}

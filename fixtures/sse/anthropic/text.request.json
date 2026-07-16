@@ -1,0 +1,1 @@
+{"model":"claude-x","max_tokens":4096,"stream":true,"system":"You are Tau.","messages":[{"role":"user","content":"Say hello"}]}

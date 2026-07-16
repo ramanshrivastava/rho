@@ -1,0 +1,2 @@
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-1","name":"bash","args":{"command":"ls"}},"thoughtSignature":"sig-123"}]},"finishReason":"STOP"}]}
+

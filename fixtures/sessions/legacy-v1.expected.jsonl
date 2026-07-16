@@ -1,0 +1,5 @@
+{"id":"v0","timestamp":1731234567.0,"type":"message","message":{"role":"user","content":"start","timestamp":1731234567000}}
+{"id":"v1","parent_id":"v0","timestamp":1731234567.0,"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"on it"},{"type":"toolCall","id":"t1","name":"read","arguments":{"path":"a"}}],"api":"unknown","provider":"unknown","model":"old","usage":{"input":3,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":1731234567000}}
+{"id":"v2","parent_id":"v1","timestamp":1731234567.0,"type":"message","message":{"role":"toolResult","toolCallId":"t1","toolName":"read","content":[{"type":"text","text":"contents"}],"details":{"path":"a"},"isError":false,"timestamp":1731234567000}}
+{"id":"v3","parent_id":"v2","timestamp":1731234567.0,"type":"message","message":{"role":"custom","customType":"reminder","content":"note to self","display":true,"timestamp":1731234567000}}
+{"id":"v4","parent_id":"v3","timestamp":1731234567.0,"type":"label","label":"legacy session"}

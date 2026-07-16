@@ -1,0 +1,1 @@
+{"role":"toolResult","toolCallId":"c2","toolName":"bash","content":[{"type":"text","text":"stderr"},{"type":"image","data":"Z","mimeType":"image/png"}],"details":{"exit":1,"keys":{"δ":1}},"addedToolNames":["extra_tool"],"isError":true,"timestamp":1731234567890}

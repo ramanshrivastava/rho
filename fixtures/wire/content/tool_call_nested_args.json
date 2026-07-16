@@ -1,0 +1,1 @@
+{"type":"toolCall","id":"call-2","name":"complex","arguments":{"café":{"naïve":[1,2,{"δ":"x"}],"nested":{"a":true,"b":null}},"emoji_🔑":"值","list":[{"k":1},{"k":2}]},"thoughtSignature":"thought-sig"}

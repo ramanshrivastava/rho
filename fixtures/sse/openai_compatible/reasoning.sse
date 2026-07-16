@@ -1,0 +1,8 @@
+data: {"choices":[{"delta":{"reasoning_content":"plan "}}]}
+
+data: {"choices":[{"delta":{"reasoning_content":"steps"}}]}
+
+data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

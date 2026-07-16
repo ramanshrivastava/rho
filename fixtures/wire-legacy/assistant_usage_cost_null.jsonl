@@ -1,0 +1,1 @@
+{"type":"message","id":"L7","parent_id":"L6","timestamp":1731234567.0,"message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":3,"cost":null},"model":"legacy-model","timestamp":1731234567890}}

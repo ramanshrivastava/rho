@@ -1,0 +1,1 @@
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"api":"unknown","provider":"unknown","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":1700000000123}}

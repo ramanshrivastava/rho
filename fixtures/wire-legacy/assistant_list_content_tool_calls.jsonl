@@ -1,0 +1,1 @@
+{"type":"message","id":"L5","parent_id":"L4","timestamp":1731234567.0,"message":{"role":"assistant","content":[{"type":"text","text":"sure"}],"tool_calls":[{"type":"toolCall","id":"c2","name":"write","arguments":{}}],"model":"legacy-model","timestamp":1731234567890}}

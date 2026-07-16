@@ -1,0 +1,1 @@
+{"type":"message","id":"L3","parent_id":"L2","timestamp":1731234567.0,"message":{"role":"tool","name":"grep","tool_call_id":"c3","ok":true,"content":"match","data":{"count":3},"timestamp":1731234567890}}
