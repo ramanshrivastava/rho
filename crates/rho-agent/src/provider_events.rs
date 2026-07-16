@@ -217,6 +217,32 @@ pub enum AssistantMessageEvent {
     Error(AssistantErrorEvent),
 }
 
+impl AssistantMessageEvent {
+    /// The assistant-message snapshot this event carries — `partial` for the
+    /// streaming/start variants, `message` for [`AssistantMessageEvent::Done`],
+    /// and `error` for [`AssistantMessageEvent::Error`].
+    ///
+    /// The loop re-wraps this snapshot into a `message_update` (for streaming
+    /// variants) after handling `start`/`done`/`error` explicitly.
+    #[must_use]
+    pub fn partial(&self) -> &AssistantMessage {
+        match self {
+            Self::Start(e) => &e.partial,
+            Self::TextStart(e) => &e.partial,
+            Self::TextDelta(e) => &e.partial,
+            Self::TextEnd(e) => &e.partial,
+            Self::ThinkingStart(e) => &e.partial,
+            Self::ThinkingDelta(e) => &e.partial,
+            Self::ThinkingEnd(e) => &e.partial,
+            Self::ToolCallStart(e) => &e.partial,
+            Self::ToolCallDelta(e) => &e.partial,
+            Self::ToolCallEnd(e) => &e.partial,
+            Self::Done(e) => &e.message,
+            Self::Error(e) => &e.error,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------

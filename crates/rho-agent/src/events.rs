@@ -169,6 +169,25 @@ pub enum AgentEvent {
     ToolExecutionEnd(ToolExecutionEndEvent),
 }
 
+impl AgentEvent {
+    /// The wire `type` discriminator string (tau's `event.type`).
+    #[must_use]
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            Self::AgentStart(_) => "agent_start",
+            Self::AgentEnd(_) => "agent_end",
+            Self::TurnStart(_) => "turn_start",
+            Self::TurnEnd(_) => "turn_end",
+            Self::MessageStart(_) => "message_start",
+            Self::MessageUpdate(_) => "message_update",
+            Self::MessageEnd(_) => "message_end",
+            Self::ToolExecutionStart(_) => "tool_execution_start",
+            Self::ToolExecutionUpdate(_) => "tool_execution_update",
+            Self::ToolExecutionEnd(_) => "tool_execution_end",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
