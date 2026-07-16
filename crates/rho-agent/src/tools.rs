@@ -20,7 +20,11 @@ use crate::types::JsonValue;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentToolResult {
     /// Result content blocks. Always serialized (even `[]`).
-    #[serde(default)]
+    ///
+    /// Accepts tau's convenience shape on input: a bare string normalizes to a
+    /// single text block (empty string → `[]`), matching
+    /// `AgentToolResult._normalize_text_content`.
+    #[serde(default, deserialize_with = "crate::messages::string_or_blocks")]
     pub content: Vec<ToolResultContent>,
     /// Free-form details; omitted when `None`, `{}` preserved when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,4 +35,14 @@ pub struct AgentToolResult {
     /// Whether this result should terminate the agent loop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminate: Option<bool>,
+}
+
+impl AgentToolResult {
+    /// Build a tool result from content blocks (other fields default to `None`).
+    pub fn new(content: Vec<ToolResultContent>) -> Self {
+        Self {
+            content,
+            ..Self::default()
+        }
+    }
 }

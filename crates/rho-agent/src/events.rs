@@ -14,7 +14,7 @@ use crate::tools::AgentToolResult;
 use crate::types::JsonMap;
 
 /// `agent_start`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentStartEvent {
     #[serde(rename = "type")]
@@ -33,7 +33,7 @@ pub struct AgentEndEvent {
 }
 
 /// `turn_start`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TurnStartEvent {
     #[serde(rename = "type")]
@@ -167,4 +167,133 @@ pub enum AgentEvent {
     ToolExecutionUpdate(ToolExecutionUpdateEvent),
     /// Tool execution ended.
     ToolExecutionEnd(ToolExecutionEndEvent),
+}
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+//
+// The discriminator `type` field is private, so these constructors are the
+// external way to build each event (mirroring tau's keyword constructors).
+
+impl AgentStartEvent {
+    /// Build an `agent_start` event.
+    pub fn new() -> Self {
+        Self {
+            kind: MustBe!("agent_start"),
+        }
+    }
+}
+
+impl AgentEndEvent {
+    /// Build an `agent_end` event.
+    pub fn new(messages: Vec<AgentMessage>) -> Self {
+        Self {
+            kind: MustBe!("agent_end"),
+            messages,
+        }
+    }
+}
+
+impl TurnStartEvent {
+    /// Build a `turn_start` event.
+    pub fn new() -> Self {
+        Self {
+            kind: MustBe!("turn_start"),
+        }
+    }
+}
+
+impl TurnEndEvent {
+    /// Build a `turn_end` event.
+    pub fn new(message: AgentMessage, tool_results: Vec<ToolResultMessage>) -> Self {
+        Self {
+            kind: MustBe!("turn_end"),
+            message,
+            tool_results,
+        }
+    }
+}
+
+impl MessageStartEvent {
+    /// Build a `message_start` event.
+    pub fn new(message: AgentMessage) -> Self {
+        Self {
+            kind: MustBe!("message_start"),
+            message,
+        }
+    }
+}
+
+impl MessageUpdateEvent {
+    /// Build a `message_update` event.
+    pub fn new(message: AgentMessage, assistant_message_event: AssistantMessageEvent) -> Self {
+        Self {
+            kind: MustBe!("message_update"),
+            message,
+            assistant_message_event,
+        }
+    }
+}
+
+impl MessageEndEvent {
+    /// Build a `message_end` event.
+    pub fn new(message: AgentMessage) -> Self {
+        Self {
+            kind: MustBe!("message_end"),
+            message,
+        }
+    }
+}
+
+impl ToolExecutionStartEvent {
+    /// Build a `tool_execution_start` event.
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        args: JsonMap,
+    ) -> Self {
+        Self {
+            kind: MustBe!("tool_execution_start"),
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            args,
+        }
+    }
+}
+
+impl ToolExecutionUpdateEvent {
+    /// Build a `tool_execution_update` event.
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        args: JsonMap,
+        partial_result: AgentToolResult,
+    ) -> Self {
+        Self {
+            kind: MustBe!("tool_execution_update"),
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            args,
+            partial_result,
+        }
+    }
+}
+
+impl ToolExecutionEndEvent {
+    /// Build a `tool_execution_end` event.
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        result: AgentToolResult,
+        is_error: bool,
+    ) -> Self {
+        Self {
+            kind: MustBe!("tool_execution_end"),
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            result,
+            is_error,
+        }
+    }
 }

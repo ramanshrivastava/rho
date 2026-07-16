@@ -16,11 +16,34 @@
 //! integer-millisecond timestamps on messages. `serde_json` prints whole `f64`s
 //! with a trailing `.0`, matching tau.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use monostate::MustBe;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::messages::AgentMessage;
 use crate::types::JsonMap;
+
+/// Return a fresh session-entry id (tau's `new_entry_id`: `uuid4().hex`).
+///
+/// `Uuid::new_v4().simple()` renders 32 lowercase hex digits with no hyphens,
+/// exactly matching Python's `uuid4().hex`.
+#[must_use]
+pub fn new_entry_id() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+/// Current Unix timestamp in **seconds** as an `f64` (tau's `current_timestamp`).
+///
+/// Distinct from message timestamps, which are integer milliseconds.
+#[must_use]
+pub fn current_timestamp() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
 
 /// A transcript message entry (tau `MessageEntry`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,7 +177,7 @@ pub struct LeafEntry {
 }
 
 /// Basic session metadata entry (tau `SessionInfoEntry`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionInfoEntry {
     /// Unique entry id.
@@ -226,4 +249,134 @@ pub enum SessionEntry {
     SessionInfo(SessionInfoEntry),
     /// Custom extension data.
     Custom(CustomEntry),
+}
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+//
+// Each entry auto-generates its `id` (uuid) and `timestamp` (now) via tau's
+// factories; `parent_id` defaults to `None` and is set by the caller (it is
+// `pub`). This mirrors tau's `BaseSessionEntry` default_factory fields.
+
+impl MessageEntry {
+    /// Build a message entry wrapping `message`.
+    pub fn new(message: AgentMessage) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("message"),
+            message,
+        }
+    }
+}
+
+impl ModelChangeEntry {
+    /// Build a model-change entry.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("model_change"),
+            model: model.into(),
+        }
+    }
+}
+
+impl ThinkingLevelChangeEntry {
+    /// Build a thinking-level-change entry.
+    pub fn new(thinking_level: Option<String>) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("thinking_level_change"),
+            thinking_level,
+        }
+    }
+}
+
+impl CompactionEntry {
+    /// Build a compaction entry.
+    pub fn new(summary: impl Into<String>, replaces_entry_ids: Vec<String>) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("compaction"),
+            summary: summary.into(),
+            replaces_entry_ids,
+        }
+    }
+}
+
+impl BranchSummaryEntry {
+    /// Build a branch-summary entry.
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("branch_summary"),
+            summary: summary.into(),
+            branch_root_id: None,
+        }
+    }
+}
+
+impl LabelEntry {
+    /// Build a label entry.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("label"),
+            label: label.into(),
+        }
+    }
+}
+
+impl LeafEntry {
+    /// Build a leaf-pointer entry.
+    pub fn new(entry_id: Option<String>) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("leaf"),
+            entry_id,
+        }
+    }
+}
+
+impl SessionInfoEntry {
+    /// Build a session-info entry (`created_at` = now; `cwd`/`title` unset).
+    pub fn new() -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("session_info"),
+            created_at: current_timestamp(),
+            cwd: None,
+            title: None,
+        }
+    }
+}
+
+impl CustomEntry {
+    /// Build a custom (extension-owned) entry.
+    pub fn new(namespace: impl Into<String>, data: JsonMap) -> Self {
+        Self {
+            id: new_entry_id(),
+            parent_id: None,
+            timestamp: current_timestamp(),
+            kind: MustBe!("custom"),
+            namespace: namespace.into(),
+            data,
+        }
+    }
 }
