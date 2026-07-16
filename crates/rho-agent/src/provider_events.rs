@@ -216,3 +216,147 @@ pub enum AssistantMessageEvent {
     /// Stream failed.
     Error(AssistantErrorEvent),
 }
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+//
+// The discriminator `type` field is private, so these constructors are the
+// external way to build each event (mirroring tau's keyword constructors).
+
+impl AssistantStartEvent {
+    /// Build a `start` event.
+    pub fn new(partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("start"),
+            partial,
+        }
+    }
+}
+
+impl TextStartEvent {
+    /// Build a `text_start` event.
+    pub fn new(content_index: i64, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("text_start"),
+            content_index,
+            partial,
+        }
+    }
+}
+
+impl TextDeltaEvent {
+    /// Build a `text_delta` event.
+    pub fn new(content_index: i64, delta: impl Into<String>, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("text_delta"),
+            content_index,
+            delta: delta.into(),
+            partial,
+        }
+    }
+}
+
+impl TextEndEvent {
+    /// Build a `text_end` event.
+    pub fn new(content_index: i64, content: impl Into<String>, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("text_end"),
+            content_index,
+            content: content.into(),
+            partial,
+        }
+    }
+}
+
+impl ThinkingStartEvent {
+    /// Build a `thinking_start` event.
+    pub fn new(content_index: i64, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("thinking_start"),
+            content_index,
+            partial,
+        }
+    }
+}
+
+impl ThinkingDeltaEvent {
+    /// Build a `thinking_delta` event.
+    pub fn new(content_index: i64, delta: impl Into<String>, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("thinking_delta"),
+            content_index,
+            delta: delta.into(),
+            partial,
+        }
+    }
+}
+
+impl ThinkingEndEvent {
+    /// Build a `thinking_end` event.
+    pub fn new(content_index: i64, content: impl Into<String>, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("thinking_end"),
+            content_index,
+            content: content.into(),
+            partial,
+        }
+    }
+}
+
+impl ToolCallStartEvent {
+    /// Build a `toolcall_start` event.
+    pub fn new(content_index: i64, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("toolcall_start"),
+            content_index,
+            partial,
+        }
+    }
+}
+
+impl ToolCallDeltaEvent {
+    /// Build a `toolcall_delta` event.
+    pub fn new(content_index: i64, delta: impl Into<String>, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("toolcall_delta"),
+            content_index,
+            delta: delta.into(),
+            partial,
+        }
+    }
+}
+
+impl ToolCallEndEvent {
+    /// Build a `toolcall_end` event.
+    pub fn new(content_index: i64, tool_call: ToolCall, partial: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("toolcall_end"),
+            content_index,
+            tool_call,
+            partial,
+        }
+    }
+}
+
+impl AssistantDoneEvent {
+    /// Build a `done` event.
+    pub fn new(reason: DoneReason, message: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("done"),
+            reason,
+            message,
+        }
+    }
+}
+
+impl AssistantErrorEvent {
+    /// Build an `error` event.
+    pub fn new(reason: ErrorReason, error: AssistantMessage) -> Self {
+        Self {
+            kind: MustBe!("error"),
+            reason,
+            error,
+        }
+    }
+}

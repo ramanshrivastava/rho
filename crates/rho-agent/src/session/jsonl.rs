@@ -109,11 +109,24 @@ fn migrate_user_to_custom(msg: &mut Map<String, Value>) {
 }
 
 fn migrate_assistant(msg: &mut Map<String, Value>) {
-    // usage.cost == null → {} (so it decodes to the all-zero default cost).
-    if let Some(Value::Object(usage)) = msg.get_mut("usage") {
-        if matches!(usage.get("cost"), Some(Value::Null) | None) {
-            usage.insert("cost".into(), Value::Object(Map::new()));
+    // usage handling mirrors tau's `AssistantMessage` `mode="before"` validator
+    // (`_normalize_convenient_content`), which maps a `None` usage to `Usage()`.
+    // A present `null` (or otherwise non-object) usage becomes `{}` so it decodes
+    // to the all-zero default; a present object gets its `null`/absent `cost`
+    // rewritten to `{}`. (A direct — non-entry — parse is handled instead by the
+    // `null_to_default` deserialize shim on the typed `usage` field.)
+    match msg.get("usage") {
+        Some(Value::Object(_)) => {
+            if let Some(Value::Object(usage)) = msg.get_mut("usage") {
+                if matches!(usage.get("cost"), Some(Value::Null) | None) {
+                    usage.insert("cost".into(), Value::Object(Map::new()));
+                }
+            }
         }
+        Some(Value::Null) => {
+            msg.insert("usage".into(), Value::Object(Map::new()));
+        }
+        _ => {}
     }
 
     let content = msg.get("content").cloned();
@@ -153,7 +166,13 @@ fn migrate_tool(msg: &mut Map<String, Value>) {
         .unwrap_or_else(|| Value::String(String::new()));
     msg.insert("toolCallId".into(), tool_call_id);
 
-    let ok = msg.remove("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+    // tau: `isError = not bool(message.pop("ok", True))`. A missing `ok` defaults
+    // truthy; a present `ok` is evaluated with **Python** truthiness, so `0` /
+    // `""` / `false` / `{}` / `[]` all mean "not ok" → `isError = true`.
+    let ok = match msg.remove("ok") {
+        Some(v) => python_truthy(&v),
+        None => true,
+    };
     msg.insert("isError".into(), Value::Bool(!ok));
 
     // Normalize content exactly as tau does: only a *string* (or a missing)
@@ -194,19 +213,39 @@ fn migrate_tool(msg: &mut Map<String, Value>) {
     }
 
     // A legacy top-level `error` becomes the content when no content survived.
+    // tau gates on `if error and not message["content"]`, i.e. **Python**
+    // truthiness — so an empty-string / `0` / `false` / `{}` / `[]` error is
+    // ignored (not `!err.is_null()`, which only excluded `null`).
     if let Some(err) = msg.remove("error") {
         let content_empty = msg
             .get("content")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty);
-        if content_empty && !err.is_null() {
-            // Fixtures only carry string errors; non-string is a best-effort edge.
+        if content_empty && python_truthy(&err) {
+            // Fixtures only carry string errors; a truthy non-string is a
+            // best-effort edge (tau would `str(error)`; we JSON-stringify).
             let text = match err {
                 Value::String(s) => s,
                 other => other.to_string(),
             };
             msg.insert("content".into(), Value::Array(vec![text_block(&text)]));
         }
+    }
+}
+
+/// Python truthiness for a JSON value — the semantics tau's migration relies on
+/// (`if error`, `not bool(ok)`). Falsy: `null`, `false`, numeric zero, and every
+/// empty container (`""`, `{}`, `[]`); everything else is truthy.
+fn python_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n
+            .as_i64()
+            .map_or_else(|| n.as_f64().is_some_and(|f| f != 0.0), |i| i != 0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
     }
 }
 

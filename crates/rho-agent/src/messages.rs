@@ -55,6 +55,73 @@ pub fn current_timestamp_ms() -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// Deserialize shims reproducing tau's `mode="before"` validators
+// ---------------------------------------------------------------------------
+//
+// tau's `WireModel` subclasses attach `@model_validator(mode="before")` methods
+// that run on **every** deserialization (not just Python constructors). Two of
+// them shape the wire we must accept:
+//
+//   * `AssistantMessage._normalize_convenient_content`: `usage is None → Usage()`
+//     and string `content → blocks`.
+//   * `ToolResultMessage` / `AgentToolResult`: string `content → blocks`.
+//
+// serde's plain `#[serde(default)]` only fires on an **absent** key, so a present
+// `"usage": null` would fail the parse. These shims restore tau's behavior:
+// accepting the convenience shapes on the wire, so parity is behavioral, not just
+// byte-level on already-canonical output.
+
+/// Deserialize `T`, mapping a JSON `null` (or absent, via `default`) to
+/// `T::default()`. Mirrors tau's `usage is None → Usage()`.
+fn null_to_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// A content-block type that a bare text string can normalize into. Lets one
+/// deserializer serve every message whose `content` is a block list.
+pub(crate) trait FromText {
+    /// Wrap a text block into this content variant.
+    fn from_text(text: TextContent) -> Self;
+}
+
+impl FromText for AssistantContent {
+    fn from_text(text: TextContent) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl FromText for ToolResultContent {
+    fn from_text(text: TextContent) -> Self {
+        Self::Text(text)
+    }
+}
+
+/// Deserialize a content field that tau accepts as either a bare string or a
+/// list of blocks. A non-empty string becomes a single text block; an empty
+/// string becomes `[]` (tau: `[TextContent(text=content)] if content else []`).
+pub(crate) fn string_or_blocks<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + FromText,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrBlocks<T> {
+        Str(String),
+        Blocks(Vec<T>),
+    }
+    Ok(match StrOrBlocks::<T>::deserialize(deserializer)? {
+        StrOrBlocks::Str(s) if s.is_empty() => Vec::new(),
+        StrOrBlocks::Str(s) => vec![T::from_text(TextContent::new(s))],
+        StrOrBlocks::Blocks(v) => v,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Usage / cost
 // ---------------------------------------------------------------------------
 
@@ -203,9 +270,12 @@ pub struct ToolCall {
 /// User-authored content: either a bare string or a list of text/image blocks
 /// (tau `UserContent = str | list[TextContent | ImageContent]`).
 ///
-/// The string form is preserved on round-trip — tau does *not* normalize a
-/// stored string into blocks (that only happens in Python constructors). An
-/// untagged enum keeps both shapes; `Text` is tried first as the common case.
+/// The string form is preserved on round-trip. This is genuinely true for
+/// [`UserMessage`] and [`CustomMessage`], which carry **no** `mode="before"`
+/// validator — a stored string stays a string. (Contrast [`AssistantMessage`]
+/// and [`ToolResultMessage`], whose validators *do* normalize a string into
+/// blocks on every deserialization; see their `content` fields.) An untagged
+/// enum keeps both shapes; `Text` is tried first as the common case.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UserContent {
@@ -299,7 +369,7 @@ pub struct AssistantDiagnosticError {
 }
 
 /// A per-response diagnostic record (tau `AssistantMessageDiagnostic`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssistantMessageDiagnostic {
     /// Diagnostic kind (free-form, e.g. `retry`); serialized as `type`.
@@ -320,7 +390,7 @@ pub struct AssistantMessageDiagnostic {
 // ---------------------------------------------------------------------------
 
 /// A user message (tau `UserMessage`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserMessage {
     role: MustBe!("user"),
@@ -336,7 +406,10 @@ pub struct UserMessage {
 pub struct AssistantMessage {
     role: MustBe!("assistant"),
     /// Ordered content blocks (text / thinking / tool calls). Always serialized.
-    #[serde(default)]
+    ///
+    /// Accepts tau's convenience shape on input: a bare string normalizes to a
+    /// single text block (empty string → `[]`).
+    #[serde(default, deserialize_with = "string_or_blocks")]
     pub content: Vec<AssistantContent>,
     /// Provider API family (defaults to `unknown`).
     #[serde(default = "unknown")]
@@ -357,7 +430,10 @@ pub struct AssistantMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<AssistantMessageDiagnostic>>,
     /// Token usage / cost.
-    #[serde(default)]
+    ///
+    /// Accepts `null` on the wire (tau's validator maps `usage is None` to the
+    /// default `Usage()`), not just an absent key.
+    #[serde(default, deserialize_with = "null_to_default")]
     pub usage: Usage,
     /// Why generation stopped.
     #[serde(default)]
@@ -374,7 +450,7 @@ fn unknown() -> String {
 }
 
 /// A tool result message (tau `ToolResultMessage`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolResultMessage {
     role: MustBe!("toolResult"),
@@ -383,7 +459,10 @@ pub struct ToolResultMessage {
     /// The tool name.
     pub tool_name: String,
     /// Result content blocks. Always serialized (even `[]`).
-    #[serde(default)]
+    ///
+    /// Accepts tau's convenience shape on input: a bare string normalizes to a
+    /// single text block (empty string → `[]`).
+    #[serde(default, deserialize_with = "string_or_blocks")]
     pub content: Vec<ToolResultContent>,
     /// Free-form details.
     ///
@@ -402,7 +481,7 @@ pub struct ToolResultMessage {
 }
 
 /// A recorded shell execution (tau `BashExecutionMessage`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BashExecutionMessage {
     role: MustBe!("bashExecution"),
@@ -453,7 +532,7 @@ fn default_true() -> bool {
 }
 
 /// A branch summary message (tau `BranchSummaryMessage`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BranchSummaryMessage {
     role: MustBe!("branchSummary"),
@@ -466,7 +545,7 @@ pub struct BranchSummaryMessage {
 }
 
 /// A compaction summary message (tau `CompactionSummaryMessage`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionSummaryMessage {
     role: MustBe!("compactionSummary"),
@@ -501,13 +580,244 @@ pub enum AgentMessage {
     CompactionSummary(CompactionSummaryMessage),
 }
 
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
+//
+// The wire structs keep their `role`/`type` discriminator fields private (only a
+// `monostate::MustBe!` value is ever valid), so callers outside the crate cannot
+// build them with a struct literal. These constructors mirror tau's keyword
+// constructors: required fields are positional, optional fields fall back to the
+// same defaults tau uses, and `timestamp` is injected from `current_timestamp_ms`
+// (matching tau's `default_factory`). Optional fields can be adjusted afterwards
+// (they are `pub`) or via `..Default::default()`.
+
+impl From<&str> for UserContent {
+    fn from(text: &str) -> Self {
+        Self::Text(text.to_string())
+    }
+}
+
+impl From<String> for UserContent {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
+
+impl From<Vec<UserContentBlock>> for UserContent {
+    fn from(blocks: Vec<UserContentBlock>) -> Self {
+        Self::Blocks(blocks)
+    }
+}
+
+impl UserMessage {
+    /// Build a user message with the current timestamp.
+    pub fn new(content: impl Into<UserContent>) -> Self {
+        Self {
+            role: MustBe!("user"),
+            content: content.into(),
+            timestamp: current_timestamp_ms(),
+        }
+    }
+}
+
+impl AssistantMessage {
+    /// Build an assistant message from content blocks, with tau's defaults
+    /// (`api`/`provider`/`model` = `"unknown"`, `stop_reason` = `stop`) and the
+    /// current timestamp.
+    pub fn new(content: Vec<AssistantContent>) -> Self {
+        Self {
+            role: MustBe!("assistant"),
+            content,
+            api: unknown(),
+            provider: unknown(),
+            model: unknown(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: current_timestamp_ms(),
+        }
+    }
+
+    // Fluent builders for the optional fields. External callers cannot use
+    // struct-update syntax (the `role` discriminator is private), so these are
+    // the ergonomic way to set optionals; in-crate code may still mutate the
+    // `pub` fields directly or use `..Default::default()`.
+
+    /// Set the requested model id.
+    #[must_use]
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// Set the provider API family.
+    #[must_use]
+    pub fn with_api(mut self, api: impl Into<String>) -> Self {
+        self.api = api.into();
+        self
+    }
+
+    /// Set the provider id.
+    #[must_use]
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = provider.into();
+        self
+    }
+
+    /// Set token usage / cost.
+    #[must_use]
+    pub fn with_usage(mut self, usage: Usage) -> Self {
+        self.usage = usage;
+        self
+    }
+
+    /// Set the stop reason.
+    #[must_use]
+    pub fn with_stop_reason(mut self, stop_reason: StopReason) -> Self {
+        self.stop_reason = stop_reason;
+        self
+    }
+
+    /// Set the error message (and does not itself change `stop_reason`).
+    #[must_use]
+    pub fn with_error_message(mut self, error_message: impl Into<String>) -> Self {
+        self.error_message = Some(error_message.into());
+        self
+    }
+
+    /// Set the provider response id.
+    #[must_use]
+    pub fn with_response_id(mut self, response_id: impl Into<String>) -> Self {
+        self.response_id = Some(response_id.into());
+        self
+    }
+}
+
+impl Default for AssistantMessage {
+    // Spelled out (not `#[derive(Default)]`) because tau's defaults are *not* the
+    // field-type defaults: `api`/`provider`/`model` are `"unknown"`, not `""`.
+    fn default() -> Self {
+        Self {
+            role: MustBe!("assistant"),
+            content: Vec::new(),
+            api: unknown(),
+            provider: unknown(),
+            model: unknown(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        }
+    }
+}
+
+impl ToolResultMessage {
+    /// Build a tool-result message with the current timestamp.
+    pub fn new(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: Vec<ToolResultContent>,
+    ) -> Self {
+        Self {
+            role: MustBe!("toolResult"),
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+            content,
+            details: None,
+            added_tool_names: None,
+            is_error: false,
+            timestamp: current_timestamp_ms(),
+        }
+    }
+}
+
+impl BashExecutionMessage {
+    /// Build a bash-execution message with the current timestamp.
+    pub fn new(command: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            role: MustBe!("bashExecution"),
+            command: command.into(),
+            output: output.into(),
+            exit_code: None,
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+            timestamp: current_timestamp_ms(),
+            exclude_from_context: false,
+        }
+    }
+}
+
+impl CustomMessage {
+    /// Build a custom message with the current timestamp (`display` defaults to
+    /// `true`, matching tau).
+    pub fn new(custom_type: impl Into<String>, content: impl Into<UserContent>) -> Self {
+        Self {
+            role: MustBe!("custom"),
+            custom_type: custom_type.into(),
+            content: content.into(),
+            display: true,
+            details: None,
+            timestamp: current_timestamp_ms(),
+        }
+    }
+}
+
+impl Default for CustomMessage {
+    // Spelled out because tau's `display` default is `true`, not `bool::default()`.
+    fn default() -> Self {
+        Self {
+            role: MustBe!("custom"),
+            custom_type: String::new(),
+            content: UserContent::default(),
+            display: true,
+            details: None,
+            timestamp: 0,
+        }
+    }
+}
+
+impl BranchSummaryMessage {
+    /// Build a branch-summary message with the current timestamp.
+    pub fn new(summary: impl Into<String>, from_id: impl Into<String>) -> Self {
+        Self {
+            role: MustBe!("branchSummary"),
+            summary: summary.into(),
+            from_id: from_id.into(),
+            timestamp: current_timestamp_ms(),
+        }
+    }
+}
+
+impl CompactionSummaryMessage {
+    /// Build a compaction-summary message with the current timestamp.
+    pub fn new(summary: impl Into<String>, tokens_before: i64) -> Self {
+        Self {
+            role: MustBe!("compactionSummary"),
+            summary: summary.into(),
+            tokens_before,
+            timestamp: current_timestamp_ms(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ported from tau's `tests/test_agent_types.py` (the wire-shape and
-    //! union-discrimination cases). Python-only cases are noted as skipped in
-    //! `dev-notes/phase-1.md` (e.g. the `AgentTool` executor test — behavior, not
-    //! wire format, lands in M2; and the non-`by_alias` `model_dump` shape, which
-    //! rho does not model because only the exclude-none wire path exists here).
+    //! union-discrimination cases). Skips are noted in `dev-notes/phase-1.md`
+    //! (e.g. the `AgentTool` executor test — behavior, not wire format, lands in
+    //! M2; and the non-`by_alias` `model_dump` shape, which rho does not model
+    //! because only the exclude-none wire path exists here). Note the convenience
+    //! normalizations (string `content → blocks`, `usage: null → default`) are
+    //! `mode="before"` validators that run on **every** deserialization, so rho
+    //! reproduces them on the wire — see `convenience_shapes_normalize_on_parse`.
     use super::*;
 
     fn args(json: serde_json::Value) -> JsonMap {
@@ -632,10 +942,53 @@ mod tests {
 
     #[test]
     fn string_user_content_round_trips_as_string() {
-        // A stored string is preserved, never normalized into blocks (tau only
-        // normalizes in Python constructors, not on the wire).
+        // A user string is preserved: UserMessage has no `mode="before"`
+        // validator, so — unlike assistant/toolResult — the string is not
+        // normalized into blocks, on the wire or otherwise.
         let json = r#"{"role":"user","content":"plain","timestamp":1}"#;
         let m: AgentMessage = serde_json::from_str(json).unwrap();
         assert_eq!(serde_json::to_string(&m).unwrap(), json);
+    }
+
+    #[test]
+    fn convenience_shapes_normalize_on_parse() {
+        // tau's `mode="before"` validators run on every deserialization, so rho
+        // accepts these convenience shapes on the wire (not just in constructors).
+
+        // Assistant: string content → one text block; `usage: null` → default.
+        let a: AgentMessage = serde_json::from_str(
+            r#"{"role":"assistant","content":"hi","usage":null,"model":"m","timestamp":1}"#,
+        )
+        .unwrap();
+        let AgentMessage::Assistant(a) = a else {
+            panic!("expected assistant")
+        };
+        assert_eq!(
+            a.content,
+            vec![AssistantContent::Text(TextContent::new("hi"))]
+        );
+        assert_eq!(a.usage, Usage::default());
+
+        // Assistant: empty string content → no blocks.
+        let empty: AgentMessage =
+            serde_json::from_str(r#"{"role":"assistant","content":"","model":"m","timestamp":1}"#)
+                .unwrap();
+        let AgentMessage::Assistant(empty) = empty else {
+            panic!("expected assistant")
+        };
+        assert!(empty.content.is_empty());
+
+        // ToolResult: string content → one text block.
+        let t: AgentMessage = serde_json::from_str(
+            r#"{"role":"toolResult","toolCallId":"c","toolName":"t","content":"out","timestamp":1}"#,
+        )
+        .unwrap();
+        let AgentMessage::ToolResult(t) = t else {
+            panic!("expected toolResult")
+        };
+        assert_eq!(
+            t.content,
+            vec![ToolResultContent::Text(TextContent::new("out"))]
+        );
     }
 }
