@@ -87,6 +87,25 @@ just crosscheck   # run the tau/rho differential harness (tau side only until M4
 CI (`.github/workflows/ci.yml`) runs fmt check, clippy `-D warnings`, and
 `cargo test --workspace` on ubuntu-latest + macos-latest.
 
+## Pull request reviews
+
+Every PR is reviewed by two automated bots: **Codex**
+(`chatgpt-codex-connector`) and **CodeRabbit** (`coderabbitai`). They post inline
+and summary comments, often flagging real parity bugs.
+
+**Before any merge, every bot comment must be resolved — one of:**
+
+- **Fixed** — address it, then reply on that comment's thread with the fix commit
+  SHA.
+- **Rebutted** — reply on the thread with concrete evidence for why it does *not*
+  apply (e.g. a `grep` over `tau/src` showing tau doesn't do the thing either).
+  Byte-compat with tau is the arbiter: matching tau's *actual* behavior beats a
+  plausible-sounding suggestion. Where a rebuttal reflects a deliberate divergence,
+  also record it in the relevant `dev-notes/phase-N.md`.
+
+A bot being rate-limited or slow is not a waiver: re-check the PR for
+newly-posted comments before merging. Do not merge with unresolved bot threads.
+
 ## Dev-notes journal
 
 Each milestone gets a teaching journal entry in `dev-notes/phase-N.md` (voiced like

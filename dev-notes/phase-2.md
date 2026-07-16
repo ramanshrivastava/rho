@@ -127,6 +127,57 @@ payload building, not by the loop. So there is no `JoinSet`; rho ports the `for`
 loop verbatim, and carries `ToolExecutionMode` on the tool for the later layers.
 Behavioral parity meant *not* adding the parallelism the field seems to promise.
 
+## `terminate` is another dead field (like `execution_mode`)
+
+`AgentToolResult` carries `terminate: Option<bool>` (tau `tools.py:27`), and a
+reviewer suggested the loop should end the run when a tool returns
+`terminate: true`. It shouldn't — because **tau's loop never reads it**:
+
+```
+$ grep -rn '\.terminate' tau/src        # → no matches
+$ grep -rn 'terminate'    tau/src        # → only the field definition at tools.py:27
+```
+
+Honoring it in rho would be a behavioral *divergence* from tau, not a fix — the
+same situation as `execution_mode`. rho carries the field for wire parity (a
+tool result with `terminate` must round-trip byte-identically), to be honored
+if and when tau's loop honors it. Until then, a `terminate` result flows through
+the loop exactly like any other: its content/details become the tool-result
+message, and the loop continues.
+
+## `current_signal` is installed eagerly, not on first poll (deliberate)
+
+tau sets `self._current_signal` *inside* the async generator body (`_run`),
+which runs only on the first poll of the returned iterator. So a `cancel()`
+issued after `prompt()` but *before* the first event is pulled is lost in tau
+(the signal isn't installed yet). rho installs the signal **eagerly** in
+`run()`, before returning the stream, so that same early `cancel()` is honored.
+This is a deliberate, arguably-safer divergence — the window is tiny and only
+matters for a caller that cancels a run it hasn't started consuming — but it *is*
+a divergence, noted here so a future byte-diff investigator doesn't mistake it
+for a bug. (The event *stream* is unaffected; this only changes whether a
+pre-consumption `cancel()` takes effect.)
+
+## Cleanup on drop: an RAII guard, not just a generator `finally`
+
+tau's harness cleanup lives in a `finally` (`harness.py:185-190`): on generator
+completion *or* `aclose()` it resets `running`, clears `current_signal`, and —
+if cancelled — repairs interrupted tool calls. Python's async generators run that
+`finally` when the generator is closed, including when a consumer abandons the
+iterator. Rust's `async-stream` does **not**: if the consumer drops the stream at
+a `yield`, the post-loop code never runs. Left unfixed, a UI that abandons a run
+mid-flight would leave `running` stuck `true` forever — every later `prompt()`
+rejected as already-running — with a stale signal and no interrupted-tool repair.
+
+The fix is an RAII guard (`RunCleanup`) captured by the stream: its `Drop` runs
+the cleanup when the stream is dropped (abandoned), and an explicit `.run()` at
+normal exhaustion keeps the timing identical to tau (cleanup at completion), with
+a `done` flag making the eventual drop a no-op. So the cleanup fires exactly once,
+on whichever of {exhaustion, drop} comes first — the Rust rendering of "finally
+runs on close." Two regression tests pin it: dropping mid-run resets `running`
+(and a fresh `prompt()` is accepted), and cancel-then-drop appends the
+`"Tool call interrupted by user"` repair.
+
 ## Progress updates are buffered, then replayed
 
 tau's `_run_tool` gives the tool a synchronous `on_update` callback that appends
