@@ -12,3 +12,7 @@ description = "Portable agent core: messages, events, provider trait, tools, loo
 workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+monostate = { workspace = true }
+thiserror = { workspace = true }
