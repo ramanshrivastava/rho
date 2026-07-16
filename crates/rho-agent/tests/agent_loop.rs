@@ -263,7 +263,10 @@ async fn executes_tool_and_emits_tool_result_message_lifecycle() {
 
 #[tokio::test]
 async fn passes_call_id_signal_and_progress_to_tool() {
-    let observed: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    // Record the (call_id, signal) the tool actually received, so we can assert
+    // the loop threads through the *same* token (tau asserts token identity).
+    type Observed = Vec<(String, Option<Arc<dyn CancellationToken>>)>;
+    let observed: Arc<Mutex<Observed>> = Arc::new(Mutex::new(Vec::new()));
     let observed_clone = observed.clone();
     let execute: ToolExecutor = Arc::new(
         move |id: String,
@@ -273,7 +276,7 @@ async fn passes_call_id_signal_and_progress_to_tool() {
               -> BoxFuture<'static, Result<AgentToolResult, ToolError>> {
             let observed = observed_clone.clone();
             Box::pin(async move {
-                observed.lock().unwrap().push((id, signal.is_some()));
+                observed.lock().unwrap().push((id, signal));
                 on_update(AgentToolResult::new(vec![ToolResultContent::Text(
                     TextContent::new("working"),
                 )]));
@@ -304,12 +307,18 @@ async fn passes_call_id_signal_and_progress_to_tool() {
         shared(vec![AgentMessage::User(UserMessage::new("work"))]),
         vec![tool("work", execute)],
     );
-    config.signal = Some(signal);
+    config.signal = Some(signal.clone());
     let events = collect(config).await;
 
-    assert_eq!(
-        observed.lock().unwrap().clone(),
-        vec![("call-1".to_string(), true)]
+    // The tool was called once, with the call id and the *same* signal token the
+    // loop was given (identity, not merely presence — tau asserts `== signal`).
+    let observed = observed.lock().unwrap();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].0, "call-1");
+    let received = observed[0].1.as_ref().expect("tool received a signal");
+    assert!(
+        Arc::ptr_eq(received, &signal),
+        "tool must receive the exact signal token the loop was given"
     );
     let updates: Vec<String> = events
         .iter()
