@@ -366,9 +366,26 @@ pub enum StopReason {
 // Diagnostics
 // ---------------------------------------------------------------------------
 
+/// A diagnostic error code — tau's `str | int | None` (`code`).
+///
+/// An untagged enum so the wire is constrained to exactly a JSON **string** or
+/// **integer**, matching tau's `str | int`: a float, array, or object is
+/// rejected (as tau's Pydantic union rejects them). `Int` leads `Str` so a
+/// numeric literal decodes as an integer. (One Pydantic quirk this deliberately
+/// does *not* reproduce: tau coerces a bare `true` to `1`. tau never *emits* a
+/// bool code — it would already be `1` on the wire — so a tau-authored session
+/// never carries one, and rejecting `true` is strictly safe here.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DiagnosticCode {
+    /// Integer error code.
+    Int(i64),
+    /// String error code.
+    Str(String),
+}
+
 /// Structured error attached to an assistant diagnostic (tau
-/// `AssistantDiagnosticError`). `code` is `str | int | None`, modeled as an
-/// optional free-form JSON value.
+/// `AssistantDiagnosticError`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssistantDiagnosticError {
@@ -380,9 +397,9 @@ pub struct AssistantDiagnosticError {
     /// Optional stack trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<String>,
-    /// Optional error code (string or integer).
+    /// Optional error code — a string or integer only (tau `str | int | None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<JsonValue>,
+    pub code: Option<DiagnosticCode>,
 }
 
 /// A per-response diagnostic record (tau `AssistantMessageDiagnostic`).
@@ -1095,6 +1112,43 @@ mod tests {
         let json = r#"{"role":"user","content":"plain","timestamp":1}"#;
         let m: AgentMessage = serde_json::from_str(json).unwrap();
         assert_eq!(serde_json::to_string(&m).unwrap(), json);
+    }
+
+    #[test]
+    fn diagnostic_code_accepts_string_or_int_only() {
+        // tau types `code` as `str | int | None`. A string or integer is accepted
+        // and round-trips; a float/array/object is rejected (verified empirically
+        // against tau, which raises ValidationError for these).
+        let parse = |code: &str| -> Result<AssistantDiagnosticError, _> {
+            serde_json::from_str(&format!(r#"{{"message":"m","code":{code}}}"#))
+        };
+
+        assert_eq!(
+            parse(r#""E429""#).unwrap().code,
+            Some(DiagnosticCode::Str("E429".into()))
+        );
+        assert_eq!(parse("429").unwrap().code, Some(DiagnosticCode::Int(429)));
+        // Absent → None.
+        let none: AssistantDiagnosticError = serde_json::from_str(r#"{"message":"m"}"#).unwrap();
+        assert_eq!(none.code, None);
+
+        // Rejected shapes (tau rejects these too).
+        assert!(
+            parse(r#"{"provider":"x"}"#).is_err(),
+            "object code must reject"
+        );
+        assert!(parse("[1,2]").is_err(), "array code must reject");
+        assert!(parse("3.5").is_err(), "float code must reject");
+        assert!(parse("true").is_err(), "bool code must reject");
+
+        // Round-trip: string and int emit as themselves (byte-preserving).
+        for wire in [
+            r#"{"message":"m","code":"E1"}"#,
+            r#"{"message":"m","code":7}"#,
+        ] {
+            let d: AssistantDiagnosticError = serde_json::from_str(wire).unwrap();
+            assert_eq!(serde_json::to_string(&d).unwrap(), wire);
+        }
     }
 
     #[test]
