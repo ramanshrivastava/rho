@@ -1,0 +1,1 @@
+{"id":"R1","timestamp":1731234567.0,"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"api":"unknown","provider":"unknown","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":1731234567890}}
