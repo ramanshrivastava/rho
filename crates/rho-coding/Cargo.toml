@@ -1,0 +1,16 @@
+[package]
+name = "rho-coding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Coding agent: tools, CodingSession, commands, skills, catalog, oauth, export, rendering."
+
+[lints]
+workspace = true
+
+[dependencies]
+rho-agent = { path = "../rho-agent" }
+rho-ai = { path = "../rho-ai" }

@@ -1,0 +1,15 @@
+[package]
+name = "rho-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Provider adapters and model streaming layer (Anthropic, OpenAI, Codex, Google, Mistral, fake)."
+
+[lints]
+workspace = true
+
+[dependencies]
+rho-agent = { path = "../rho-agent" }

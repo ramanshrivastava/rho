@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rho-agent",
+    "crates/rho-ai",
+    "crates/rho-coding",
+    "crates/rho-tui",
+    "crates/rho-ext-host",
+    "crates/rho-ext-api",
+    "crates/rho",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.0"
+license = "MIT"
+authors = ["The rho authors"]
+repository = "https://github.com/huggingface/tau"
+rust-version = "1.85"
+
+# Full-parity Rust port of the `tau` Python coding agent. Every crate below maps
+# onto a tau package; see AGENTS.md for the layering contract and dev-notes/ for
+# the milestone journal.
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+    "socks",
+    "json",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+monostate = "0.1"
+async-stream = "0.3"
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+async-trait = "0.1"
+toml = "0.8"
+
+# Lints applied across every member crate. Clippy runs at pedantic with a small
+# set of pragmatic allows; CI treats all warnings as errors (`-D warnings`).
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Selectively relaxed pedantic lints that fight a faithful byte-compat port.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
