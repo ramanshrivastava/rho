@@ -28,6 +28,23 @@
 //! untagged deserialization tries them in order; correctness does not depend on
 //! the order (monostate guarantees exactly one match), only speed.
 //!
+//! ## Defaulted discriminators and timestamps (M2 parity refinement)
+//!
+//! tau's message `timestamp` fields are `Field(default_factory=current_timestamp_ms)`
+//! and its content-block `type` discriminators are `Literal["…"] = "…"` — both
+//! *defaulted*, so tau **accepts** a message with no `timestamp` and a content
+//! block with no `type` (its constructors and the legacy migration both produce
+//! such shapes). M1 only exercised fixtures that always carried these fields, so
+//! it modeled them as required; M2 restores the defaults it needs to accept
+//! tau's convenience shapes: message `timestamp` carries
+//! `#[serde(default = "current_timestamp_ms")]`, and the *plain-union* content
+//! blocks ([`TextContent`], [`ThinkingContent`], [`ImageContent`], [`ToolCall`])
+//! carry `#[serde(default)]` on their `MustBe!` discriminator (which still
+//! *rejects* a wrong value when present). The `role` discriminators are left
+//! required — tau's `AgentMessage` is a `Field(discriminator="role")` union that
+//! requires the tag. None of this changes byte output: every field is always
+//! serialized, so the defaults only widen input acceptance.
+//!
 //! ## The `_to_camel` digit trap
 //!
 //! tau's `_to_camel` title-cases every non-first underscore segment, so
@@ -195,7 +212,7 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextContent {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     kind: MustBe!("text"),
     /// The text.
     pub text: String,
@@ -219,7 +236,7 @@ impl TextContent {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThinkingContent {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     kind: MustBe!("thinking"),
     /// The reasoning text.
     pub thinking: String,
@@ -238,7 +255,7 @@ pub struct ThinkingContent {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageContent {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     kind: MustBe!("image"),
     /// Base64-encoded image bytes.
     pub data: String,
@@ -250,7 +267,7 @@ pub struct ImageContent {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolCall {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     kind: MustBe!("toolCall"),
     /// Provider-assigned call id.
     pub id: String,
@@ -376,6 +393,7 @@ pub struct AssistantMessageDiagnostic {
     #[serde(rename = "type")]
     pub diagnostic_type: String,
     /// Diagnostic timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
     /// Optional structured error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,6 +415,7 @@ pub struct UserMessage {
     /// Message content (string or blocks).
     pub content: UserContent,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
 }
 
@@ -442,6 +461,7 @@ pub struct AssistantMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
 }
 
@@ -477,6 +497,7 @@ pub struct ToolResultMessage {
     #[serde(default)]
     pub is_error: bool,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
 }
 
@@ -502,6 +523,7 @@ pub struct BashExecutionMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_output_path: Option<String>,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
     /// Whether to exclude this execution from model context.
     #[serde(default)]
@@ -524,6 +546,7 @@ pub struct CustomMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<JsonValue>,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
 }
 
@@ -541,6 +564,7 @@ pub struct BranchSummaryMessage {
     /// Entry id the summarized branch started from.
     pub from_id: String,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
 }
 
@@ -554,6 +578,7 @@ pub struct CompactionSummaryMessage {
     /// Token count before compaction.
     pub tokens_before: i64,
     /// Timestamp (Unix ms).
+    #[serde(default = "current_timestamp_ms")]
     pub timestamp: i64,
 }
 
@@ -578,6 +603,35 @@ pub enum AgentMessage {
     BranchSummary(BranchSummaryMessage),
     /// Compaction summary.
     CompactionSummary(CompactionSummaryMessage),
+}
+
+impl AgentMessage {
+    /// The wire `role` discriminator string (tau's `message.role`).
+    #[must_use]
+    pub fn role(&self) -> &'static str {
+        match self {
+            Self::User(_) => "user",
+            Self::Assistant(_) => "assistant",
+            Self::ToolResult(_) => "toolResult",
+            Self::BashExecution(_) => "bashExecution",
+            Self::Custom(_) => "custom",
+            Self::BranchSummary(_) => "branchSummary",
+            Self::CompactionSummary(_) => "compactionSummary",
+        }
+    }
+
+    /// Concatenated text for the message kinds that expose `.text` in tau
+    /// (`user`/`assistant`/`toolResult`/`custom`); empty string otherwise.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::User(m) => m.text(),
+            Self::Assistant(m) => m.text(),
+            Self::ToolResult(m) => m.text(),
+            Self::Custom(m) => m.text(),
+            _ => String::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -610,6 +664,36 @@ impl From<Vec<UserContentBlock>> for UserContent {
     }
 }
 
+/// Concatenated text of a [`UserContent`] (tau's `content_text`): the string
+/// itself, or every text block joined.
+#[must_use]
+pub fn content_text(content: &UserContent) -> String {
+    match content {
+        UserContent::Text(s) => s.clone(),
+        UserContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                UserContentBlock::Text(t) => Some(t.text.as_str()),
+                UserContentBlock::Image(_) => None,
+            })
+            .collect(),
+    }
+}
+
+impl ToolCall {
+    /// Build a tool call (tau `ToolCall(id=, name=, arguments=)`); the `type`
+    /// discriminator and `thought_signature` default (`toolCall` / `None`).
+    pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: JsonMap) -> Self {
+        Self {
+            kind: MustBe!("toolCall"),
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            thought_signature: None,
+        }
+    }
+}
+
 impl UserMessage {
     /// Build a user message with the current timestamp.
     pub fn new(content: impl Into<UserContent>) -> Self {
@@ -618,6 +702,12 @@ impl UserMessage {
             content: content.into(),
             timestamp: current_timestamp_ms(),
         }
+    }
+
+    /// Concatenated text of the message content (tau's `.text`).
+    #[must_use]
+    pub fn text(&self) -> String {
+        content_text(&self.content)
     }
 }
 
@@ -695,6 +785,43 @@ impl AssistantMessage {
         self.response_id = Some(response_id.into());
         self
     }
+
+    /// Concatenated text of every [`TextContent`] block (tau's `.text`).
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                AssistantContent::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Concatenated text of every [`ThinkingContent`] block (tau's
+    /// `.thinking_text`).
+    #[must_use]
+    pub fn thinking_text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                AssistantContent::Thinking(t) => Some(t.thinking.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The tool-call blocks in order (tau's `.tool_calls`).
+    #[must_use]
+    pub fn tool_calls(&self) -> Vec<ToolCall> {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                AssistantContent::ToolCall(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 impl Default for AssistantMessage {
@@ -736,6 +863,18 @@ impl ToolResultMessage {
             timestamp: current_timestamp_ms(),
         }
     }
+
+    /// Concatenated text of every [`TextContent`] block (tau's `.text`).
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|b| match b {
+                ToolResultContent::Text(t) => Some(t.text.as_str()),
+                ToolResultContent::Image(_) => None,
+            })
+            .collect()
+    }
 }
 
 impl BashExecutionMessage {
@@ -767,6 +906,14 @@ impl CustomMessage {
             details: None,
             timestamp: current_timestamp_ms(),
         }
+    }
+}
+
+impl CustomMessage {
+    /// Concatenated text of the message content (tau's `.text`).
+    #[must_use]
+    pub fn text(&self) -> String {
+        content_text(&self.content)
     }
 }
 

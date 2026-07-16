@@ -251,6 +251,41 @@ pub enum SessionEntry {
     Custom(CustomEntry),
 }
 
+impl SessionEntry {
+    /// The entry's unique id (present on every variant via `BaseSessionEntry`).
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Message(e) => &e.id,
+            Self::ModelChange(e) => &e.id,
+            Self::ThinkingLevelChange(e) => &e.id,
+            Self::Compaction(e) => &e.id,
+            Self::BranchSummary(e) => &e.id,
+            Self::Label(e) => &e.id,
+            Self::Leaf(e) => &e.id,
+            Self::SessionInfo(e) => &e.id,
+            Self::Custom(e) => &e.id,
+        }
+    }
+
+    /// The entry's parent id, if any (absent for roots).
+    #[must_use]
+    pub fn parent_id(&self) -> Option<&str> {
+        let parent = match self {
+            Self::Message(e) => &e.parent_id,
+            Self::ModelChange(e) => &e.parent_id,
+            Self::ThinkingLevelChange(e) => &e.parent_id,
+            Self::Compaction(e) => &e.parent_id,
+            Self::BranchSummary(e) => &e.parent_id,
+            Self::Label(e) => &e.parent_id,
+            Self::Leaf(e) => &e.parent_id,
+            Self::SessionInfo(e) => &e.parent_id,
+            Self::Custom(e) => &e.parent_id,
+        };
+        parent.as_deref()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Constructors
 // ---------------------------------------------------------------------------
