@@ -47,6 +47,12 @@ resumes in rho and vice versa. This is enforced, not aspirational: the
 serialization code (pinned at [`fixtures/TAU_REV`](fixtures/TAU_REV)), and every
 wire type must round-trip **byte-identically** in CI.
 
+This compatibility is delivered **milestone by milestone** — see [Status](#status)
+below for exactly what is covered today. The wire types (M1) and the agent
+loop / session state (M2) are byte-golden now; provider I/O, the coding tools,
+and the full CLI land in later milestones, so end-to-end tau session resume is
+not yet available from the `rho` binary.
+
 ## Architecture
 
 Three layers with a strict dependency direction, enforced by Cargo's acyclic
@@ -72,8 +78,8 @@ Ported milestone by milestone, gated on golden-fixture parity with tau:
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Workspace scaffold + golden fixtures extracted from tau | ✅ |
-| M1 | Wire types with byte-identical serde | 🚧 |
-| M2 | Agent loop, harness, session tree, fake provider | ⏳ |
+| M1 | Wire types with byte-identical serde | ✅ |
+| M2 | Agent loop, harness, session tree, fake provider | 🚧 |
 | M3 | All six providers (anthropic, openai-compatible, codex, google, mistral, fake) | ⏳ |
 | M4 | Coding tools, print-mode CLI, full `CodingSession` | ⏳ |
 | M5 | ratatui TUI (parity with tau's Textual TUI) | ⏳ |
