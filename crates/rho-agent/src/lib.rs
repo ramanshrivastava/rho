@@ -27,8 +27,15 @@
 //! Cargo's acyclic dependency graph enforces what tau could only document,
 //! dissolving the historical `tau_agent` ↔ `tau_ai` import cycle.
 
+#[path = "loop.rs"]
+pub mod agent_loop;
+pub mod clock;
 pub mod events;
+#[cfg(feature = "fake")]
+pub mod fake;
+pub mod harness;
 pub mod messages;
+pub mod provider;
 pub mod provider_events;
 pub mod session;
 pub mod tools;

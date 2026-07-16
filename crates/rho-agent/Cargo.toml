@@ -11,9 +11,23 @@ description = "Portable agent core: messages, events, provider trait, tools, loo
 [lints]
 workspace = true
 
+[features]
+# `fake` exposes the scriptable `FakeProvider` test double (tau puts it in
+# `tau_ai`, but rho-agent must not depend on rho-ai; see `fake.rs`). It is a
+# public util so rho-ai/rho-coding tests and the golden harness can drive it.
+default = ["fake"]
+fake = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 monostate = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
