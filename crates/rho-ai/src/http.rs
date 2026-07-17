@@ -47,11 +47,24 @@ pub fn normalize_proxy_url(proxy_url: &str) -> String {
 /// Build a streaming HTTP client with tau's proxy normalization applied
 /// (tau `create_async_client`).
 ///
-/// `timeout_seconds` bounds the whole request; provider adapters stream the
-/// response body incrementally within that budget, matching tau's httpx timeout.
+/// ## Timeout is per-read, not a total deadline
+///
+/// tau passes a bare float to httpx (`httpx.AsyncClient(timeout=...)`), which
+/// httpx applies as a per-operation timeout whose **read** clock resets on every
+/// received chunk — so a long SSE stream never trips it as long as chunks keep
+/// arriving. reqwest's client-level `.timeout()` is instead a *total* deadline
+/// spanning full body consumption, which would abort a routine multi-minute
+/// reasoning stream mid-flight. So we map tau's timeout to reqwest's
+/// [`ClientBuilder::read_timeout`] (per-read, matching httpx's read clock) plus a
+/// `connect_timeout`, and set **no** total timeout.
 pub fn create_client(timeout_seconds: f64) -> reqwest::Client {
+    let timeout = Duration::from_secs_f64(timeout_seconds);
     let mut builder = reqwest::Client::builder()
-        .timeout(Duration::from_secs_f64(timeout_seconds))
+        .read_timeout(timeout)
+        .connect_timeout(timeout)
+        // httpx defaults `follow_redirects=False`; reqwest follows up to 10 by
+        // default, so disable redirects to match tau.
+        .redirect(reqwest::redirect::Policy::none())
         // Take explicit control of proxies (see below) instead of reqwest's
         // auto-detection, so the generic `socks://` scheme is normalized first.
         .no_proxy();

@@ -226,6 +226,51 @@ fn tool_to_codex(tool: &AgentTool) -> Value {
     })
 }
 
+/// The Codex `User-Agent` header, reproducing tau's
+/// `f"tau ({system()} {release()}; {machine()})"` where `system`/`release`/
+/// `machine` are Python's `platform` values (`Darwin`/`Linux`, the kernel
+/// release, `arm64`/`x86_64`). Rust's `std::env::consts` gives the wrong tokens
+/// (`macos`/`unix`/`aarch64`), and `libc::uname` needs `unsafe` (forbidden), so
+/// we shell out to `uname` and cache the result process-wide.
+fn codex_user_agent() -> &'static str {
+    use std::sync::OnceLock;
+    static UA: OnceLock<String> = OnceLock::new();
+    UA.get_or_init(|| {
+        // `platform.system()` == `uname -s`, `.release()` == `uname -r`,
+        // `.machine()` == `uname -m` on every POSIX platform Codex runs on.
+        let field = |flag: &str, fallback: &str| -> String {
+            std::process::Command::new("uname")
+                .arg(flag)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| fallback.to_string())
+        };
+        // Fallbacks map Rust's consts onto Python's platform vocabulary in case
+        // `uname` is unavailable (e.g. Windows), so the header stays well-formed.
+        let system = field(
+            "-s",
+            match std::env::consts::OS {
+                "macos" => "Darwin",
+                "linux" => "Linux",
+                other => other,
+            },
+        );
+        let release = field("-r", "");
+        let machine = field(
+            "-m",
+            match std::env::consts::ARCH {
+                "aarch64" => "arm64",
+                other => other,
+            },
+        );
+        format!("tau ({system} {release}; {machine})")
+    })
+}
+
 fn build_codex_headers(
     configured: Option<&crate::types::HeaderList>,
     access_token: &str,
@@ -239,15 +284,7 @@ fn build_codex_headers(
     ));
     headers.push(("chatgpt-account-id".to_string(), account_id.to_string()));
     headers.push(("originator".to_string(), originator.to_string()));
-    headers.push((
-        "User-Agent".to_string(),
-        format!(
-            "tau ({} {}; {})",
-            std::env::consts::OS,
-            std::env::consts::FAMILY,
-            std::env::consts::ARCH
-        ),
-    ));
+    headers.push(("User-Agent".to_string(), codex_user_agent().to_string()));
     headers.push((
         "OpenAI-Beta".to_string(),
         "responses=experimental".to_string(),
@@ -797,6 +834,18 @@ mod tests {
             parser.emitted_content(),
             "fallback text must set emitted_content"
         );
+    }
+
+    /// The User-Agent reproduces tau's `tau (system release; machine)` shape.
+    #[test]
+    fn user_agent_has_tau_platform_shape() {
+        let ua = codex_user_agent();
+        assert!(ua.starts_with("tau ("), "got {ua}");
+        assert!(ua.ends_with(')'), "got {ua}");
+        assert!(ua.contains("; "), "machine separator missing: {ua}");
+        // The wrong Rust-consts tokens must not appear (Python uses Darwin/Linux,
+        // the kernel release, and arm64/x86_64 — never `unix`/`aarch64`).
+        assert!(!ua.contains("unix"), "FAMILY leaked into UA: {ua}");
     }
 
     /// A non-terminal object flushed at EOF still gets a trailing `End`.

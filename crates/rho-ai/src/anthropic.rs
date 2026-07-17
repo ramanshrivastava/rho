@@ -74,57 +74,21 @@ impl ModelProvider for AnthropicProvider {
         let payload = build_messages_payload(&self.config, model, system, messages, tools);
         let config = self.config.clone();
         let client = self.client.clone();
+        // tau resolves the Anthropic credential once, before the retry loop
+        // (anthropic.py:95-102); memoize it across the engine's per-attempt fetch.
+        let resolved: Arc<tokio::sync::OnceCell<(String, crate::types::HeaderList)>> =
+            Arc::new(tokio::sync::OnceCell::new());
 
         let fetch = move |_attempt: u32| {
             let config = config.clone();
             let client = client.clone();
             let payload = payload.clone();
+            let resolved = resolved.clone();
             async move {
-                let mut api_key = config.api_key.clone();
-                let mut base_url = config.base_url.clone();
-                let mut headers = config.headers.clone().unwrap_or_default();
-                if let Some(resolver) = &config.credential_resolver {
-                    let auth = resolver()
-                        .await
-                        .map_err(|message| crate::engine::FetchError {
-                            message,
-                            retryable: false,
-                        })?;
-                    api_key = auth.api_key;
-                    if let Some(base) = auth.base_url {
-                        let mut b = base.trim_end_matches('/').to_string();
-                        if !b.ends_with("/v1") {
-                            b = format!("{b}/v1");
-                        }
-                        base_url = b;
-                    }
-                    if let Some(extra) = auth.headers {
-                        headers.extend(extra);
-                    }
-                }
-                // tau builds headers in this order: anthropic-version, content-type,
-                // configured headers, auth headers, then x-api-key / Authorization.
-                let mut request_headers: crate::types::HeaderList = vec![
-                    (
-                        "anthropic-version".to_string(),
-                        ANTHROPIC_VERSION.to_string(),
-                    ),
-                    ("content-type".to_string(), "application/json".to_string()),
-                ];
-                request_headers.extend(headers);
-                if config.bearer_auth {
-                    if !request_headers
-                        .iter()
-                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-                    {
-                        request_headers
-                            .push(("Authorization".to_string(), format!("Bearer {api_key}")));
-                    }
-                } else {
-                    request_headers.push(("x-api-key".to_string(), api_key));
-                }
-                let url = format!("{}/messages", base_url.trim_end_matches('/'));
-                send_reqwest(&client, &url, &request_headers, &payload).await
+                let (url, headers) = resolved
+                    .get_or_try_init(|| resolve_anthropic_request(&config))
+                    .await?;
+                send_reqwest(&client, url, headers, &payload).await
             }
         };
 
@@ -141,6 +105,56 @@ impl ModelProvider for AnthropicProvider {
             |status, _body| is_transient_status(status),
         )
     }
+}
+
+/// Resolve the Anthropic request URL + headers once (tau's pre-loop resolution).
+async fn resolve_anthropic_request(
+    config: &AnthropicConfig,
+) -> Result<(String, crate::types::HeaderList), crate::engine::FetchError> {
+    let mut api_key = config.api_key.clone();
+    let mut base_url = config.base_url.clone();
+    let mut headers = config.headers.clone().unwrap_or_default();
+    if let Some(resolver) = &config.credential_resolver {
+        let auth = resolver()
+            .await
+            .map_err(|message| crate::engine::FetchError {
+                message,
+                retryable: false,
+            })?;
+        api_key = auth.api_key;
+        if let Some(base) = auth.base_url {
+            let mut b = base.trim_end_matches('/').to_string();
+            if !b.ends_with("/v1") {
+                b = format!("{b}/v1");
+            }
+            base_url = b;
+        }
+        if let Some(extra) = auth.headers {
+            headers.extend(extra);
+        }
+    }
+    // tau builds headers in this order: anthropic-version, content-type,
+    // configured headers, auth headers, then x-api-key / Authorization.
+    let mut request_headers: crate::types::HeaderList = vec![
+        (
+            "anthropic-version".to_string(),
+            ANTHROPIC_VERSION.to_string(),
+        ),
+        ("content-type".to_string(), "application/json".to_string()),
+    ];
+    request_headers.extend(headers);
+    if config.bearer_auth {
+        if !request_headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        {
+            request_headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+        }
+    } else {
+        request_headers.push(("x-api-key".to_string(), api_key));
+    }
+    let url = format!("{}/messages", base_url.trim_end_matches('/'));
+    Ok((url, request_headers))
 }
 
 // ---------------------------------------------------------------------------

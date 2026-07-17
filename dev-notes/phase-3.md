@@ -219,6 +219,39 @@ validate the live path when that lands:
    turn; force a terminal 429 (a `GoUsageLimitError`-class body) and confirm it is
    **not** retried (`openai_codex::is_terminal_rate_limit`).
 
+## Two deliberate, documented divergences
+
+**Error-diagnostic timestamp.** tau stamps a `provider_error` diagnostic's
+`timestamp` with `default_factory=current_timestamp_ms` *at the moment the error
+is observed*. rho's accumulator instead stamps it with the response's
+stream-start timestamp (the same clock value it stamps every `partial`/`done`).
+For a real wall clock the two differ by the stream's duration; under the frozen
+fixture clock they're identical, which is what the `error.events.jsonl` golden
+pins. This is deliberate: one clock read per response keeps every event in a
+response internally consistent and the goldens deterministic, and the exact
+sub-second observe-time of an error carries no downstream meaning.
+
+**No response compression.** tau's httpx negotiates gzip/brotli via `Accept-Encoding`
+and transparently decompresses. rho builds reqwest **without** the `gzip`/`brotli`
+features, so it doesn't advertise or decode compressed bodies. This is benign for
+SSE — providers stream `text/event-stream` uncompressed, and every fixture is raw
+SSE — so it doesn't affect any golden. Worth revisiting only if a compressing
+proxy is ever forced in front of a provider.
+
+## Timeout is per-read, not total
+
+A subtle but important httpx→reqwest translation: tau passes a bare float to
+`httpx.AsyncClient(timeout=...)`, which httpx applies as a per-operation timeout
+whose read clock **resets on every received chunk** — so a multi-minute reasoning
+stream never trips it as long as bytes keep flowing. reqwest's client-level
+`.timeout()` is a *total* deadline over full body consumption and would abort such
+a stream mid-flight. So `create_client` maps tau's timeout onto reqwest's
+`read_timeout` (per-read, matching httpx) plus a `connect_timeout`, with no total
+timeout — and disables redirects (`Policy::none()`) to match httpx's
+`follow_redirects=False`. A regression test (`tests/streaming.rs`) drives a stream
+whose *total* time exceeds the timeout but whose per-chunk gaps stay under it, and
+asserts it completes.
+
 ## reqwest / rustls / socks
 
 The workspace pins `reqwest` with `rustls-tls` (no OpenSSL), `stream`, `socks`,
