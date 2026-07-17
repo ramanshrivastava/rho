@@ -12,4 +12,16 @@ description = "Provider adapters and model streaming layer (Anthropic, OpenAI, C
 workspace = true
 
 [dependencies]
-rho-agent = { path = "../rho-agent" }
+rho-agent = { path = "../rho-agent", features = ["fake"] }
+serde_json = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+reqwest = { workspace = true }
+bytes = "1"
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+mock-provider = { path = "../../tools/mock-provider" }
