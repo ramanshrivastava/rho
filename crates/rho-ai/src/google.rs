@@ -66,7 +66,7 @@ impl ModelProvider for GoogleGenerativeAIProvider {
         tools: &[AgentTool],
         signal: Option<Arc<dyn CancellationToken>>,
     ) -> AssistantEventStream {
-        let payload = build_google_payload(&self.config, system, messages, tools);
+        let payload = build_google_payload(&self.config, model, system, messages, tools);
         let base_url = self.config.base_url.trim_end_matches('/').to_string();
         let url = format!(
             "{base_url}/models/{model}:streamGenerateContent?alt=sse&key={}",
@@ -111,6 +111,7 @@ impl ModelProvider for GoogleGenerativeAIProvider {
 #[must_use]
 pub fn build_google_payload(
     config: &OpenAICompatibleConfig,
+    model: &str,
     system: &str,
     messages: &[AgentMessage],
     tools: &[AgentTool],
@@ -130,9 +131,9 @@ pub fn build_google_payload(
     if let Some(max_tokens) = config.max_tokens {
         config_map.insert("maxOutputTokens".into(), json!(max_tokens));
     }
-    // Note: `_google_thinking_config` (reasoning-effort → thinkingConfig) is not
-    // exercised by any fixture; it is intentionally deferred (documented in
-    // phase-3) since no golden pins it and it is a large model-name lookup table.
+    if let Some(thinking) = google_thinking_config(model, config.reasoning_effort.as_deref()) {
+        config_map.insert("thinkingConfig".into(), thinking);
+    }
     if !config_map.is_empty() {
         payload.insert("generationConfig".into(), Value::Object(config_map));
     }
@@ -145,6 +146,112 @@ pub fn build_google_payload(
         );
     }
     Value::Object(payload)
+}
+
+/// Reasoning-effort → Gemini `thinkingConfig` (tau `_google_thinking_config`).
+///
+/// Not exercised by any golden (the fixtures set no `reasoning_effort`), but
+/// ported for faithful parity with `google.py`. Key insertion order matches tau
+/// so the payload bytes stay identical.
+fn google_thinking_config(model: &str, reasoning_effort: Option<&str>) -> Option<Value> {
+    let effort = reasoning_effort?;
+    if effort == "none" {
+        if is_gemini3_pro_model(model) {
+            return Some(json!({"thinkingLevel": "LOW"}));
+        }
+        if is_gemini3_flash_model(model) || is_gemma4_model(model) {
+            return Some(json!({"thinkingLevel": "MINIMAL"}));
+        }
+        return Some(json!({"thinkingBudget": 0}));
+    }
+    if matches!(effort, "MINIMAL" | "LOW" | "MEDIUM" | "HIGH") {
+        return Some(json!({"includeThoughts": true, "thinkingLevel": effort}));
+    }
+    match google_budget(model, effort) {
+        None => Some(json!({
+            "includeThoughts": true,
+            "thinkingLevel": google_level(model, effort),
+        })),
+        Some(budget) => Some(json!({"includeThoughts": true, "thinkingBudget": budget})),
+    }
+}
+
+fn google_budget(model: &str, effort: &str) -> Option<i64> {
+    let normalized = normalize_effort(effort);
+    if !matches!(normalized.as_str(), "minimal" | "low" | "medium" | "high") {
+        return None;
+    }
+    if is_gemini3_pro_model(model) || is_gemini3_flash_model(model) || is_gemma4_model(model) {
+        return None;
+    }
+    let pick = |minimal: i64, low: i64, medium: i64, high: i64| match normalized.as_str() {
+        "minimal" => minimal,
+        "low" => low,
+        "medium" => medium,
+        _ => high,
+    };
+    if model.contains("2.5-pro") {
+        Some(pick(128, 2048, 8192, 32768))
+    } else if model.contains("2.5-flash-lite") {
+        Some(pick(512, 2048, 8192, 24576))
+    } else if model.contains("2.5-flash") {
+        Some(pick(128, 2048, 8192, 24576))
+    } else {
+        Some(-1)
+    }
+}
+
+fn google_level(model: &str, effort: &str) -> String {
+    let normalized = normalize_effort(effort);
+    if is_gemini3_pro_model(model) {
+        return if matches!(normalized.as_str(), "minimal" | "low") {
+            "LOW"
+        } else {
+            "HIGH"
+        }
+        .to_string();
+    }
+    if is_gemma4_model(model) {
+        return if matches!(normalized.as_str(), "minimal" | "low") {
+            "MINIMAL"
+        } else {
+            "HIGH"
+        }
+        .to_string();
+    }
+    // tau: `{...}.get(normalized, "HIGH")` — "high" and any unknown both map to
+    // "HIGH", so the default arm covers both.
+    match normalized.as_str() {
+        "minimal" => "MINIMAL",
+        "low" => "LOW",
+        "medium" => "MEDIUM",
+        _ => "HIGH",
+    }
+    .to_string()
+}
+
+fn normalize_effort(effort: &str) -> String {
+    let normalized = effort.to_lowercase();
+    if normalized == "xhigh" {
+        "high".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn is_gemini3_pro_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("gemini-3") && m.contains("pro")
+}
+
+fn is_gemini3_flash_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("gemini-3") && m.contains("flash")
+}
+
+fn is_gemma4_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("gemma-4") || m.contains("gemma4")
 }
 
 fn message_to_google(message: &AgentMessage) -> Value {
@@ -336,5 +443,59 @@ fn normalize_finish_reason(reason: Option<&str>, has_tool_calls: bool) -> String
         "length".to_string()
     } else {
         "stop".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thinking_config_matches_tau() {
+        // No effort → no thinkingConfig.
+        assert_eq!(google_thinking_config("gemini-2.5-flash", None), None);
+        // "none" on a 2.5 model → budget 0.
+        assert_eq!(
+            google_thinking_config("gemini-2.5-flash", Some("none")),
+            Some(json!({"thinkingBudget": 0}))
+        );
+        // "none" on gemini-3-pro → thinkingLevel LOW; on flash/gemma-4 → MINIMAL.
+        assert_eq!(
+            google_thinking_config("gemini-3-pro", Some("none")),
+            Some(json!({"thinkingLevel": "LOW"}))
+        );
+        assert_eq!(
+            google_thinking_config("gemini-3-flash", Some("none")),
+            Some(json!({"thinkingLevel": "MINIMAL"}))
+        );
+        // An explicit level literal passes through.
+        assert_eq!(
+            google_thinking_config("gemini-2.5-flash", Some("MEDIUM")),
+            Some(json!({"includeThoughts": true, "thinkingLevel": "MEDIUM"}))
+        );
+        // A named effort maps to a budget on 2.5 models.
+        assert_eq!(
+            google_thinking_config("gemini-2.5-flash", Some("high")),
+            Some(json!({"includeThoughts": true, "thinkingBudget": 24576}))
+        );
+        assert_eq!(
+            google_thinking_config("gemini-2.5-pro", Some("low")),
+            Some(json!({"includeThoughts": true, "thinkingBudget": 2048}))
+        );
+        // xhigh normalizes to high.
+        assert_eq!(
+            google_thinking_config("gemini-2.5-flash-lite", Some("xhigh")),
+            Some(json!({"includeThoughts": true, "thinkingBudget": 24576}))
+        );
+        // gemini-3-pro has no budget table → falls back to a level.
+        assert_eq!(
+            google_thinking_config("gemini-3-pro", Some("high")),
+            Some(json!({"includeThoughts": true, "thinkingLevel": "HIGH"}))
+        );
+        // Unknown model with a named effort → sentinel budget -1.
+        assert_eq!(
+            google_thinking_config("some-model", Some("medium")),
+            Some(json!({"includeThoughts": true, "thinkingBudget": -1}))
+        );
     }
 }

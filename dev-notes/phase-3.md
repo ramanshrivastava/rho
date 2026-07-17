@@ -163,6 +163,14 @@ text, include, tool_choice, parallel_tool_calls, …`. A single transposed key i
 byte diff, so the builders are deliberately written as ordered `Map` inserts, not
 `derive`d structs.
 
+Some payload paths are ported faithfully even though no golden pins them (the
+extraction never set `reasoning_effort`/`max_tokens`): the OpenAI reasoning
+formats, Anthropic's thinking budget/adaptive modes, Mistral's reasoning routing,
+and Google's `thinkingConfig` — the full `_google_thinking_config` model-name
+lookup (gemini-2.5 budgets, gemini-3/gemma-4 levels, the `none`/`xhigh` special
+cases). These are unit-tested against tau's tables rather than a byte fixture,
+but the payload key order still matches tau so a future golden would pass.
+
 One trap the port carries but no golden yet exercises: tau serializes a tool
 call's `arguments` into a **string** via `json.dumps(arguments)` — Python's
 *default* separators (`", "` / `": "`) and `ensure_ascii=True`. That string is
