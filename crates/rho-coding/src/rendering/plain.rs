@@ -55,8 +55,12 @@ impl EventRenderer for FinalTextRenderer {
         self.last_assistant_text = message.text();
         if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
             self.failed = message.stop_reason == StopReason::Error;
+            // tau appends only a truthy `error_message` (an empty string is
+            // falsy and produces no "Error: …" line).
             if let Some(error) = &message.error_message {
-                self.error_messages.push(error.clone());
+                if !error.is_empty() {
+                    self.error_messages.push(error.clone());
+                }
             }
         }
     }

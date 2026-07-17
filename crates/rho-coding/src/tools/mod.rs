@@ -517,10 +517,14 @@ pub fn create_bash_tool_definition(
     shell_command_prefix: Option<&str>,
 ) -> ToolDefinition {
     let root = cwd.to_path_buf();
+    // tau: `prefix = shell_command_prefix.strip() if shell_command_prefix else None`.
+    // Python truthiness: `None`/`""` → `None`; a non-empty string (even
+    // whitespace-only) is truthy and kept as its stripped form — which may be
+    // `""`, but that is still "present" (`shell_command_prefix_applied = True`,
+    // and the bash executable is used).
     let prefix = shell_command_prefix
-        .map(str::trim)
         .filter(|p| !p.is_empty())
-        .map(str::to_string);
+        .map(|p| p.trim().to_string());
     let executor_prefix = prefix.clone();
     let executor: DefinitionExecutor = Arc::new(move |arguments, signal| {
         let root = root.clone();
@@ -773,8 +777,11 @@ fn detect_supported_image_mime_type(path: &Path) -> Option<&'static str> {
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)?;
+    // rho uses a fixed extension→MIME table for the four supported image types
+    // rather than Python's `mimetypes.guess_type` (a large, platform/registry-
+    // dependent database); `.jpe` is the one extra stdlib alias for image/jpeg.
     let mime = match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
+        "jpg" | "jpeg" | "jpe" => "image/jpeg",
         "png" => "image/png",
         "gif" => "image/gif",
         "webp" => "image/webp",

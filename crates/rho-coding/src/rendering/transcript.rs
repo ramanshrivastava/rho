@@ -96,7 +96,9 @@ impl EventRenderer for TranscriptRenderer {
                 let _ = writeln!(self.err, "{status} {}", end.tool_name);
                 let text = end.result.text();
                 if !text.is_empty() {
-                    for line in text.split('\n') {
+                    // tau uses `str.splitlines()`: a trailing newline yields no
+                    // phantom blank line, and `\r\n` leaves no stray `\r`.
+                    for line in crate::pystr::splitlines(&text, false) {
                         let _ = writeln!(self.err, "  {line}");
                     }
                 }
@@ -106,7 +108,13 @@ impl EventRenderer for TranscriptRenderer {
                     if message.stop_reason == StopReason::Error {
                         self.failed = true;
                         self.newline(false);
-                        let msg = message.error_message.as_deref().unwrap_or("Error");
+                        // tau: `error_message or "Error"` — an empty string is
+                        // falsy, so it also falls back to "Error".
+                        let msg = message
+                            .error_message
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("Error");
                         let _ = writeln!(self.err, "Error: {msg}");
                     }
                     self.newline(true);

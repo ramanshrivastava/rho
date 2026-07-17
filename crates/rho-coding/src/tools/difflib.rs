@@ -627,7 +627,10 @@ fn keep_original_ws(s: &str, tag_s: &str) -> String {
     s.chars()
         .zip(tag_s.chars())
         .map(|(c, tag_c)| {
-            if tag_c == ' ' && c.is_whitespace() {
+            // tau: `c if tag_c == " " and c.isspace() else tag_c` — Python
+            // `str.isspace`, which includes the C0 separators Rust's
+            // `char::is_whitespace` omits.
+            if tag_c == ' ' && crate::pystr::is_python_space(c) {
                 c
             } else {
                 tag_c
@@ -637,10 +640,9 @@ fn keep_original_ws(s: &str, tag_s: &str) -> String {
 }
 
 fn qformat(out: &mut Vec<String>, aline: &str, bline: &str, atags: &str, btags: &str) {
-    let atags = keep_original_ws(aline, atags);
-    let atags = atags.trim_end();
-    let btags = keep_original_ws(bline, btags);
-    let btags = btags.trim_end();
+    // tau: `_keep_original_ws(...).rstrip()` — Python `str.rstrip()` whitespace.
+    let atags = crate::pystr::py_rstrip(&keep_original_ws(aline, atags));
+    let btags = crate::pystr::py_rstrip(&keep_original_ws(bline, btags));
 
     out.push(format!("- {aline}"));
     if !atags.is_empty() {

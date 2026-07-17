@@ -283,6 +283,30 @@ async fn bash_tool_timeout_fires_when_streams_close_before_exit() {
 }
 
 #[tokio::test]
+async fn bash_tool_timeout_fires_when_backgrounded_child_holds_pipe() {
+    // Regression (team-lead HIGH): a backgrounded fd-inheriting child keeps the
+    // output pipe open after the shell exits at t≈0. The timeout must still fire
+    // against the *whole* communicate (exit + drain), not hang on the drain.
+    let dir = tempfile::tempdir().unwrap();
+    let tool = create_bash_tool(dir.path(), None);
+
+    let start = Instant::now();
+    let result = run(
+        &tool,
+        serde_json::json!({"command": "sleep 30 &", "timeout": 1.0}),
+    )
+    .await
+    .unwrap();
+    let duration = start.elapsed();
+
+    assert_eq!(result.details.as_ref().unwrap()["timed_out"], true);
+    assert!(
+        duration.as_secs_f64() < 5.0,
+        "timeout did not fire; drain hung ({duration:?})"
+    );
+}
+
+#[tokio::test]
 async fn bash_tool_cancellation_kills_shell_children() {
     let dir = tempfile::tempdir().unwrap();
     let tool = Arc::new(create_bash_tool(dir.path(), None));

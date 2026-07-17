@@ -157,6 +157,67 @@ stderr, matching what `rich` emits to a non-TTY (which is what the tau tests
 observe). Custom-message rendering (extensions) is the one transcript branch left
 for M4b.
 
+## Review-round refinements (parity corrections)
+
+A post-implementation review surfaced several places where the first cut was
+plausible but not tau-exact. All now match tau:
+
+- **`bash` timeout across the whole `communicate`.** The completion signal is
+  *process exit **and** pipe drain*, raced as one future against the deadline,
+  and resumed after `killpg`. Two shapes both hang a naive "race the pipe read"
+  or "race only `wait()`" design: a command that closes its streams before
+  exiting (`exec >/dev/null 2>&1; sleep 60`) reaches EOF early, and one that
+  backgrounds an fd-inheriting child (`sleep 30 &`) exits at t≈0 but leaves the
+  drain blocked. tau enforces the timeout across the entire `communicate()` via
+  `asyncio.wait(timeout=...)`; rho now mirrors that (regression tests:
+  `bash_tool_timeout_fires_when_streams_close_before_exit`,
+  `…_when_backgrounded_child_holds_pipe`).
+- **stdin is inherited**, not forced to `/dev/null` (tau does not redirect it).
+- **Shell-prefix truthiness.** tau: `prefix = shell_command_prefix.strip() if
+  shell_command_prefix else None`. `None`/`""` → `None`; a whitespace-only
+  string is *truthy* and kept as its stripped (possibly empty) form, so
+  `shell_command_prefix_applied` stays `True` and the bash executable is used.
+  The first cut dropped whitespace-only prefixes to `None`.
+- **Error-message truthiness.** `error_message or "Error"` (transcript) and
+  `if error_message:` (plain) treat an empty string as falsy — an empty error
+  renders as `Error: Error` / no line, not `Error:` / an empty push.
+- **Transcript tool-result lines use `str.splitlines()`**, so a trailing newline
+  no longer adds a phantom blank line and `\r\n` leaves no stray `\r`.
+- **Malformed-call fallback uses Python `str(dict)` repr**, not JSON — single
+  quotes with Python quote-selection/escapes, `True`/`False`/`None`, `1.0`.
+  Implemented as a shared `pystr::python_repr` (unit-tested against tau's
+  `str(dict)` output) because M4b's token estimator needs the same helper.
+- **`str.isspace` / `str.rstrip`** (C0 separators `\x1c`–`\x1f`) drive
+  difflib's `_keep_original_ws`/`_qformat`, matching tau's diff-detail bytes.
+- **CLI**: the long flag is `--output` (tau `cli.py`), and a provider/config
+  error exits **2** (tau's `BadParameter`) while a non-recoverable run exits 1.
+
+### Documented divergences / notes for later
+
+- **Fixed MIME table vs `mimetypes`.** `read` detects the four supported image
+  types (jpeg/png/gif/webp, incl. the `.jpe` alias) with a small fixed
+  extension table rather than Python's `mimetypes.guess_type`, whose result is a
+  large, platform/registry-dependent database. Only the four supported types can
+  ever change the tool's behavior (everything else falls to the text path), so
+  the table is complete for parity purposes.
+- **UTC vs local date.** `Date::today()` uses UTC; tau's `date.today()` is local
+  time. This only shifts the production-mode `Current date:` line near midnight
+  and never affects a golden (which always pins `current_date`). Revisit if a
+  locale-sensitive date ever matters.
+- **Dropped-future cleanup (for M4b).** rho's `bash` subprocess resumes and
+  reaps its child on the timeout/cancel path, but a future that is *dropped*
+  mid-run (e.g. a UI abandoning a turn) relies on tokio's default
+  drop-without-`kill_on_drop`, so a still-running group would linger. tau defends
+  the analogous case with a `CancelledError` handler in
+  `_communicate_with_cancellation`. When M4b wires the harness/session cancel
+  path, add an RAII guard (or `kill_on_drop`) so an abandoned bash run kills its
+  group — same shape as the M2 harness `RunCleanup` guard.
+- **Off-TTY 80-col wrap.** tau's transcript stderr goes through a `rich`
+  `Console`, which soft-wraps at 80 columns even off-TTY; rho writes unwrapped
+  plain lines. This affects only the human-facing transcript (never the JSON
+  crosscheck or any golden). Deferred; revisit with the M5 TUI work where the
+  `rich`/ratatui width handling is ported properly.
+
 ## Deferred to M4b
 
 `CodingSession` and everything it owns: session persistence + `--session`,
