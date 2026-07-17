@@ -251,6 +251,21 @@ pub struct ThinkingContent {
     pub redacted: bool,
 }
 
+impl ThinkingContent {
+    /// Build a plain reasoning block (`thinking_signature` none, `redacted` false).
+    ///
+    /// The discriminator is private (`MustBe!`), so out-of-crate callers — the
+    /// provider accumulator in `rho-ai` — need this to construct the block.
+    pub fn new(thinking: impl Into<String>) -> Self {
+        Self {
+            kind: MustBe!("thinking"),
+            thinking: thinking.into(),
+            thinking_signature: None,
+            redacted: false,
+        }
+    }
+}
+
 /// An image content block (tau `ImageContent`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
