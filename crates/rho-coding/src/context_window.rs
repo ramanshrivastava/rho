@@ -86,11 +86,30 @@ pub fn estimate_text_tokens(text: &str) -> i64 {
     std::cmp::max(1, (chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN)
 }
 
+/// User-visible text of a message (tau `message_text`, messages.py:269-277):
+/// the `.text` of user/assistant/tool-result/custom messages, the `.summary` of
+/// branch/compaction summaries, the `.output` of a bash execution, else "".
+///
+/// `AgentMessage::text()` returns "" for the bash/branch/compaction variants, so
+/// the estimator and compaction serializers must use this instead — otherwise
+/// those message types (once they enter the transcript) would be under-counted.
+pub(crate) fn message_text(message: &AgentMessage) -> String {
+    match message {
+        AgentMessage::User(_)
+        | AgentMessage::Assistant(_)
+        | AgentMessage::ToolResult(_)
+        | AgentMessage::Custom(_) => message.text(),
+        AgentMessage::BranchSummary(m) => m.summary.clone(),
+        AgentMessage::CompactionSummary(m) => m.summary.clone(),
+        AgentMessage::BashExecution(m) => m.output.clone(),
+    }
+}
+
 /// Return a rough token estimate for one provider-neutral message
 /// (tau `estimate_message_tokens`).
 #[must_use]
 pub fn estimate_message_tokens(message: &AgentMessage) -> i64 {
-    let mut tokens = MESSAGE_OVERHEAD_TOKENS + estimate_text_tokens(&message.text());
+    let mut tokens = MESSAGE_OVERHEAD_TOKENS + estimate_text_tokens(&message_text(message));
     match message {
         AgentMessage::Assistant(assistant) => {
             for call in assistant.tool_calls() {
@@ -236,7 +255,7 @@ pub fn serialize_messages_for_compaction(messages: &[AgentMessage]) -> String {
             let _ = write!(attributes, " name={} error={error}", result.tool_name);
         }
         lines.push(format!("<message {attributes}>"));
-        let text = message.text();
+        let text = message_text(message);
         if !text.is_empty() {
             lines.push(text);
         }
@@ -260,7 +279,7 @@ pub fn serialize_messages_for_compaction(messages: &[AgentMessage]) -> String {
 /// One-line role-tagged text for a message inside a deterministic summary
 /// (tau `_message_text`).
 fn message_summary_text(message: &AgentMessage) -> String {
-    let mut text = message.text();
+    let mut text = message_text(message);
     match message {
         AgentMessage::Assistant(assistant) if !assistant.tool_calls().is_empty() => {
             let names = assistant

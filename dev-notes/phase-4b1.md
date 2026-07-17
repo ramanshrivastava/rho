@@ -210,3 +210,16 @@ Three CodeRabbit suggestions were **rebutted as deliberate tau-parity choices**
 - **`will_retry=False` on the overflow `agent_end`.** tau hardcodes it in the
   main loop (`session.py:1506-1507`), before the overflow branch; the pending
   retry is signaled by `auto_retry_start`/`auto_retry_end`, not this field.
+- **The silent harness-startup guard** (`let Ok(events) = prompt_message(...)
+  else { return }`). `prompt()` checks `harness.is_running()` immediately before
+  `prompt_message`, and the only `HarnessError` is `AlreadyRunning`, so the arm
+  is unreachable on the prompt path (single-threaded async, no interleaving);
+  `continue_`'s guard is reached only from the internal overflow-retry after the
+  loop has drained. tau likewise does not emit a special terminal event there —
+  `events = self._harness.prompt_message(...)` just proceeds — so rho matches its
+  control flow. (Note: the *separate*, real persist-failure path does now
+  surface an error — see below.)
+
+Note the persistence-failure path is **not** a rebuttal: `persist_or_log` now
+records the error on the session and the print-mode CLI exits non-zero, matching
+tau's re-raise (`session.py:1575-1581`).
