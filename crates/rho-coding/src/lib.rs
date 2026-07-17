@@ -14,12 +14,21 @@
 //! slash/terminal commands, project-context discovery, skills, extensions, the
 //! provider catalog, OAuth, and HTML export. See `dev-notes/phase-4a.md`.
 
+pub mod branch_summary;
+pub mod context;
+pub mod context_window;
+pub mod diagnostics;
 pub mod events;
 mod fmt_util;
+pub mod paths;
 pub mod print_mode;
 mod pystr;
 pub mod rendering;
+pub mod resources;
+pub mod session;
+pub mod session_manager;
 pub mod system_prompt;
+pub mod thinking;
 pub mod tools;
 
 pub use events::{CodingSessionEvent, SessionOwnEvent};
@@ -28,6 +37,11 @@ pub use rendering::{
     EventRenderer, FinalTextRenderer, JsonEventRenderer, PrintOutputMode, TranscriptRenderer,
     create_event_renderer,
 };
+pub use session::{
+    CodingSession, CodingSessionConfig, SessionError, StreamingBehavior, jsonl_session_storage,
+    parse_terminal_command,
+};
+pub use session_manager::{CodingSessionRecord, SessionManager};
 pub use system_prompt::{BuildSystemPromptOptions, Date, build_system_prompt};
 pub use tools::{
     create_bash_tool, create_coding_tools, create_edit_tool, create_read_tool, create_write_tool,
