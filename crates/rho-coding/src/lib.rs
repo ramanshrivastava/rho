@@ -16,6 +16,7 @@
 
 pub mod branch_summary;
 pub mod catalog_loader;
+pub mod commands;
 pub mod context;
 pub mod context_window;
 pub mod credentials;
@@ -47,6 +48,11 @@ pub mod system_prompt;
 pub mod thinking;
 pub mod tools;
 
+pub use commands::{
+    BUILTIN_TUI_THEME_NAMES, CommandContext, CommandHandler, CommandRegistry, CommandResult,
+    CommandSession, LOGIN_PROVIDER_ALIASES, SlashCommand, create_default_command_registry,
+    format_reload_summary,
+};
 pub use events::{CodingSessionEvent, SessionOwnEvent};
 pub use print_mode::{
     MemorySessionStorage, PrintModeConfig, SessionPrintModeConfig, run_print_mode,
