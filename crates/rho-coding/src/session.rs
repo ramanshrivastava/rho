@@ -299,8 +299,14 @@ impl CodingSession {
             entries = detach_missing_parents(entries);
         }
 
+        // tau `load`: with a latest leaf, replay its root-to-leaf path (an
+        // explicit `entry_id: None` root leaf → the empty pre-root context, NOT
+        // a linear replay); with no leaf at all, replay linearly.
         let latest_leaf = latest_leaf_entry(&entries);
-        let state = state_at(&entries, latest_leaf.as_ref().and_then(Option::as_deref))?;
+        let state = match &latest_leaf {
+            Some(entry_id) => state_at(&entries, entry_id.as_deref())?,
+            None => SessionState::from_entries(&entries),
+        };
 
         let resource_paths = resource_paths_with_cwd(config.resource_paths.clone(), &config.cwd);
         let resources = load_session_resources(&resource_paths, &config.context_files);
@@ -571,7 +577,12 @@ impl CodingSession {
             self.invalidate_context_usage_cache();
             while let Some(event) = events.next().await {
                 if let AgentEvent::MessageEnd(ref e) = event {
-                    persisted_count = self.persist_messages_since(persisted_count).await;
+                    let Some(count) =
+                        self.persist_or_log(persisted_count, &context, "agent_loop").await
+                    else {
+                        return;
+                    };
+                    persisted_count = count;
                     if !auto_name_attempted {
                         if let AgentMessage::User(ref u) = e.message {
                             auto_name_attempted = true;
@@ -603,7 +614,13 @@ impl CodingSession {
                     other => yield CodingSessionEvent::Agent(other),
                 }
             }
-            self.persist_messages_since(persisted_count).await;
+            if self
+                .persist_or_log(persisted_count, &context, "agent_loop")
+                .await
+                .is_none()
+            {
+                return;
+            }
 
             if let Some(overflow) = overflow_message {
                 yield CodingSessionEvent::Session(
@@ -633,8 +650,13 @@ impl CodingSession {
                         self.invalidate_context_usage_cache();
                         while let Some(event) = retry_events.next().await {
                             if let AgentEvent::MessageEnd(ref e) = event {
-                                retry_persisted =
-                                    self.persist_messages_since(retry_persisted).await;
+                                let Some(count) = self
+                                    .persist_or_log(retry_persisted, &context, "agent_loop_retry")
+                                    .await
+                                else {
+                                    return;
+                                };
+                                retry_persisted = count;
                                 if let AgentMessage::Assistant(ref a) = e.message {
                                     if a.stop_reason == StopReason::Error {
                                         let path = self.diagnostic_logger.log_assistant_error(
@@ -658,7 +680,13 @@ impl CodingSession {
                                 other => yield CodingSessionEvent::Agent(other),
                             }
                         }
-                        self.persist_messages_since(retry_persisted).await;
+                        if self
+                            .persist_or_log(retry_persisted, &context, "agent_loop_retry")
+                            .await
+                            .is_none()
+                        {
+                            return;
+                        }
                     }
                     yield CodingSessionEvent::Session(AutoRetryEndEvent::new(true, 1, None).into());
                 }
@@ -682,7 +710,12 @@ impl CodingSession {
             self.invalidate_context_usage_cache();
             while let Some(event) = events.next().await {
                 if let AgentEvent::MessageEnd(ref e) = event {
-                    persisted_count = self.persist_messages_since(persisted_count).await;
+                    let Some(count) =
+                        self.persist_or_log(persisted_count, &context, "agent_loop").await
+                    else {
+                        return;
+                    };
+                    persisted_count = count;
                     if let AgentMessage::Assistant(ref a) = e.message {
                         if a.stop_reason == StopReason::Error {
                             let path = self
@@ -704,7 +737,13 @@ impl CodingSession {
                     other => yield CodingSessionEvent::Agent(other),
                 }
             }
-            self.persist_messages_since(persisted_count).await;
+            if self
+                .persist_or_log(persisted_count, &context, "agent_loop")
+                .await
+                .is_none()
+            {
+                return;
+            }
             self.try_auto_compact(&context).await;
             yield CodingSessionEvent::Session(AgentSettledEvent::new().into());
         }
@@ -1056,7 +1095,7 @@ impl CodingSession {
             msg.timestamp = self.config.clock.now_ms();
             self.harness.append_message(AgentMessage::User(msg));
             self.invalidate_context_usage_cache();
-            self.persist_messages_since(before).await;
+            self.persist_messages_since(before).await?;
         }
 
         Ok(TerminalCommandResult {
@@ -1136,35 +1175,65 @@ impl CodingSession {
         Ok(())
     }
 
-    async fn persist_messages_since(&mut self, persisted_count: usize) -> usize {
+    /// Persist completed harness messages after `persisted_count`, returning the
+    /// new persisted count.
+    ///
+    /// A storage failure is **propagated**, never swallowed: tau's
+    /// `_persist_messages_since` lets an append raise, aborting the turn, and the
+    /// callers here do the same (they stop the stream rather than continuing with
+    /// a stale count, which would re-append the already-durable message with a
+    /// fresh id and corrupt the transcript — the failure Codex flagged). Each
+    /// message counts as persisted the moment its `MessageEntry` is durably
+    /// appended, so a later leaf-append failure cannot cause a re-append either.
+    async fn persist_messages_since(
+        &mut self,
+        persisted_count: usize,
+    ) -> Result<usize, SessionError> {
         let messages = self.harness.messages();
         if persisted_count >= messages.len() {
-            return persisted_count;
+            return Ok(persisted_count);
         }
         let new_messages = messages[persisted_count..].to_vec();
-        let count = new_messages.len();
+        let total = messages.len();
         for message in new_messages {
             let mut entry = MessageEntry::new(message);
             entry.id = self.config.id_gen.new_id();
             entry.timestamp = self.config.clock.now_secs();
             entry.parent_id = self.last_parent_id.clone();
             let id = entry.id.clone();
-            if self
-                .append_session_entry(SessionEntry::Message(entry))
-                .await
-                .is_err()
-            {
-                return persisted_count;
-            }
+            self.append_session_entry(SessionEntry::Message(entry))
+                .await?;
             self.last_parent_id = Some(id.clone());
-            if self.append_leaf(Some(id)).await.is_err() {
-                return persisted_count;
-            }
+            self.append_leaf(Some(id)).await?;
         }
         let leaf = self.last_parent_id.clone();
-        let _ = self.refresh_persisted_state(leaf.as_deref()).await;
+        self.refresh_persisted_state(leaf.as_deref()).await?;
         self.invalidate_context_usage_cache();
-        persisted_count + count
+        Ok(total)
+    }
+
+    /// Persist and, on a storage failure, log it and return `None` so the caller
+    /// (a turn stream) can abort — mirroring tau's raise-and-abort, without the
+    /// stale-count re-append.
+    async fn persist_or_log(
+        &mut self,
+        persisted_count: usize,
+        context: &AgentCallDiagnosticContext,
+        phase: &str,
+    ) -> Option<usize> {
+        match self.persist_messages_since(persisted_count).await {
+            Ok(count) => Some(count),
+            Err(err) => {
+                let path = self.diagnostic_logger.log_exception(
+                    context,
+                    phase,
+                    "StorageError",
+                    &err.to_string(),
+                );
+                self.last_diagnostic_log_path = Some(path);
+                None
+            }
+        }
     }
 
     fn invalidate_context_usage_cache(&mut self) {
@@ -1447,11 +1516,13 @@ fn latest_leaf_entry(entries: &[SessionEntry]) -> Option<Option<String>> {
     None
 }
 
+/// Replay the root-to-leaf path for an explicitly-provided leaf id. `leaf_id`
+/// is always *provided* here (this is tau's `from_entries(entries, leaf_id=…)`,
+/// never the unset/linear form), so `None` means the empty pre-root context —
+/// distinct from a linear replay. Load's no-leaf case calls `from_entries`
+/// directly.
 fn state_at(entries: &[SessionEntry], leaf_id: Option<&str>) -> Result<SessionState, SessionError> {
-    match leaf_id {
-        Some(id) => Ok(SessionState::from_entries_at_leaf(entries, Some(id))?),
-        None => Ok(SessionState::from_entries(entries)),
-    }
+    Ok(SessionState::from_entries_at_leaf(entries, leaf_id)?)
 }
 
 fn state_thinking_level(state: &SessionState, default: &str) -> String {

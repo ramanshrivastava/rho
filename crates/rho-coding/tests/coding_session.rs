@@ -218,6 +218,63 @@ fn parse_terminal_command_prefixes() {
     assert!(parse_terminal_command("!  ").is_none());
 }
 
+/// An explicit root leaf (`entry_id: null`, from branching before the first
+/// message) must replay to the EMPTY pre-root context on resume — not a linear
+/// replay of the abandoned log. This is tau's `from_entries(entries,
+/// leaf_id=None)` distinction (Codex P1). We hand-build such a transcript and
+/// assert `CodingSession::load` yields no messages.
+#[tokio::test]
+async fn explicit_root_leaf_replays_to_empty_context() {
+    use rho_agent::messages::{AgentMessage, UserMessage};
+    use rho_agent::session::entries::{
+        LeafEntry, MessageEntry, ModelChangeEntry, SessionInfoEntry, ThinkingLevelChangeEntry,
+    };
+    use rho_agent::session::jsonl::entry_to_json_line;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("root-leaf.jsonl");
+
+    let mut info = SessionInfoEntry::new();
+    info.id = "i".to_string();
+    let mut model = ModelChangeEntry::new("fake");
+    model.id = "m".to_string();
+    model.parent_id = Some("i".to_string());
+    let mut think = ThinkingLevelChangeEntry::new(Some("medium".to_string()));
+    think.id = "t".to_string();
+    think.parent_id = Some("m".to_string());
+    let mut user = MessageEntry::new(AgentMessage::User(UserMessage::new("abandoned")));
+    user.id = "u".to_string();
+    user.parent_id = Some("t".to_string());
+    let mut user_leaf = LeafEntry::new(Some("u".to_string()));
+    user_leaf.id = "lu".to_string();
+    user_leaf.parent_id = Some("u".to_string());
+    // The branch-to-root leaf: entry_id = None, parent_id = None.
+    let mut root_leaf = LeafEntry::new(None);
+    root_leaf.id = "lr".to_string();
+    root_leaf.parent_id = None;
+
+    let entries = [
+        SessionEntry::SessionInfo(info),
+        SessionEntry::ModelChange(model),
+        SessionEntry::ThinkingLevelChange(think),
+        SessionEntry::Message(user),
+        SessionEntry::Leaf(user_leaf),
+        SessionEntry::Leaf(root_leaf),
+    ];
+    let jsonl: String = entries.iter().map(entry_to_json_line).collect();
+    std::fs::write(&path, jsonl).unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(&path);
+    let session = CodingSession::load(pinned_config(provider, storage, tmp.path().to_path_buf()))
+        .await
+        .unwrap();
+    assert!(
+        session.messages().is_empty(),
+        "explicit root leaf replays to empty context, not the abandoned log"
+    );
+}
+
 /// Resume parity: every session fixture loads through `CodingSession` and
 /// replays to the same transcript a direct `SessionState` reconstruction gives.
 #[tokio::test]
