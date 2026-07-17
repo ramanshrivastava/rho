@@ -647,3 +647,87 @@ async fn reload_reports_unchanged_when_nothing_changed() {
     assert!(!summary.system_prompt_rebuilt);
     assert_eq!(summary.skills.before, summary.skills.after);
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch-2 command handling + resource expansion (tau test_coding_session.py
+// `test_minimal_commands_are_handled`, `test_session_loads_and_expands_skills`,
+// `test_session_expands_prompt_templates_as_slash_commands`).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn handle_command_routes_minimal_commands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = pinned_config(provider, storage, cwd);
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // A bare prompt and unregistered/unknown commands are unhandled; the
+    // registered commands set their result flags (tau parity).
+    assert!(!session.handle_command("hello").handled);
+    assert!(session.handle_command("/new").new_session_requested);
+    assert!(!session.handle_command("/clear").handled); // not a registered command
+    assert!(session.handle_command("/quit").exit_requested);
+    assert!(session.handle_command("/exit").exit_requested); // alias of /quit
+    assert!(!session.handle_command("/unknown").handled);
+    // A `/skill:` command is left unhandled here — it expands via prompt().
+    assert!(!session.handle_command("/skill:foo").handled);
+}
+
+#[tokio::test]
+async fn expand_prompt_text_expands_a_loaded_skill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    // A skill is a directory containing SKILL.md (Agent Skills spec, ADR 0003).
+    let skill_dir = tmp.path().join(".rho/skills/refactor");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: Refactor helper\n---\nRefactor the target module carefully.\n",
+    )
+    .unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+
+    assert_eq!(session.skills().len(), 1, "the SKILL.md is discovered");
+    let expanded = session.expand_prompt_text("/skill:refactor").unwrap();
+    assert!(
+        expanded.starts_with("<skill name=\"refactor\" location=\""),
+        "skill command expands into an invocation block: {expanded}"
+    );
+    assert!(expanded.contains("Refactor the target module carefully."));
+    // A non-skill, non-template prompt passes through unchanged.
+    assert_eq!(
+        session.expand_prompt_text("just a prompt").unwrap(),
+        "just a prompt"
+    );
+    // An unknown skill is a ResourceError (tau raises a ValueError).
+    assert!(session.expand_prompt_text("/skill:missing").is_err());
+}
+
+#[tokio::test]
+async fn expand_prompt_text_renders_a_prompt_template() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let prompts_dir = tmp.path().join(".rho/prompts");
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    std::fs::write(prompts_dir.join("greet.md"), "Hello {{ args }}, welcome.").unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+
+    assert_eq!(session.prompt_templates().len(), 1);
+    assert_eq!(
+        session.expand_prompt_text("/greet world").unwrap(),
+        "Hello world, welcome."
+    );
+}
