@@ -17,9 +17,17 @@
 pub mod branch_summary;
 pub mod context;
 pub mod context_window;
+pub mod credentials;
 pub mod diagnostics;
 pub mod events;
 mod fmt_util;
+pub mod oauth;
+pub mod oauth_anthropic;
+pub mod oauth_device;
+pub mod oauth_github_copilot;
+pub mod oauth_http;
+pub mod oauth_registry;
+pub mod oauth_types;
 pub mod paths;
 pub mod print_mode;
 mod pystr;
@@ -49,3 +57,23 @@ pub use system_prompt::{BuildSystemPromptOptions, Date, build_system_prompt};
 pub use tools::{
     create_bash_tool, create_coding_tools, create_edit_tool, create_read_tool, create_write_tool,
 };
+
+pub use credentials::{
+    ApiKeyCredential, CredentialStoreError, FileCredentialStore, OAuthCredential, StoredCredential,
+    credentials_path,
+};
+pub use oauth::{
+    OAuthError, OpenAICodexOAuthProvider, account_id_from_access_token,
+    oauth_credential_is_expired, refresh_openai_codex_token,
+};
+pub use oauth_anthropic::{AnthropicOAuthProvider, refresh_anthropic_token};
+pub use oauth_github_copilot::{
+    GitHubCopilotOAuthProvider, github_copilot_base_url, login_github_copilot,
+    refresh_github_copilot_token,
+};
+pub use oauth_http::{OAuthHttpClient, OAuthHttpRequest, OAuthHttpResponse, ReqwestOAuthClient};
+pub use oauth_registry::{
+    get_oauth_provider, get_oauth_providers, oauth_provider_ids, register_oauth_provider,
+    reset_oauth_providers, unregister_oauth_provider,
+};
+pub use oauth_types::{OAuthProvider, OAuthRuntimeAuth};
