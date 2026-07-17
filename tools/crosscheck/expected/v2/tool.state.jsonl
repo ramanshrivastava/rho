@@ -1,0 +1,4 @@
+{"role":"user","text":"use echo"}
+{"role":"assistant","text":""}
+{"role":"toolResult","text":"ok"}
+{"role":"assistant","text":"done"}
