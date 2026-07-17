@@ -22,11 +22,13 @@ pub mod events;
 mod fmt_util;
 pub mod paths;
 pub mod print_mode;
+pub mod prompt_templates;
 mod pystr;
 pub mod rendering;
 pub mod resources;
 pub mod session;
 pub mod session_manager;
+pub mod skills;
 pub mod system_prompt;
 pub mod thinking;
 pub mod tools;
@@ -35,6 +37,10 @@ pub use events::{CodingSessionEvent, SessionOwnEvent};
 pub use print_mode::{
     MemorySessionStorage, PrintModeConfig, SessionPrintModeConfig, run_print_mode,
     run_session_print_mode,
+};
+pub use prompt_templates::{
+    PromptTemplate, expand_prompt_template_command, load_prompt_templates,
+    load_prompt_templates_with_diagnostics, render_prompt_template,
 };
 pub use rendering::{
     EventRenderer, FinalTextRenderer, JsonEventRenderer, PrintOutputMode, TranscriptRenderer,
@@ -45,6 +51,10 @@ pub use session::{
     parse_terminal_command,
 };
 pub use session_manager::{CodingSessionRecord, SessionManager};
+pub use skills::{
+    Skill, SkillInvocation, build_skill_index, expand_skill_command, format_skill_invocation,
+    load_skills, load_skills_with_diagnostics, parse_skill_invocation,
+};
 pub use system_prompt::{BuildSystemPromptOptions, Date, build_system_prompt};
 pub use tools::{
     create_bash_tool, create_coding_tools, create_edit_tool, create_read_tool, create_write_tool,
