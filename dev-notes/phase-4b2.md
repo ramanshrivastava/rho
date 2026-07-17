@@ -175,3 +175,20 @@ then the missing-key error — proving catalog resolution), `rho -m no-such-mode
   relying on persistent `harness.subscribe` listeners needs a real setter.
 - **The `/skill:` unknown-skill exit code** is 1 (via `run_error`), not tau's 2
   (`ResourceError`→`ValueError`→`BadParameter`); see the skills section above.
+
+## Review round (bots)
+
+Codex flagged one real P2: the export path serialized entries by round-tripping
+through `serde_json::Value`, whose default `f64` writer emits scientific
+notation (`0.0000005` → `5e-7`), whereas tau's export uses `json.dumps`
+(`float.__repr__` → `5e-07`). Fixed with a `PyFloat` `serde_json::Formatter`
+that routes `write_f64` through `pystr::python_float_repr` while delegating
+structure to the wrapped `Compact`/`Pretty` base, applied to both the JSONL
+(`dump_entry_line`) and HTML (`json_dump`) paths; whole-number floats are
+unchanged so the byte-match goldens hold, with a small-float regression test.
+
+Adjacent, **left for a follow-up**: `rho-agent`'s wire codec
+(`entry_to_json_line`) serializes typed `f64`s via serde's default too, so a
+sub-`1e-4` cost would render `5e-7` on the *storage* path as well. It passes
+crosscheck v2 (the pinned fixtures carry no such costs), and confirming a real
+divergence needs a `pydantic-core` float-output check — an M1-scoped task.
