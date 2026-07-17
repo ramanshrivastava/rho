@@ -14,7 +14,7 @@ use crate::env::OpenAICompatibleConfig;
 use crate::openai_compatible::parse_arguments;
 use crate::retry::is_transient_status;
 use crate::stream::{Delta, assistant_content, assistant_message};
-use crate::util::{loads_object, parse_sse_line};
+use crate::util::{loads_object, non_empty_str, parse_sse_line};
 use crate::wire::{message_text, python_dumps};
 
 /// Provider adapter for Mistral's streaming chat API.
@@ -305,12 +305,13 @@ impl ProviderParser for MistralParser {
         let Some(choice) = first_choice(&chunk) else {
             return Feed::empty();
         };
-        if let Some(reason) = choice
-            .get("finish_reason")
-            .or_else(|| choice.get("finishReason"))
-            .and_then(Value::as_str)
+        // tau: `finish_reason or finishReason or self._finish_reason` — the `or`
+        // chain skips falsy (empty-string) values, so a `""` on `finish_reason`
+        // falls through to `finishReason`, then to the previously captured value.
+        if let Some(reason) = non_empty_str(choice.get("finish_reason"))
+            .or_else(|| non_empty_str(choice.get("finishReason")))
         {
-            self.finish_reason = Some(reason.to_string());
+            self.finish_reason = Some(reason);
         }
         let Some(Value::Object(delta)) = choice.get("delta") else {
             return Feed::empty();

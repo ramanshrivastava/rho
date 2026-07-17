@@ -103,39 +103,26 @@ impl ModelProvider for OpenAICompatibleProvider {
 
         let config = self.config.clone();
         let client = self.client.clone();
+        // tau resolves the OpenAI credential once, before the retry loop
+        // (openai_compatible.py:206-220), so a refresh runs at most once per
+        // response and every attempt reuses the same URL/headers. A OnceCell
+        // memoizes it across the engine's per-attempt fetch calls. (Codex, which
+        // tau resolves *inside* the loop, keeps its per-attempt resolution.)
+        let endpoint = endpoint.to_string();
+        let resolved: Arc<tokio::sync::OnceCell<(String, crate::types::HeaderList)>> =
+            Arc::new(tokio::sync::OnceCell::new());
         let fetch = move |_attempt: u32| {
             let config = config.clone();
             let client = client.clone();
             let payload = payload.clone();
             let default_url = default_url.clone();
-            let endpoint = endpoint.to_string();
+            let endpoint = endpoint.clone();
+            let resolved = resolved.clone();
             async move {
-                let mut api_key = config.api_key.clone();
-                let mut request_url = default_url;
-                let mut headers = config.headers.clone().unwrap_or_default();
-                if let Some(resolver) = &config.credential_resolver {
-                    let auth = resolver()
-                        .await
-                        .map_err(|message| crate::engine::FetchError {
-                            message,
-                            retryable: false,
-                        })?;
-                    api_key = auth.api_key;
-                    if let Some(extra) = auth.headers {
-                        headers.extend(extra);
-                    }
-                    if let Some(base) = auth.base_url {
-                        request_url = format!("{}{}", base.trim_end_matches('/'), endpoint);
-                    }
-                }
-                if !config.omit_authorization_header
-                    && !headers
-                        .iter()
-                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-                {
-                    headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
-                }
-                send_reqwest(&client, &request_url, &headers, &payload).await
+                let (request_url, headers) = resolved
+                    .get_or_try_init(|| resolve_openai_request(&config, &default_url, &endpoint))
+                    .await?;
+                send_reqwest(&client, request_url, headers, &payload).await
             }
         };
 
@@ -160,6 +147,42 @@ impl ModelProvider for OpenAICompatibleProvider {
             |status, _body| is_transient_status(status),
         )
     }
+}
+
+/// Resolve the request URL + headers once (tau's pre-loop credential resolution).
+/// Runs the optional credential resolver, applies any base-URL/header overrides,
+/// and adds the bearer `Authorization` unless suppressed or already present.
+async fn resolve_openai_request(
+    config: &OpenAICompatibleConfig,
+    default_url: &str,
+    endpoint: &str,
+) -> Result<(String, crate::types::HeaderList), crate::engine::FetchError> {
+    let mut api_key = config.api_key.clone();
+    let mut request_url = default_url.to_string();
+    let mut headers = config.headers.clone().unwrap_or_default();
+    if let Some(resolver) = &config.credential_resolver {
+        let auth = resolver()
+            .await
+            .map_err(|message| crate::engine::FetchError {
+                message,
+                retryable: false,
+            })?;
+        api_key = auth.api_key;
+        if let Some(extra) = auth.headers {
+            headers.extend(extra);
+        }
+        if let Some(base) = auth.base_url {
+            request_url = format!("{}{endpoint}", base.trim_end_matches('/'));
+        }
+    }
+    if !config.omit_authorization_header
+        && !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    {
+        headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+    }
+    Ok((request_url, headers))
 }
 
 // ---------------------------------------------------------------------------
@@ -254,12 +277,12 @@ fn apply_chat_reasoning(
                 payload.insert("reasoning_effort".into(), json!(reasoning_effort));
             }
         }
-        "together" => {
-            payload.insert("reasoning".into(), json!({"enabled": reasoning_enabled}));
-            if reasoning_enabled {
-                payload.insert("reasoning_effort".into(), json!(reasoning_effort));
-            }
-        }
+        // tau checks openrouter / `reasoning.effort` BEFORE `together`
+        // (openai_compatible.py:698-708), so the guard arm must precede the
+        // `together` literal — otherwise `thinking_format="together"` with
+        // `reasoning_effort_parameter="reasoning.effort"` would take the wrong
+        // branch. A guarded `_ if …` arm placed first falls through to
+        // `"together"` only when its condition is false.
         _ if thinking_format == "openrouter"
             || reasoning_effort_parameter == "reasoning.effort" =>
         {
@@ -267,6 +290,12 @@ fn apply_chat_reasoning(
                 payload.insert("reasoning".into(), json!({"effort": reasoning_effort}));
             } else if include_reasoning_effort_none {
                 payload.insert("reasoning".into(), json!({"effort": "none"}));
+            }
+        }
+        "together" => {
+            payload.insert("reasoning".into(), json!({"enabled": reasoning_enabled}));
+            if reasoning_enabled {
+                payload.insert("reasoning_effort".into(), json!(reasoning_effort));
             }
         }
         _ => {
@@ -416,11 +445,12 @@ fn tool_to_responses(tool: &AgentTool) -> Value {
 }
 
 fn bool_compat(compat: &Map<String, Value>, key: &str, default: bool) -> bool {
+    // tau: `bool(compat.get(key, default))`. An **absent** key yields `default`
+    // (already a bool); a **present** value — including an explicit `null` —
+    // takes Python truthiness, so `null`/`false`/`0`/`""`/`[]`/`{}` → `false`.
     match compat.get(key) {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Null) | None => default,
-        // tau: `bool(value)` — non-empty containers/strings/nonzero are truthy.
-        Some(other) => !is_falsy(other),
+        None => default,
+        Some(value) => !is_falsy(value),
     }
 }
 
@@ -550,8 +580,10 @@ impl ProviderParser for ChatStreamParser {
             }
         }
 
-        if let Some(Value::String(reason)) = choice.get("finish_reason") {
-            self.finish_reason = Some(reason.clone());
+        // tau: `choice.get("finish_reason") or self._finish_reason` — a falsy
+        // (empty-string) reason must not overwrite a previously captured one.
+        if let Some(reason) = str_or_none(choice.get("finish_reason")) {
+            self.finish_reason = Some(reason);
         }
 
         let Some(Value::Object(delta)) = choice.get("delta") else {
@@ -1074,5 +1106,48 @@ fn tool_call_deltas(delta: &Map<String, Value>) -> Vec<&Map<String, Value>> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// tau checks openrouter / `reasoning.effort` before `together`
+    /// (openai_compatible.py:698-708). With both set, the openrouter shape wins.
+    #[test]
+    fn reasoning_effort_parameter_precedes_together() {
+        let mut config = OpenAICompatibleConfig::new("k");
+        config.thinking_format = "together".to_string();
+        config.reasoning_effort_parameter = "reasoning.effort".to_string();
+        config.reasoning_effort = Some("high".to_string());
+
+        let payload = build_chat_payload(&config, "m", "sys", &[], &[]);
+        assert_eq!(payload["reasoning"], serde_json::json!({"effort": "high"}));
+        // The `together` shape (`reasoning.enabled` + top-level `reasoning_effort`)
+        // must NOT be emitted.
+        assert!(payload.get("reasoning_effort").is_none());
+    }
+
+    /// Without the `reasoning.effort` parameter, `together` keeps its own shape.
+    #[test]
+    fn together_shape_used_without_reasoning_effort_parameter() {
+        let mut config = OpenAICompatibleConfig::new("k");
+        config.thinking_format = "together".to_string();
+        config.reasoning_effort = Some("high".to_string());
+
+        let payload = build_chat_payload(&config, "m", "sys", &[], &[]);
+        assert_eq!(payload["reasoning"], serde_json::json!({"enabled": true}));
+        assert_eq!(payload["reasoning_effort"], serde_json::json!("high"));
+    }
+
+    /// A present `null` compat flag is falsy (tau `bool(None)` → False), while an
+    /// absent flag falls back to the default.
+    #[test]
+    fn bool_compat_null_is_false_absent_is_default() {
+        let mut compat = Map::new();
+        compat.insert("supportsStore".into(), Value::Null);
+        assert!(!bool_compat(&compat, "supportsStore", true), "null → false");
+        assert!(bool_compat(&compat, "missing", true), "absent → default");
     }
 }

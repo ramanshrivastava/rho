@@ -67,3 +67,13 @@ pub fn string_or_empty(value: Option<&Value>) -> String {
         _ => String::new(),
     }
 }
+
+/// A **non-empty** JSON string, else `None` — the building block for tau's
+/// `a or b or …` chains, which discard falsy (empty-string) values.
+#[must_use]
+pub fn non_empty_str(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}

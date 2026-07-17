@@ -385,9 +385,15 @@ async fn read_body_text(mut body: BoxStream<'static, Result<Bytes, String>>) -> 
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// Incremental universal-newline line splitter reproducing httpx `aiter_lines`
-/// semantics: split on `\n` (with a preceding `\r` stripped), yield each line
-/// **without** its terminator, and yield a final unterminated line at EOF.
+/// Incremental line splitter matching httpx `aiter_lines` for the terminators
+/// real SSE providers emit: split on `\n` (stripping a preceding `\r`, so both
+/// `\n` and `\r\n` frame lines), yield each line **without** its terminator, and
+/// yield a final unterminated line at EOF. A **lone** `\r` (not followed by `\n`)
+/// is *not* treated as a separator — httpx's `str.splitlines` would split it, but
+/// no real provider frames SSE with bare `\r`, and byte-level incremental
+/// lone-`\r` handling would need to defer a trailing `\r` across chunk boundaries
+/// for no practical gain. Buffers across chunk boundaries at the byte level, so a
+/// multi-byte UTF-8 character split across TCP reads is decoded only once whole.
 struct LineSplitter {
     buffer: Vec<u8>,
 }
