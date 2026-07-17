@@ -1,48 +1,82 @@
-//! Coding-session events consumed by the renderers (port of tau's
-//! `tau_coding/events.py`).
+//! Coding-session events (port of tau's `tau_coding/events.py`).
 //!
-//! [`CodingSessionEvent`] is tau's `AgentEvent | SessionOwnEvent`. The M4a
-//! print-mode slice only ever emits [`CodingSessionEvent::Agent`] (the harness
-//! stream); the session-owned variants exist so the renderers — and the ported
-//! rendering tests — can handle the full surface. These are **serialize-only**
-//! (the JSON renderer dumps them; nothing parses them back in M4a), using the
-//! same `camelCase` + `exclude_none` idioms as the agent wire types.
+//! [`CodingSessionEvent`] is tau's `AgentEvent | SessionOwnEvent`. The
+//! print-mode slice emits [`CodingSessionEvent::Agent`] (the harness stream);
+//! the [`CodingSession`](crate::session::CodingSession) emits the session-owned
+//! variants (`agent_settled`, `queue_update`, `compaction_*`, `auto_retry_*`,
+//! `entry_appended`, …).
+//!
+//! These use the same `camelCase` + `exclude_none` idioms as the agent wire
+//! types and round-trip byte-for-byte against `fixtures/wire/session-events/`.
 
 use monostate::MustBe;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use rho_agent::events::AgentEvent;
 use rho_agent::messages::AgentMessage;
+use rho_agent::session::entries::SessionEntry;
 
 /// `agent_end` (session-owned; carries the final message list + retry flag).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionAgentEndEvent {
     #[serde(rename = "type")]
     kind: MustBe!("agent_end"),
     /// Final message list.
+    #[serde(default)]
     pub messages: Vec<AgentMessage>,
     /// Whether the session will retry.
+    #[serde(default)]
     pub will_retry: bool,
 }
 
+impl SessionAgentEndEvent {
+    /// Build an `agent_end` session event.
+    #[must_use]
+    pub fn new(messages: Vec<AgentMessage>, will_retry: bool) -> Self {
+        Self {
+            kind: MustBe!("agent_end"),
+            messages,
+            will_retry,
+        }
+    }
+}
+
 /// `agent_settled`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSettledEvent {
     #[serde(rename = "type")]
     kind: MustBe!("agent_settled"),
 }
 
+impl AgentSettledEvent {
+    /// Build an `agent_settled` event.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            kind: MustBe!("agent_settled"),
+        }
+    }
+}
+
+impl Default for AgentSettledEvent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// `queue_update` (steering / follow-up snapshots, always serialized).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueUpdateEvent {
     #[serde(rename = "type")]
     kind: MustBe!("queue_update"),
     /// Queued steering messages.
+    #[serde(default)]
     pub steering: Vec<String>,
     /// Queued follow-up messages (serialized as `followUp`).
+    #[serde(default)]
     pub follow_up: Vec<String>,
 }
 
@@ -58,19 +92,121 @@ impl QueueUpdateEvent {
     }
 }
 
+/// tau `CompactionReason = Literal["manual", "threshold", "overflow"]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionReason {
+    /// User-triggered compaction.
+    Manual,
+    /// Automatic threshold-triggered compaction.
+    Threshold,
+    /// Post-overflow recovery compaction.
+    Overflow,
+}
+
+/// `compaction_start`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionStartEvent {
+    #[serde(rename = "type")]
+    kind: MustBe!("compaction_start"),
+    /// Why compaction was triggered.
+    pub reason: CompactionReason,
+}
+
+impl CompactionStartEvent {
+    /// Build a `compaction_start` event.
+    #[must_use]
+    pub fn new(reason: CompactionReason) -> Self {
+        Self {
+            kind: MustBe!("compaction_start"),
+            reason,
+        }
+    }
+}
+
+/// `compaction_end`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionEndEvent {
+    #[serde(rename = "type")]
+    kind: MustBe!("compaction_end"),
+    /// Why compaction was triggered.
+    pub reason: CompactionReason,
+    /// Optional free-form result payload (`object | None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// Whether the compaction was aborted.
+    #[serde(default)]
+    pub aborted: bool,
+    /// Whether the session will retry after this compaction.
+    #[serde(default)]
+    pub will_retry: bool,
+    /// Error message, if the compaction failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+impl CompactionEndEvent {
+    /// Build a `compaction_end` event.
+    #[must_use]
+    pub fn new(reason: CompactionReason) -> Self {
+        Self {
+            kind: MustBe!("compaction_end"),
+            reason,
+            result: None,
+            aborted: false,
+            will_retry: false,
+            error_message: None,
+        }
+    }
+}
+
+/// `entry_appended` (a durable session entry was written).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryAppendedEvent {
+    #[serde(rename = "type")]
+    kind: MustBe!("entry_appended"),
+    /// The entry that was appended.
+    pub entry: SessionEntry,
+}
+
+impl EntryAppendedEvent {
+    /// Build an `entry_appended` event.
+    #[must_use]
+    pub fn new(entry: SessionEntry) -> Self {
+        Self {
+            kind: MustBe!("entry_appended"),
+            entry,
+        }
+    }
+}
+
 /// `session_info_changed`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfoChangedEvent {
     #[serde(rename = "type")]
     kind: MustBe!("session_info_changed"),
     /// New session name, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
+impl SessionInfoChangedEvent {
+    /// Build a `session_info_changed` event.
+    #[must_use]
+    pub fn new(name: Option<String>) -> Self {
+        Self {
+            kind: MustBe!("session_info_changed"),
+            name,
+        }
+    }
+}
+
 /// `thinking_level_changed`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThinkingLevelChangedEvent {
     #[serde(rename = "type")]
@@ -79,8 +215,19 @@ pub struct ThinkingLevelChangedEvent {
     pub level: String,
 }
 
+impl ThinkingLevelChangedEvent {
+    /// Build a `thinking_level_changed` event.
+    #[must_use]
+    pub fn new(level: impl Into<String>) -> Self {
+        Self {
+            kind: MustBe!("thinking_level_changed"),
+            level: level.into(),
+        }
+    }
+}
+
 /// `auto_retry_start`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoRetryStartEvent {
     #[serde(rename = "type")]
@@ -110,7 +257,7 @@ impl AutoRetryStartEvent {
 }
 
 /// `auto_retry_end`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoRetryEndEvent {
     #[serde(rename = "type")]
@@ -120,19 +267,29 @@ pub struct AutoRetryEndEvent {
     /// The attempt count reached.
     pub attempt: i64,
     /// The final error, if it failed.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_error: Option<String>,
 }
 
-/// The session-owned event union (tau `SessionOwnEvent`). Serialize-only in M4a.
-///
-/// `EntryAppendedEvent`, `CompactionStart`/`CompactionEnd` are deferred to M4b
-/// (they belong to the `CodingSession` machinery this slice does not build).
+impl AutoRetryEndEvent {
+    /// Build an `auto_retry_end` event.
+    #[must_use]
+    pub fn new(success: bool, attempt: i64, final_error: Option<String>) -> Self {
+        Self {
+            kind: MustBe!("auto_retry_end"),
+            success,
+            attempt,
+            final_error,
+        }
+    }
+}
+
+/// The session-owned event union (tau `SessionOwnEvent`).
 ///
 /// The size imbalance (bare-tag `AgentSettled` next to message-carrying
 /// variants) mirrors tau's Pydantic union — the same 1:1-port trade-off the
 /// agent `AgentEvent` union documents.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(clippy::large_enum_variant)]
 pub enum SessionOwnEvent {
@@ -142,6 +299,12 @@ pub enum SessionOwnEvent {
     AgentSettled(AgentSettledEvent),
     /// Queue update.
     QueueUpdate(QueueUpdateEvent),
+    /// Compaction started.
+    CompactionStart(CompactionStartEvent),
+    /// Compaction ended.
+    CompactionEnd(CompactionEndEvent),
+    /// A durable entry was appended.
+    EntryAppended(EntryAppendedEvent),
     /// Session info changed.
     SessionInfoChanged(SessionInfoChangedEvent),
     /// Thinking level changed.
@@ -156,7 +319,7 @@ pub enum SessionOwnEvent {
 ///
 /// Serializes as the inner event (untagged), so the JSON renderer emits exactly
 /// what tau's `model_dump_json(by_alias=True, exclude_none=True)` produces.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(clippy::large_enum_variant)]
 pub enum CodingSessionEvent {
@@ -172,6 +335,42 @@ impl From<AgentEvent> for CodingSessionEvent {
     }
 }
 
+impl From<SessionOwnEvent> for CodingSessionEvent {
+    fn from(event: SessionOwnEvent) -> Self {
+        Self::Session(event)
+    }
+}
+
+macro_rules! session_own_from {
+    ($($ty:ident => $variant:ident),+ $(,)?) => {
+        $(
+            impl From<$ty> for SessionOwnEvent {
+                fn from(event: $ty) -> Self {
+                    Self::$variant(event)
+                }
+            }
+            impl From<$ty> for CodingSessionEvent {
+                fn from(event: $ty) -> Self {
+                    Self::Session(SessionOwnEvent::$variant(event))
+                }
+            }
+        )+
+    };
+}
+
+session_own_from! {
+    SessionAgentEndEvent => SessionAgentEnd,
+    AgentSettledEvent => AgentSettled,
+    QueueUpdateEvent => QueueUpdate,
+    CompactionStartEvent => CompactionStart,
+    CompactionEndEvent => CompactionEnd,
+    EntryAppendedEvent => EntryAppended,
+    SessionInfoChangedEvent => SessionInfoChanged,
+    ThinkingLevelChangedEvent => ThinkingLevelChanged,
+    AutoRetryStartEvent => AutoRetryStart,
+    AutoRetryEndEvent => AutoRetryEnd,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +381,15 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&event).unwrap(),
             r#"{"type":"queue_update","steering":["adjust"],"followUp":["after"]}"#
+        );
+    }
+
+    #[test]
+    fn compaction_end_omits_none_result_and_error() {
+        let event = CompactionEndEvent::new(CompactionReason::Threshold);
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false}"#
         );
     }
 }

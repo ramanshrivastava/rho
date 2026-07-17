@@ -24,6 +24,9 @@ thiserror = { workspace = true }
 dashmap = { workspace = true }
 tempfile = "3"
 os_pipe = "1"
+uuid = { workspace = true }
+sha2 = "0.10"
+async-trait = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal"] }
