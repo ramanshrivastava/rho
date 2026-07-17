@@ -8,6 +8,7 @@ members = [
     "crates/rho-ext-host",
     "crates/rho-ext-api",
     "crates/rho",
+    "tools/mock-provider",
 ]
 
 [workspace.package]
