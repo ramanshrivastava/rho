@@ -32,6 +32,7 @@ pub mod paths;
 pub mod print_mode;
 pub mod prompt_templates;
 mod pystr;
+pub mod reload;
 pub mod rendering;
 pub mod resources;
 pub mod session;
