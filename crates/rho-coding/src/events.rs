@@ -392,4 +392,63 @@ mod tests {
             r#"{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false}"#
         );
     }
+
+    /// These combinations aren't pinned by any `wire/session-events/` fixture
+    /// (those only cover the common shape), so round-trip them here to lock the
+    /// remaining serialize/deserialize surface.
+
+    #[test]
+    fn compaction_end_with_result_and_flags_roundtrips() {
+        let mut event = CompactionEndEvent::new(CompactionReason::Manual);
+        event.result = Some(serde_json::json!({"kept": 3}));
+        event.aborted = true;
+        event.will_retry = true;
+        event.error_message = Some("boom".to_string());
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"compaction_end","reason":"manual","result":{"kept":3},"aborted":true,"willRetry":true,"errorMessage":"boom"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<CompactionEndEvent>(&json).unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn compaction_reason_manual_and_overflow_serialize() {
+        assert_eq!(
+            serde_json::to_string(&CompactionStartEvent::new(CompactionReason::Overflow)).unwrap(),
+            r#"{"type":"compaction_start","reason":"overflow"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&CompactionStartEvent::new(CompactionReason::Manual)).unwrap(),
+            r#"{"type":"compaction_start","reason":"manual"}"#
+        );
+    }
+
+    #[test]
+    fn auto_retry_end_failure_includes_final_error() {
+        let event = AutoRetryEndEvent::new(false, 3, Some("still failing".to_string()));
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"auto_retry_end","success":false,"attempt":3,"finalError":"still failing"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<AutoRetryEndEvent>(&json).unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn session_info_changed_none_omits_name() {
+        let event = SessionInfoChangedEvent::new(None);
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(json, r#"{"type":"session_info_changed"}"#);
+        assert_eq!(
+            serde_json::from_str::<SessionInfoChangedEvent>(&json).unwrap(),
+            event
+        );
+    }
 }

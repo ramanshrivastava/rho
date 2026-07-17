@@ -265,6 +265,7 @@ pub struct CodingSession {
     context_usage_cache: Option<ContextUsageEstimate>,
     diagnostic_logger: AgentCallDiagnosticLogger,
     last_diagnostic_log_path: Option<PathBuf>,
+    run_error: Option<String>,
 }
 
 impl CodingSession {
@@ -355,6 +356,7 @@ impl CodingSession {
             context_usage_cache: None,
             diagnostic_logger,
             last_diagnostic_log_path: None,
+            run_error: None,
         };
         session.persist_loaded_interrupted_tool_repairs().await?;
         Ok(session)
@@ -543,6 +545,7 @@ impl CodingSession {
         streaming_behavior: Option<StreamingBehavior>,
     ) -> impl futures::Stream<Item = CodingSessionEvent> + '_ {
         async_stream::stream! {
+            self.run_error = None;
             let context = self.diagnostic_context();
             let expanded_content = self.expand_prompt_text(&content);
 
@@ -702,6 +705,7 @@ impl CodingSession {
     /// Continue the agent from restored state, persisting new messages.
     pub fn continue_(&mut self) -> impl futures::Stream<Item = CodingSessionEvent> + '_ {
         async_stream::stream! {
+            self.run_error = None;
             let context = self.diagnostic_context();
             let mut persisted_count = self.harness.messages().len();
             let Ok(mut events) = self.harness.continue_() else {
@@ -1212,9 +1216,11 @@ impl CodingSession {
         Ok(total)
     }
 
-    /// Persist and, on a storage failure, log it and return `None` so the caller
-    /// (a turn stream) can abort — mirroring tau's raise-and-abort, without the
-    /// stale-count re-append.
+    /// Persist and, on a storage failure, log it, **record it on the session**,
+    /// and return `None` so the caller (a turn stream) aborts without emitting
+    /// `agent_settled`. This mirrors tau's `prompt()`, which logs and then
+    /// *re-raises* — the error reaches the caller (a non-zero CLI exit); it is
+    /// not swallowed. The print-mode caller reads it via [`Self::take_run_error`].
     async fn persist_or_log(
         &mut self,
         persisted_count: usize,
@@ -1224,16 +1230,22 @@ impl CodingSession {
         match self.persist_messages_since(persisted_count).await {
             Ok(count) => Some(count),
             Err(err) => {
-                let path = self.diagnostic_logger.log_exception(
-                    context,
-                    phase,
-                    "StorageError",
-                    &err.to_string(),
-                );
+                let message = err.to_string();
+                let path =
+                    self.diagnostic_logger
+                        .log_exception(context, phase, "StorageError", &message);
                 self.last_diagnostic_log_path = Some(path);
+                self.run_error = Some(message);
                 None
             }
         }
+    }
+
+    /// Take (and clear) the error from the most recent turn, if it aborted on a
+    /// persistence failure. The print-mode CLI uses this to exit non-zero, the
+    /// way tau's re-raised exception fails a non-interactive run.
+    pub fn take_run_error(&mut self) -> Option<String> {
+        self.run_error.take()
     }
 
     fn invalidate_context_usage_cache(&mut self) {

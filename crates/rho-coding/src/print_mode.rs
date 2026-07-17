@@ -140,7 +140,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
             .await
         {
             Ok(result) => {
-                println!("{}", result.output);
+                println!("{}", format_terminal_command_result(&result));
                 result.ok
             }
             Err(err) => {
@@ -151,12 +151,38 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
     }
 
     let mut renderer = create_event_renderer(config.output);
-    let stream = session.prompt(config.prompt, None);
-    futures::pin_mut!(stream);
-    while let Some(event) = stream.next().await {
-        renderer.render(&event);
+    let mut persist_failed = false;
+    {
+        let stream = session.prompt(config.prompt, None);
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            renderer.render(&event);
+        }
     }
-    renderer.finish()
+    // tau's `prompt()` re-raises a persistence failure, aborting the turn with a
+    // non-zero CLI exit; rho's stream ends without `agent_settled` and records
+    // the error, which the CLI surfaces here as a failed run.
+    if let Some(err) = session.take_run_error() {
+        eprintln!("Error: {err}");
+        persist_failed = true;
+    }
+    let ok = renderer.finish();
+    ok && !persist_failed
+}
+
+/// Format an input-bar terminal command result (tau
+/// `cli._format_terminal_command_result`): a `$ cmd` echo, a context-status
+/// line, then the raw output.
+fn format_terminal_command_result(result: &crate::session::TerminalCommandResult) -> String {
+    let context_status = if result.added_to_context {
+        "added to context"
+    } else {
+        "not added to context"
+    };
+    format!(
+        "$ {}\n[{context_status}]\n{}",
+        result.command, result.output
+    )
 }
 
 /// Configuration for [`run_print_mode`].
@@ -238,4 +264,34 @@ pub async fn run_print_mode(config: PrintModeConfig) -> bool {
         renderer.render(&CodingSessionEvent::Agent(event));
     }
     renderer.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::TerminalCommandResult;
+
+    #[test]
+    fn terminal_command_result_matches_tau_format() {
+        // tau: f"$ {command}\n[{context_status}]\n{output}".
+        let added = TerminalCommandResult {
+            command: "ls -la".to_string(),
+            output: "a\nb".to_string(),
+            exit_code: Some(0),
+            ok: true,
+            added_to_context: true,
+        };
+        assert_eq!(
+            format_terminal_command_result(&added),
+            "$ ls -la\n[added to context]\na\nb"
+        );
+        let not_added = TerminalCommandResult {
+            added_to_context: false,
+            ..added
+        };
+        assert_eq!(
+            format_terminal_command_result(&not_added),
+            "$ ls -la\n[not added to context]\na\nb"
+        );
+    }
 }

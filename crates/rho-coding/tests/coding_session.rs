@@ -9,7 +9,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use async_trait::async_trait;
 use futures::StreamExt;
 
 use rho_agent::clock::{FixedClock, SequentialIdGen};
@@ -21,6 +23,7 @@ use rho_agent::provider_events::{
 use rho_agent::session::entries::SessionEntry;
 use rho_agent::session::jsonl::entry_from_json_line;
 use rho_agent::session::memory::SessionState;
+use rho_agent::session::storage::{SessionStorage, SessionStorageError};
 use rho_ai::FakeProvider;
 use rho_coding::events::CodingSessionEvent;
 use rho_coding::paths::RhoPaths;
@@ -239,6 +242,68 @@ async fn new_session_is_indexed_after_first_message() {
         manager.get_session(&record.id).is_some(),
         "indexed after the first durable write"
     );
+}
+
+/// A storage that fails `append` after `fail_after` successful writes, to
+/// exercise the persist-failure path.
+struct FailAfterStorage {
+    inner: rho_agent::session::storage::JsonlSessionStorage,
+    calls: AtomicUsize,
+    fail_after: usize,
+}
+
+#[async_trait]
+impl SessionStorage for FailAfterStorage {
+    async fn append(&self, entry: &SessionEntry) -> Result<(), SessionStorageError> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n >= self.fail_after {
+            return Err(SessionStorageError::Io(std::io::Error::other("disk full")));
+        }
+        self.inner.append(entry).await
+    }
+
+    async fn read_all(&self) -> Result<Vec<SessionEntry>, SessionStorageError> {
+        self.inner.read_all().await
+    }
+}
+
+#[tokio::test]
+async fn persist_failure_surfaces_run_error_and_skips_settled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let session_path = tmp.path().join("session.jsonl");
+
+    // Fail on the 4th append: the 3 deferred initial entries succeed, then the
+    // first message entry write fails mid-turn.
+    let storage = Arc::new(FailAfterStorage {
+        inner: rho_agent::session::storage::JsonlSessionStorage::new(&session_path),
+        calls: AtomicUsize::new(0),
+        fail_after: 3,
+    });
+    let provider = Arc::new(FakeProvider::new(vec![text_turn("hello")]));
+    let mut session = CodingSession::load(pinned_config(provider, storage, cwd))
+        .await
+        .unwrap();
+
+    let events: Vec<CodingSessionEvent> = {
+        let stream = session.prompt("hi".to_string(), None);
+        futures::pin_mut!(stream);
+        stream.collect().await
+    };
+
+    // The turn aborts: the error is recorded (not swallowed) and no
+    // `agent_settled` is emitted (tau re-raises before settling).
+    assert!(
+        session.take_run_error().is_some(),
+        "a persistence failure must be recorded on the session"
+    );
+    let settled = events.iter().any(|e| {
+        serde_json::to_string(e)
+            .unwrap()
+            .contains("\"agent_settled\"")
+    });
+    assert!(!settled, "no agent_settled event after a persist failure");
 }
 
 #[test]
