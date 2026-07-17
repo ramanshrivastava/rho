@@ -148,6 +148,42 @@ async fn writing_two_prompts_advances_the_parent_chain() {
     assert_eq!(msgs[1].text(), "one");
     assert_eq!(msgs[2].text(), "second");
     assert_eq!(msgs[3].text(), "two");
+
+    // Assert the durable append-only structure this test claims to cover: each
+    // message entry chains off the previous leaf, and every message is followed
+    // by a leaf pointing at it (the durable-message boundary).
+    let text = std::fs::read_to_string(&session_path).unwrap();
+    let entries: Vec<SessionEntry> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| entry_from_json_line(l, None).unwrap())
+        .collect();
+    let messages: Vec<&SessionEntry> = entries
+        .iter()
+        .filter(|e| matches!(e, SessionEntry::Message(_)))
+        .collect();
+    assert_eq!(messages.len(), 4);
+    for pair in messages.windows(2) {
+        // The next message's parent is the previous message entry (the leaf that
+        // was written between them points at the same id, so the chain is linear).
+        assert_eq!(
+            pair[1].parent_id(),
+            Some(pair[0].id()),
+            "each message entry chains off its predecessor"
+        );
+    }
+    // Every message is immediately followed by a leaf whose entry_id == its id.
+    for (i, entry) in entries.iter().enumerate() {
+        if let SessionEntry::Message(m) = entry {
+            match &entries[i + 1] {
+                SessionEntry::Leaf(leaf) => {
+                    assert_eq!(leaf.entry_id.as_deref(), Some(m.id.as_str()));
+                    assert_eq!(leaf.parent_id.as_deref(), Some(m.id.as_str()));
+                }
+                other => panic!("message not followed by its leaf: {other:?}"),
+            }
+        }
+    }
 }
 
 #[tokio::test]
