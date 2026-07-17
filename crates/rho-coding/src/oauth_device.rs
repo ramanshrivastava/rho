@@ -44,7 +44,18 @@ impl CancelSignal {
     }
 
     async fn notified(&self) {
-        self.notify.notified().await;
+        // Match `asyncio.Event.wait()` (tau `oauth_device.py`), which returns
+        // immediately when the event is already set. tokio's `Notify` stores no
+        // permit for `notify_waiters()`, so a `set()` landing between the flag
+        // check and waiter registration would otherwise be lost. Register the
+        // waiter first (`enable()`), *then* observe any prior `set()`.
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.flag.load(Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -140,7 +151,14 @@ where
         expires_in_seconds,
         wait_before_first_poll,
         cancel,
-        |seconds| Box::pin(tokio::time::sleep(Duration::from_secs_f64(seconds))),
+        // `Duration::from_secs_f64` panics on an over-large finite value; a
+        // server-supplied `interval` / `slow_down` reaches here, so use the
+        // fallible conversion and saturate (tau's `asyncio.sleep` never panics).
+        |seconds| {
+            Box::pin(tokio::time::sleep(
+                Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX),
+            ))
+        },
         move || base.elapsed().as_secs_f64(),
     )
     .await
@@ -309,5 +327,18 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "Login cancelled");
+    }
+
+    #[tokio::test]
+    async fn notified_returns_when_set_before_wait() {
+        // Regression: a `set()` that lands before `notified()` registers a
+        // waiter must still wake it — matching `asyncio.Event.wait()`'s
+        // retained-set semantics. tokio's `notify_waiters()` stores no permit,
+        // so without the `enable()` + flag-check this `notified()` would hang.
+        let cancel = CancelSignal::new();
+        cancel.set();
+        tokio::time::timeout(Duration::from_secs(5), cancel.notified())
+            .await
+            .expect("notified() must return immediately when already set");
     }
 }

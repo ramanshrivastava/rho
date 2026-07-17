@@ -190,7 +190,7 @@ pub async fn login_anthropic(
     now_ms: i64,
     open_browser: bool,
 ) -> Result<OAuthCredential, OAuthError> {
-    let (verifier, challenge) = create_pkce_pair();
+    let (verifier, challenge) = create_pkce_pair()?;
     let params: [(&str, &str); 8] = [
         ("code", "true"),
         ("client_id", ANTHROPIC_CLIENT_ID),

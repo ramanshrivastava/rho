@@ -1472,7 +1472,12 @@ impl CodingSession {
         replace_instructions: bool,
     ) -> String {
         let summary = summarize_branch_messages_with_model(
-            self.config.provider.as_ref(),
+            // Read the live provider from the harness (tau
+            // `self._harness.config.provider`, session.py:1921), which is
+            // rebuilt on every model/provider switch — not the session-config
+            // provider, which is only the initial one and would be stale after
+            // a cross-provider `/model`.
+            self.harness.config().provider.as_ref(),
             &self.model(),
             messages,
             custom_instructions,

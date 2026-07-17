@@ -149,22 +149,29 @@ impl OAuthProvider for OpenAICodexOAuthProvider {
 ///
 /// The verifier is 64 random bytes, base64url-encoded (no padding); the
 /// challenge is `base64url(sha256(verifier))`.
-#[must_use]
-pub fn create_pkce_pair() -> (String, String) {
+///
+/// # Errors
+/// Returns [`OAuthError`] if secure randomness is unavailable (tau parity: abort
+/// rather than emit a predictable verifier).
+pub fn create_pkce_pair() -> Result<(String, String), OAuthError> {
     let mut bytes = [0u8; 64];
-    fill_random(&mut bytes);
+    fill_random(&mut bytes)?;
     let verifier = URL_SAFE_NO_PAD.encode(bytes);
     let digest = Sha256::digest(verifier.as_bytes());
     let challenge = URL_SAFE_NO_PAD.encode(digest);
-    (verifier, challenge)
+    Ok((verifier, challenge))
 }
 
 /// Create an OpenAI Codex OAuth authorization URL (tau
 /// `create_openai_codex_authorization_flow`).
-#[must_use]
-pub fn create_openai_codex_authorization_flow(originator: &str) -> AuthorizationFlow {
-    let (verifier, challenge) = create_pkce_pair();
-    let state = token_hex(16);
+///
+/// # Errors
+/// Returns [`OAuthError`] if secure randomness is unavailable.
+pub fn create_openai_codex_authorization_flow(
+    originator: &str,
+) -> Result<AuthorizationFlow, OAuthError> {
+    let (verifier, challenge) = create_pkce_pair()?;
+    let state = token_hex(16)?;
     let params: [(&str, &str); 10] = [
         ("response_type", "code"),
         ("client_id", OPENAI_CODEX_CLIENT_ID),
@@ -178,11 +185,11 @@ pub fn create_openai_codex_authorization_flow(originator: &str) -> Authorization
         ("originator", originator),
     ];
     let url = format!("{OPENAI_CODEX_AUTHORIZE_URL}?{}", urlencode_form(&params));
-    AuthorizationFlow {
+    Ok(AuthorizationFlow {
         verifier,
         state,
         url,
-    }
+    })
 }
 
 /// Parse a pasted redirect URL, query string, `code#state` pair, or raw code
@@ -551,25 +558,23 @@ fn non_empty(value: &str) -> Option<String> {
     }
 }
 
-fn fill_random(buffer: &mut [u8]) {
-    if getrandom::getrandom(buffer).is_err() {
-        // getrandom only fails on platforms without an entropy source; the
-        // interactive login this feeds is manual-only, so a deterministic
-        // fallback keeps the code total without weakening any tested path.
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_mul(31).wrapping_add(7);
-        }
-    }
+fn fill_random(buffer: &mut [u8]) -> Result<(), OAuthError> {
+    // Match tau: PKCE verifiers / CSRF state come from `secrets` (→ `os.urandom`),
+    // which *raises* when no entropy source exists — it never falls back to
+    // predictable bytes. A deterministic fallback here would emit a guessable
+    // verifier + state precisely when entropy fails, so abort instead.
+    getrandom::getrandom(buffer)
+        .map_err(|err| OAuthError(format!("secure randomness unavailable: {err}")))
 }
 
-fn token_hex(byte_count: usize) -> String {
+fn token_hex(byte_count: usize) -> Result<String, OAuthError> {
     let mut bytes = vec![0u8; byte_count];
-    fill_random(&mut bytes);
+    fill_random(&mut bytes)?;
     let mut out = String::with_capacity(byte_count * 2);
     for byte in bytes {
         let _ = write!(out, "{byte:02x}");
     }
-    out
+    Ok(out)
 }
 
 /// Serialize a JSON value like Python `json.dumps(value, sort_keys=True)`:
@@ -821,7 +826,7 @@ pub async fn login_openai_codex(
     open_browser: bool,
     originator: &str,
 ) -> Result<OAuthCredential, OAuthError> {
-    let flow = create_openai_codex_authorization_flow(originator);
+    let flow = create_openai_codex_authorization_flow(originator)?;
     let server = start_local_oauth_server(
         &flow.state,
         OPENAI_CODEX_CALLBACK_PORT,
@@ -954,7 +959,7 @@ mod tests {
 
     #[test]
     fn authorization_flow_includes_pkce_and_codex_params() {
-        let flow = create_openai_codex_authorization_flow("tau-test");
+        let flow = create_openai_codex_authorization_flow("tau-test").unwrap();
         assert!(
             flow.url
                 .starts_with("https://auth.openai.com/oauth/authorize?")
