@@ -164,8 +164,15 @@ through four scenarios — **text, tool, compaction (manual, with a
 `CompactionEntry` + `replaces_entry_ids`), and branch (mid-history
 `branch_to_entry`)** — resetting the id counter per scenario, and emits three
 artifacts each: the raw `sessions/<name>.session.jsonl`, the normalized
-`expected/v2/<name>.events.jsonl` event stream, and the resume `(role, text)`
-oracle `expected/v2/<name>.state.jsonl`.
+`expected/v2/<name>.events.jsonl` event stream, and the resume oracle
+`expected/v2/<name>.state.jsonl` — the **full canonical JSON** of each replayed
+message (the same wire serialization the session file uses: structured content,
+tool calls, usage, stop reason, tool ids — not just rendered text). The one
+neutralized field is `timestamp`: `SessionState` replay stamps a *synthesized*
+message (a compaction summary) from the process clock — a replay-only,
+never-persisted value that tau freezes in-harness but rho does not — so it is set
+to `0` on both sides before comparison. Every other field is compared
+byte-for-byte, and the durable session file is already byte-identical.
 
 `tests/crosscheck_v2.rs` (CI-runnable, no `uv`) reproduces all three per
 scenario: rho's writer must match the session file **byte-for-byte**, its

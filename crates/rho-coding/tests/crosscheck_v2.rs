@@ -225,7 +225,16 @@ fn serialize_event(event: &CodingSessionEvent) -> String {
     serde_json::to_string(event).expect("event serializes")
 }
 
-/// `(role, text)` of the transcript replayed from `session_path`.
+/// Full canonical JSON of each message replayed from `session_path` — the same
+/// wire serialization the session file uses (structured content + metadata), so
+/// the resume oracle checks complete message fidelity, not just rendered text.
+///
+/// The one exception is the `timestamp` field: `SessionState` replay stamps a
+/// *synthesized* message (e.g. a compaction summary) from the process clock (tau
+/// freezes it in-harness, rho does not — a replay-only, never-persisted value),
+/// so timestamps are neutralized to `0` on both sides before comparison. Every
+/// other field — role, content blocks, usage, stop reason, tool ids — is
+/// compared byte-for-byte.
 async fn replay_state(session_path: &Path, tools: bool) -> Vec<String> {
     let provider = Arc::new(FakeProvider::new(vec![]));
     let storage = jsonl_session_storage(session_path);
@@ -236,9 +245,28 @@ async fn replay_state(session_path: &Path, tools: bool) -> Vec<String> {
         .messages()
         .iter()
         .map(|m| {
-            serde_json::to_string(&serde_json::json!({"role": m.role(), "text": m.text()})).unwrap()
+            let mut value = serde_json::to_value(m).expect("message serializes");
+            neutralize_timestamps(&mut value);
+            serde_json::to_string(&value).unwrap()
         })
         .collect()
+}
+
+/// Recursively set every `timestamp` / `createdAt` field to `0`.
+fn neutralize_timestamps(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if key == "timestamp" || key == "createdAt" || key == "created_at" {
+                    *val = serde_json::Value::from(0);
+                } else {
+                    neutralize_timestamps(val);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(neutralize_timestamps),
+        _ => {}
+    }
 }
 
 fn read_lines(path: &Path) -> Vec<String> {
@@ -301,8 +329,10 @@ async fn crosscheck_v2_all_scenarios() {
 fn crosscheck_v2_resume_swap_rho_to_tau() {
     let dir = crosscheck_dir();
     let script = dir.join("resume_swap.py");
-    let tau = std::env::var("TAU_CHECKOUT")
-        .unwrap_or_else(|_| "/Users/ramanshrivastava/code/oss-gold/tau".to_string());
+    let tau = std::env::var("TAU_CHECKOUT").expect(
+        "set TAU_CHECKOUT to your tau checkout to run this test \
+         (it is run for you by `just crosscheck`)",
+    );
     let output = std::process::Command::new("uv")
         .args(["run", "--project", &tau, "python"])
         .arg(&script)
