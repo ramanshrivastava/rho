@@ -35,7 +35,9 @@ impl ReloadCategorySummary {
     /// `isize` so the `/reload` formatter can render `+N`/`-N` deltas.
     #[must_use]
     pub fn delta(&self) -> isize {
-        self.after as isize - self.before as isize
+        let after = isize::try_from(self.after).unwrap_or(isize::MAX);
+        let before = isize::try_from(self.before).unwrap_or(isize::MAX);
+        after.saturating_sub(before)
     }
 }
 
