@@ -141,12 +141,26 @@ what "correct" means, because correct is a committed file on disk. See
 [`dev-notes/phase-0.md`](../dev-notes/phase-0.md).
 
 On top of the static fixtures sits a **bidirectional crosscheck harness**
-([`tools/crosscheck/`](../tools/crosscheck)): it runs identical scripted sessions
-through both `tau -p` and `rho -p`, normalizes the nondeterministic bits (UUIDs →
-`<id:0>`, timestamps → `<ts:0>`), and byte-diffs the results — then proves a
-session written by rho *resumes in tau* and replays to the same state, and vice
-versa. The oracle is not "our tests pass"; it is "the reference implementation
-cannot tell rho's output apart from its own."
+([`tools/crosscheck/`](../tools/crosscheck)). It runs identical scripted sessions
+through both implementations — driving tau's `AgentHarness`/`CodingSession` and
+the matching rho path directly (the library layer the CLI wraps, not the `-p`
+binaries), with clocks and id generators frozen identically on both sides. Two
+distinct guarantees come out of it, and they are not the same strength:
+
+- The **session files on disk are raw byte-identical** across tau and rho —
+  committed as a literal interchange artifact — because the frozen determinism
+  (counter UUIDs + fixed clocks on the tau side; `SequentialIdGen` +
+  `FixedClock::fixture` on the rho side) makes them match with *no* normalization.
+- The **event streams** are compared only after normalizing residual volatile
+  values (UUIDs → `<id:N>`, timestamps → `<ts:N>`) — that is *normalized
+  structural* equivalence, not raw byte identity.
+
+On top of both, a resume-swap proves a session file written by rho *resumes in
+tau* and replays to the same transcript state, and vice versa. So the oracle is
+not "our tests pass"; it is "tau loads rho's own session files and replays them
+identically" — with the byte-for-byte claim scoped to the session files and the
+deterministic fixtures, and the event-stream claim scoped to normalized
+equivalence.
 
 This matters for the gate: because fixtures and crosscheck already prove
 serialization fidelity, human/adversarial review is freed to hunt exclusively for
@@ -229,8 +243,11 @@ merges the branches back and runs the milestone's DoD across the union.
 The rule for a clean split is *no shared mutable files between clusters* — the
 crate boundaries in rho (`rho-agent` → `rho-ai` → `rho-coding` → `rho-tui`) make
 this natural, since Cargo's acyclic graph already forbids the cross-edges that
-would force coordination. Cluster tier is temporary: it exists for the duration
-of one big milestone and then evaporates.
+would force coordination. The acyclic graph makes the split natural but doesn't
+erase coordination entirely: shared APIs, the workspace manifests, and
+cross-crate integration tests are still shared contracts that want a quick
+pre-dispatch check. Cluster tier is temporary: it exists for the duration of one
+big milestone and then evaporates.
 
 ## Ops: keeping a fleet alive
 
