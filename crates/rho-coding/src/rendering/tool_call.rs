@@ -74,16 +74,14 @@ fn fallback_invocation(tool_call: &ToolCall) -> String {
     if tool_call.arguments.is_empty() {
         return tool_call.name.clone();
     }
-    let mut rendered =
-        serde_json::to_string(&JsonValue::Object(tool_call.arguments.clone())).unwrap_or_default();
+    // tau renders `str(tool_call.arguments)` — Python `dict` repr, not JSON.
+    let mut rendered = crate::pystr::python_repr(&JsonValue::Object(tool_call.arguments.clone()));
     if rendered.chars().count() > FALLBACK_INVOCATION_ARGS_CHARS {
-        rendered = rendered
+        let head: String = rendered
             .chars()
             .take(FALLBACK_INVOCATION_ARGS_CHARS)
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-            + "…";
+            .collect();
+        rendered = crate::pystr::py_rstrip(&head) + "…";
     }
     format!("{} {rendered}", tool_call.name)
 }

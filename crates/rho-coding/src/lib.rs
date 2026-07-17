@@ -17,6 +17,7 @@
 pub mod events;
 mod fmt_util;
 pub mod print_mode;
+mod pystr;
 pub mod rendering;
 pub mod system_prompt;
 pub mod tools;

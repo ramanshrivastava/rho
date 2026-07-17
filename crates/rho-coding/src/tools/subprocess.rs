@@ -13,10 +13,11 @@ use std::time::Duration;
 
 use rho_agent::provider::CancellationToken;
 
-/// How the communicate loop terminated.
+/// How the communicate race terminated.
 enum Stop {
-    /// The process exited on its own; carries its status.
-    Exited(Option<std::process::ExitStatus>),
+    /// Communicate finished (process exited **and** the pipe drained); carries
+    /// the output and exit status.
+    Finished((Vec<u8>, Option<std::process::ExitStatus>)),
     /// The timeout elapsed first.
     TimedOut,
     /// The cancellation signal fired first.
@@ -56,7 +57,8 @@ pub async fn run_shell(
         .arg("-c")
         .arg(shell_command)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        // stdin is inherited (tau does not redirect it), so an interactive
+        // command sees the parent's stdin rather than an immediate EOF.
         .stdout(Stdio::from(writer))
         .stderr(Stdio::from(writer_clone));
 
@@ -76,42 +78,50 @@ pub async fn run_shell(
     let pid = child.id();
 
     // Blocking read of the merged pipe to EOF (EOF = every writer fd closed).
-    let read_handle = tokio::task::spawn_blocking(move || {
+    let mut read_handle = tokio::task::spawn_blocking(move || {
         use std::io::Read;
         let mut buf = Vec::new();
         let _ = reader.read_to_end(&mut buf);
         buf
     });
 
-    // The completion signal is process *exit* (`child.wait()`), never pipe EOF:
-    // a command can close/redirect both output streams before it exits (e.g.
-    // `exec >/dev/null 2>&1; sleep 60`), which reaches EOF early — so racing the
-    // pipe read against the timeout would let such a command outlive its
-    // deadline. Racing `wait()` keeps the timeout/cancel enforced against the
-    // real process lifetime, matching tau's `communicate()` (which awaits exit).
+    // `communicate` = process exit AND pipe drained (tau's `process.communicate`).
+    // The whole thing is raced against the deadline: EOF alone is not enough,
+    // because a command can either close its streams before exiting
+    // (`exec >/dev/null 2>&1; sleep 60`) or exit while a backgrounded child keeps
+    // the pipe open (`sleep 30 &`) — the latter leaves the drain blocked. Keeping
+    // the timeout/cancel live across the *entire* communicate, then resuming it
+    // after `killpg`, enforces the deadline in both cases, matching tau wrapping
+    // the whole `communicate()` in `asyncio.wait(timeout=...)`.
+    let communicate = async {
+        let status = child.wait().await.ok();
+        let output = (&mut read_handle).await.unwrap_or_default();
+        (output, status)
+    };
+    tokio::pin!(communicate);
+
     let stop = tokio::select! {
-        status = child.wait() => Stop::Exited(status.ok()),
+        result = communicate.as_mut() => Stop::Finished(result),
         () = maybe_timeout(timeout) => Stop::TimedOut,
         () = maybe_cancel(signal) => Stop::Cancelled,
     };
 
-    // On timeout/cancel the `child.wait()` future is dropped (nothing was
-    // reaped), so calling `wait()` again after the kill is valid.
-    let (timed_out, cancelled, status) = match stop {
-        Stop::Exited(status) => (false, false, status),
+    // On timeout/cancel, kill the group and resume the same (suspended)
+    // communicate future: `killpg` makes the pending `wait()`/drain complete.
+    let (output_bytes, timed_out, cancelled, status) = match stop {
+        Stop::Finished((output, status)) => (output, false, false, status),
         Stop::TimedOut => {
             kill_process_group(pid);
-            (true, false, child.wait().await.ok())
+            let (output, status) = communicate.as_mut().await;
+            (output, true, false, status)
         }
         Stop::Cancelled => {
             kill_process_group(pid);
-            (false, true, child.wait().await.ok())
+            let (output, status) = communicate.as_mut().await;
+            (output, false, true, status)
         }
     };
 
-    // Drain the pipe. The read completes once the exited/killed group closes
-    // every writer fd (a no-op wait already reaped the process above).
-    let output_bytes = read_handle.await.unwrap_or_default();
     let exit_code = status.and_then(exit_code_of);
 
     Ok(BashExecution {

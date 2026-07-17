@@ -22,49 +22,10 @@ pub struct Edit {
 #[error("{0}")]
 pub struct EditError(pub String);
 
-/// Python `str.splitlines(keepends)` — splits on the universal newline set.
+/// Python `str.splitlines(keepends)` (shared implementation in [`crate::pystr`]).
 #[must_use]
 pub fn splitlines(s: &str, keepends: bool) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    let n = chars.len();
-    let mut result = Vec::new();
-    let mut i = 0;
-    let mut start = 0;
-    while i < n {
-        let c = chars[i];
-        let is_break = matches!(
-            c,
-            '\n' | '\r'
-                | '\u{0b}'
-                | '\u{0c}'
-                | '\u{1c}'
-                | '\u{1d}'
-                | '\u{1e}'
-                | '\u{85}'
-                | '\u{2028}'
-                | '\u{2029}'
-        );
-        if is_break {
-            let mut eol = i + 1;
-            if c == '\r' && eol < n && chars[eol] == '\n' {
-                eol += 1;
-            }
-            let line: String = if keepends {
-                chars[start..eol].iter().collect()
-            } else {
-                chars[start..i].iter().collect()
-            };
-            result.push(line);
-            i = eol;
-            start = eol;
-        } else {
-            i += 1;
-        }
-    }
-    if start < n {
-        result.push(chars[start..n].iter().collect());
-    }
-    result
+    crate::pystr::splitlines(s, keepends)
 }
 
 /// tau `detect_line_ending`.

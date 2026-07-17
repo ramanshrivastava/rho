@@ -32,11 +32,11 @@ struct Cli {
     #[arg(long = "cwd", value_name = "DIR")]
     cwd: Option<PathBuf>,
 
-    /// Output format for print mode.
+    /// Output mode for print mode (tau's `--output`/`-o`).
     #[arg(
         short = 'o',
-        long = "output-format",
-        value_name = "FORMAT",
+        long = "output",
+        value_name = "MODE",
         default_value = "text"
     )]
     output_format: OutputFormat,
@@ -87,13 +87,19 @@ fn main() {
         }
     };
 
-    let ok = runtime.block_on(async move { run(cli, prompt).await });
-    if !ok {
-        std::process::exit(1);
+    // Exit codes mirror tau: a configuration error (`BadParameter`) exits 2, a
+    // non-recoverable run (assistant error) exits 1, success exits 0.
+    match runtime.block_on(async move { run(cli, prompt).await }) {
+        Ok(true) => {}
+        Ok(false) => std::process::exit(1),
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(2);
+        }
     }
 }
 
-async fn run(cli: Cli, prompt: String) -> bool {
+async fn run(cli: Cli, prompt: String) -> Result<bool, String> {
     let cwd = cli
         .cwd
         .clone()
@@ -107,18 +113,12 @@ async fn run(cli: Cli, prompt: String) -> bool {
             cli.model.unwrap_or_else(|| "fake".to_string()),
         )
     } else {
-        match select_provider(cli.model.clone()) {
-            Ok(pair) => pair,
-            Err(err) => {
-                eprintln!("Error: {err}");
-                return false;
-            }
-        }
+        select_provider(cli.model.clone())?
     };
 
     let config =
         PrintModeConfig::new(prompt, model, cwd, provider).with_output(cli.output_format.into());
-    run_print_mode(config).await
+    Ok(run_print_mode(config).await)
 }
 
 /// Minimal env-based provider selection (full catalog is M4b): `ANTHROPIC_API_KEY`
