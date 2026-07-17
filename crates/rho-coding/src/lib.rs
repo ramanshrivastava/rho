@@ -15,6 +15,7 @@
 //! provider catalog, OAuth, and HTML export. See `dev-notes/phase-4a.md`.
 
 pub mod events;
+mod fmt_util;
 pub mod print_mode;
 pub mod rendering;
 pub mod system_prompt;

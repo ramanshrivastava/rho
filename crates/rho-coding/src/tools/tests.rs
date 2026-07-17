@@ -259,6 +259,30 @@ async fn bash_tool_timeout_kills_shell_children() {
 }
 
 #[tokio::test]
+async fn bash_tool_timeout_fires_when_streams_close_before_exit() {
+    // Regression: a command that redirects/closes both output streams reaches
+    // pipe EOF long before it exits. The timeout must still fire against the
+    // process lifetime, not hang until the sleep finishes.
+    let dir = tempfile::tempdir().unwrap();
+    let tool = create_bash_tool(dir.path(), None);
+
+    let start = Instant::now();
+    let result = run(
+        &tool,
+        serde_json::json!({"command": "exec >/dev/null 2>&1; sleep 5", "timeout": 0.2}),
+    )
+    .await
+    .unwrap();
+    let duration = start.elapsed();
+
+    assert_eq!(result.details.as_ref().unwrap()["timed_out"], true);
+    assert!(
+        duration.as_secs_f64() < 2.0,
+        "timeout did not fire promptly ({duration:?})"
+    );
+}
+
+#[tokio::test]
 async fn bash_tool_cancellation_kills_shell_children() {
     let dir = tempfile::tempdir().unwrap();
     let tool = Arc::new(create_bash_tool(dir.path(), None));
