@@ -245,7 +245,10 @@ pub fn parse_markdown_resource(text: &str) -> (BTreeMap<String, String>, String)
     }
 
     let mut metadata: BTreeMap<String, String> = BTreeMap::new();
-    for line in raw_frontmatter.split('\n') {
+    // tau uses `str.splitlines()`, which breaks on every Unicode line boundary
+    // (`\r`, `\r\n`, `\v`, `\f`, …) and drops the trailing empty segment — not
+    // just `\n`. `pystr::splitlines` reproduces that exactly.
+    for line in crate::pystr::splitlines(raw_frontmatter, false) {
         let stripped = line.trim();
         if stripped.is_empty() || stripped.starts_with('#') {
             continue;
@@ -262,7 +265,8 @@ pub fn parse_markdown_resource(text: &str) -> (BTreeMap<String, String>, String)
 /// Derive a short description from markdown content.
 #[must_use]
 pub fn derive_description(content: &str) -> Option<String> {
-    for line in content.split('\n') {
+    // tau `content.splitlines()` — match its line-boundary set (see above).
+    for line in crate::pystr::splitlines(content, false) {
         let stripped = line.trim();
         if stripped.is_empty() {
             continue;

@@ -11,6 +11,14 @@ use uuid::Uuid;
 
 use crate::paths::{RhoPaths, resolve_path};
 
+/// A session-index read failure: a malformed / schema-invalid index line, or an
+/// unreadable index file. tau lets pydantic's `ValidationError` propagate out of
+/// `_read_index`; rho surfaces the same failure so a corrupt index makes the CLI
+/// exit non-zero instead of silently dropping records.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct SessionManagerError(pub String);
+
 /// Current unix time in seconds as a float (Python `time.time()`).
 fn now_seconds() -> f64 {
     SystemTime::now()
@@ -129,11 +137,17 @@ impl SessionManager {
     /// With `cwd`, only sessions for that resolved working directory are
     /// returned; without it, records aggregate across project indexes and the
     /// legacy global index.
-    #[must_use]
-    pub fn list_sessions(&self, cwd: Option<&Path>) -> Vec<CodingSessionRecord> {
+    ///
+    /// # Errors
+    /// Returns [`SessionManagerError`] if any index file contains a malformed /
+    /// schema-invalid line (tau parity: a corrupt index is fatal).
+    pub fn list_sessions(
+        &self,
+        cwd: Option<&Path>,
+    ) -> Result<Vec<CodingSessionRecord>, SessionManagerError> {
         let mut records = match cwd {
-            Some(cwd) => self.read_project_records(cwd),
-            None => self.read_all_records(),
+            Some(cwd) => self.read_project_records(cwd)?,
+            None => self.read_all_records()?,
         };
         // Stable descending sort by `updated_at` (matches Python's stable
         // `sorted(..., reverse=True)`).
@@ -142,21 +156,32 @@ impl SessionManager {
                 .partial_cmp(&a.updated_at)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        records
+        Ok(records)
     }
 
     /// Return a session record by id, if present.
-    #[must_use]
-    pub fn get_session(&self, session_id: &str) -> Option<CodingSessionRecord> {
-        self.read_all_records()
+    ///
+    /// # Errors
+    /// Returns [`SessionManagerError`] if the index contains a corrupt line.
+    pub fn get_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<CodingSessionRecord>, SessionManagerError> {
+        Ok(self
+            .read_all_records()?
             .into_iter()
-            .find(|record| record.id == session_id)
+            .find(|record| record.id == session_id))
     }
 
     /// Return the most recently updated session for a working directory.
-    #[must_use]
-    pub fn latest_session_for_cwd(&self, cwd: &Path) -> Option<CodingSessionRecord> {
-        self.list_sessions(Some(cwd)).into_iter().next()
+    ///
+    /// # Errors
+    /// Returns [`SessionManagerError`] if the index contains a corrupt line.
+    pub fn latest_session_for_cwd(
+        &self,
+        cwd: &Path,
+    ) -> Result<Option<CodingSessionRecord>, SessionManagerError> {
+        Ok(self.list_sessions(Some(cwd))?.into_iter().next())
     }
 
     /// Create and index a new session record.
@@ -228,7 +253,7 @@ impl SessionManager {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         let session_id = format!("default-{project_hash}");
-        if let Some(existing) = self.get_session(&session_id) {
+        if let Some(existing) = self.get_session(&session_id).ok().flatten() {
             return existing;
         }
 
@@ -259,7 +284,7 @@ impl SessionManager {
         provider_name: Option<&str>,
         title: Option<&str>,
     ) -> Option<CodingSessionRecord> {
-        let existing = self.get_session(session_id)?;
+        let existing = self.get_session(session_id).ok().flatten()?;
         let updated = CodingSessionRecord {
             id: existing.id.clone(),
             path: existing.path.clone(),
@@ -275,45 +300,61 @@ impl SessionManager {
         Some(updated)
     }
 
-    fn read_index(path: &Path) -> Vec<CodingSessionRecord> {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Vec::new();
-        };
+    fn read_index(path: &Path) -> Result<Vec<CodingSessionRecord>, SessionManagerError> {
+        // tau `_read_index`: a missing file is empty, but a malformed/schema-
+        // invalid line raises `ValidationError` and propagates. Match that — a
+        // corrupt index is a hard error, not a silent per-line drop.
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let text = std::fs::read_to_string(path).map_err(|err| {
+            SessionManagerError(format!(
+                "Failed to read session index {}: {err}",
+                path.display()
+            ))
+        })?;
         let mut records = Vec::new();
         for line in text.lines() {
             let stripped = line.trim();
             if stripped.is_empty() {
                 continue;
             }
-            if let Ok(model) = serde_json::from_str::<SessionRecordModel>(stripped) {
-                records.push(CodingSessionRecord::from_model(model));
-            }
+            let model = serde_json::from_str::<SessionRecordModel>(stripped).map_err(|err| {
+                SessionManagerError(format!(
+                    "Invalid session index entry in {}: {err}",
+                    path.display()
+                ))
+            })?;
+            records.push(CodingSessionRecord::from_model(model));
         }
-        records
+        Ok(records)
     }
 
-    fn read_project_records(&self, cwd: &Path) -> Vec<CodingSessionRecord> {
+    fn read_project_records(
+        &self,
+        cwd: &Path,
+    ) -> Result<Vec<CodingSessionRecord>, SessionManagerError> {
         let resolved_cwd = resolve_path(cwd);
-        let mut records = Self::read_index(&self.project_index_path(&resolved_cwd));
+        let mut records = Self::read_index(&self.project_index_path(&resolved_cwd))?;
         records.extend(
-            Self::read_index(&self.index_path())
+            Self::read_index(&self.index_path())?
                 .into_iter()
                 .filter(|record| record.cwd == resolved_cwd),
         );
-        deduplicate_records(records)
+        Ok(deduplicate_records(records))
     }
 
-    fn read_all_records(&self) -> Vec<CodingSessionRecord> {
-        let mut records = Self::read_index(&self.index_path());
+    fn read_all_records(&self) -> Result<Vec<CodingSessionRecord>, SessionManagerError> {
+        let mut records = Self::read_index(&self.index_path())?;
         if let Ok(entries) = std::fs::read_dir(self.paths.sessions_dir()) {
             for entry in entries.flatten() {
                 let index_path = entry.path().join("index.jsonl");
                 if index_path.is_file() {
-                    records.extend(Self::read_index(&index_path));
+                    records.extend(Self::read_index(&index_path)?);
                 }
             }
         }
-        deduplicate_records(records)
+        Ok(deduplicate_records(records))
     }
 
     fn write_index(path: &Path, records: &[CodingSessionRecord]) {
@@ -333,7 +374,12 @@ impl SessionManager {
 
     fn upsert(&self, record: &CodingSessionRecord) {
         let path = self.project_index_path(&record.cwd);
+        // Write path is best-effort: if the existing index can't be parsed we
+        // start from what we can read rather than abort a write. (Strict parsing
+        // is enforced on the read/query APIs, which is where tau's fatal
+        // `ValidationError` is user-visible.)
         let mut records: Vec<CodingSessionRecord> = Self::read_index(&path)
+            .unwrap_or_default()
             .into_iter()
             .filter(|item| item.id != record.id)
             .collect();
@@ -407,9 +453,12 @@ mod tests {
             record.path.file_name().unwrap().to_string_lossy(),
             format!("{}.jsonl", record.id)
         );
-        assert_eq!(manager.get_session(&record.id), Some(record.clone()));
-        assert_eq!(manager.list_sessions(None), vec![record.clone()]);
-        assert_eq!(manager.list_sessions(Some(&cwd)), vec![record]);
+        assert_eq!(
+            manager.get_session(&record.id).unwrap(),
+            Some(record.clone())
+        );
+        assert_eq!(manager.list_sessions(None).unwrap(), vec![record.clone()]);
+        assert_eq!(manager.list_sessions(Some(&cwd)).unwrap(), vec![record]);
     }
 
     #[test]
@@ -427,13 +476,16 @@ mod tests {
             record.path.file_name().unwrap().to_string_lossy(),
             format!("{}.jsonl", record.id)
         );
-        assert_eq!(manager.get_session(&record.id), None);
-        assert_eq!(manager.list_sessions(Some(&cwd)), Vec::new());
+        assert_eq!(manager.get_session(&record.id).unwrap(), None);
+        assert_eq!(manager.list_sessions(Some(&cwd)).unwrap(), Vec::new());
 
         manager.index_session(&record);
 
-        assert_eq!(manager.get_session(&record.id), Some(record.clone()));
-        assert_eq!(manager.list_sessions(Some(&cwd)), vec![record]);
+        assert_eq!(
+            manager.get_session(&record.id).unwrap(),
+            Some(record.clone())
+        );
+        assert_eq!(manager.list_sessions(Some(&cwd)).unwrap(), vec![record]);
     }
 
     #[test]
@@ -449,13 +501,17 @@ mod tests {
         let first = manager.create_session(&first_cwd, "fake", None, Some("First"), None);
         let second = manager.create_session(&second_cwd, "fake", None, Some("Second"), None);
 
-        assert_eq!(manager.list_sessions(Some(&first_cwd)), vec![first.clone()]);
         assert_eq!(
-            manager.list_sessions(Some(&second_cwd)),
+            manager.list_sessions(Some(&first_cwd)).unwrap(),
+            vec![first.clone()]
+        );
+        assert_eq!(
+            manager.list_sessions(Some(&second_cwd)).unwrap(),
             vec![second.clone()]
         );
         let ids: std::collections::HashSet<String> = manager
             .list_sessions(None)
+            .unwrap()
             .into_iter()
             .map(|record| record.id)
             .collect();
@@ -473,13 +529,14 @@ mod tests {
         let newer = manager.create_session(&cwd, "newer", None, None, Some("newer"));
         let _ = manager.touch_session(&older.id, None, None, None);
 
-        let latest = manager.latest_session_for_cwd(&cwd).unwrap();
+        let latest = manager.latest_session_for_cwd(&cwd).unwrap().unwrap();
 
         assert_eq!(latest.id, older.id);
         assert_eq!(latest.model, "older");
         assert!(
             manager
                 .list_sessions(Some(&cwd))
+                .unwrap()
                 .iter()
                 .any(|r| r.id == newer.id)
         );
@@ -508,7 +565,7 @@ mod tests {
         });
         std::fs::write(&index_path, format!("{line}\n")).unwrap();
 
-        let records = manager.list_sessions(Some(&cwd));
+        let records = manager.list_sessions(Some(&cwd)).unwrap();
         assert_eq!(records.len(), 1);
         let record = &records[0];
         assert_eq!(record.id, "session-1");
@@ -560,7 +617,7 @@ mod tests {
         assert_eq!(updated.provider_name.as_deref(), Some("new-provider"));
         assert_eq!(updated.title.as_deref(), Some("Updated"));
         assert!(updated.updated_at >= record.updated_at);
-        assert_eq!(manager.get_session(&record.id), Some(updated));
+        assert_eq!(manager.get_session(&record.id).unwrap(), Some(updated));
     }
 
     #[test]
@@ -574,8 +631,41 @@ mod tests {
         let _newer = manager.create_session(&cwd, "fake", None, None, Some("newer"));
         let _ = manager.touch_session(&older.id, None, None, None);
 
-        let sessions = manager.list_sessions(None);
+        let sessions = manager.list_sessions(None).unwrap();
         let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
         assert_eq!(ids, vec!["older".to_string(), "newer".to_string()]);
+    }
+
+    #[test]
+    fn corrupt_index_line_is_fatal() {
+        // tau `_read_index` lets pydantic's `ValidationError` propagate; a
+        // malformed/schema-invalid index line must be a hard error, not a
+        // silently-dropped record.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let manager = manager(base);
+        let cwd = base.join("project");
+        std::fs::create_dir(&cwd).unwrap();
+
+        // Seed a good record, then append a corrupt line to the same index.
+        let record = manager.create_session(&cwd, "fake", None, None, None);
+        let index_path = manager.project_index_path(&cwd);
+        let mut contents = std::fs::read_to_string(&index_path).unwrap();
+        contents.push_str("{ not valid json\n");
+        std::fs::write(&index_path, contents).unwrap();
+
+        assert!(
+            manager.list_sessions(Some(&cwd)).is_err(),
+            "a corrupt project index fails the read"
+        );
+        assert!(
+            manager.get_session(&record.id).is_err(),
+            "a corrupt index fails a by-id lookup too"
+        );
+
+        // A schema-invalid line (valid JSON, missing required fields) is equally
+        // fatal — matching pydantic validation, not just JSON syntax.
+        std::fs::write(&index_path, "{\"id\":\"only-id\"}\n").unwrap();
+        assert!(manager.list_sessions(Some(&cwd)).is_err());
     }
 }

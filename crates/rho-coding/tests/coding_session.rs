@@ -234,13 +234,59 @@ async fn new_session_is_indexed_after_first_message() {
 
     let mut session = CodingSession::load(config).await.unwrap();
     assert!(
-        manager.get_session(&record.id).is_none(),
+        manager.get_session(&record.id).unwrap().is_none(),
         "not indexed before the first durable write"
     );
     drain(session.prompt("go".to_string(), None)).await;
     assert!(
-        manager.get_session(&record.id).is_some(),
+        manager.get_session(&record.id).unwrap().is_some(),
         "indexed after the first durable write"
+    );
+}
+
+/// `/session` reports tau's "Session name: {title}" line only when the active
+/// session is indexed *and* named — driven through a real `CodingSession` +
+/// `SessionManager` (not a fake) so the `session_title()` wiring is exercised
+/// end to end. The prior fake-session test hard-set the title on the fake and
+/// masked that `CodingSession::session_title` was stubbed to `None`.
+#[tokio::test]
+async fn session_command_reports_indexed_title_for_a_real_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let manager = SessionManager::new(RhoPaths::new(
+        tmp.path().join(".rho"),
+        tmp.path().join(".agents"),
+    ));
+    // Index an untitled record so `get_session` resolves but `title` is None.
+    let record = manager.prepare_session(&cwd, "fake", Some("fake"), None, None);
+    manager.index_session(&record);
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(&record.path);
+    let mut config = pinned_config(provider, storage, cwd.clone());
+    config.session_id = Some(record.id.clone());
+    config.session_manager = Some(manager.clone());
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // Untitled: the "Session:" id line is present, "Session name:" is omitted
+    // (tau commands.py:418-420 gates the name line on a truthy title).
+    let message = session.handle_command("/session").message.expect("message");
+    assert!(message.contains(&format!("Session: {}", record.id)));
+    assert!(
+        !message.contains("Session name:"),
+        "untitled session must omit the name line:\n{message}"
+    );
+
+    // Name it via the manager index; `session_title()` reads the record live,
+    // so the very next `/session` now emits tau's "Session name:" line.
+    manager
+        .touch_session(&record.id, None, None, Some("Customer bugfix"))
+        .expect("record exists");
+    let message = session.handle_command("/session").message.expect("message");
+    assert!(
+        message.contains("Session name: Customer bugfix"),
+        "named session must include the title line:\n{message}"
     );
 }
 
@@ -448,4 +494,369 @@ fn entry_type(entry: &SessionEntry) -> &'static str {
         SessionEntry::SessionInfo(_) => "session_info",
         SessionEntry::Custom(_) => "custom",
     }
+}
+
+// ---------------------------------------------------------------------------
+// dispatch-2 provider/model/thinking/export/reload surface
+// ---------------------------------------------------------------------------
+
+use rho_coding::ModelChoice;
+use rho_coding::context_window::DEFAULT_CONTEXT_WINDOW_TOKENS;
+use rho_coding::credentials::FileCredentialStore;
+use rho_coding::provider_config::{ProviderSettings, builtin_provider_configs};
+use rho_coding::resources::RhoResourcePaths;
+
+/// A hermetic resource-paths root under `home`, with an empty project cwd so
+/// skill/prompt/context discovery finds nothing.
+fn temp_resource_paths(home: &Path, cwd: &Path) -> RhoResourcePaths {
+    let rho_home = home.join(".rho");
+    let agents_home = home.join(".agents");
+    std::fs::create_dir_all(&rho_home).unwrap();
+    RhoResourcePaths {
+        root: rho_home.clone(),
+        cwd: Some(cwd.to_path_buf()),
+        agents_root: Some(agents_home.clone()),
+        paths: Some(RhoPaths::new(rho_home, agents_home)),
+    }
+}
+
+/// Provider settings backed by the built-in catalog, defaulting to `openai`.
+fn openai_provider_settings() -> ProviderSettings {
+    ProviderSettings {
+        default_provider: "openai".to_string(),
+        providers: builtin_provider_configs(),
+        scoped_models: Vec::new(),
+    }
+}
+
+/// Write a plain API-key credential into the hermetic store so the provider is
+/// reported usable.
+fn write_openai_credential(home: &Path) {
+    let rho_home = home.join(".rho");
+    std::fs::create_dir_all(&rho_home).unwrap();
+    let store = FileCredentialStore::new(rho_home.join("credentials.json"));
+    store.set("openai", "sk-test-key").unwrap();
+}
+
+fn provider_aware_config(
+    provider: Arc<dyn ModelProvider>,
+    storage: Arc<dyn SessionStorage>,
+    cwd: PathBuf,
+    home: &Path,
+    model: &str,
+) -> CodingSessionConfig {
+    let resource_paths = temp_resource_paths(home, &cwd);
+    let mut config = CodingSessionConfig::new(provider, model, storage, cwd);
+    config.clock = Arc::new(FixedClock::fixture());
+    config.id_gen = Arc::new(SequentialIdGen::new());
+    config.provider_name = "openai".to_string();
+    config.provider_settings = Some(openai_provider_settings());
+    config.resource_paths = Some(resource_paths);
+    config
+}
+
+#[tokio::test]
+async fn context_window_tokens_reads_active_provider_then_falls_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    // With provider settings: the active provider's per-model window wins.
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("with.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd.clone(), tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+    assert_eq!(session.model(), "gpt-4");
+    assert_eq!(session.context_window_tokens(), 8192);
+
+    // Without provider settings: rho's fixed fallback.
+    let provider2 = Arc::new(FakeProvider::new(vec![]));
+    let storage2 = jsonl_session_storage(tmp.path().join("without.jsonl"));
+    let config2 = pinned_config(provider2, storage2, cwd);
+    let session2 = CodingSession::load(config2).await.unwrap();
+    assert_eq!(
+        session2.context_window_tokens(),
+        DEFAULT_CONTEXT_WINDOW_TOKENS
+    );
+}
+
+#[tokio::test]
+async fn available_models_and_providers_reflect_provider_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    write_openai_credential(tmp.path());
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd.clone(), tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+
+    let providers = session.available_providers();
+    assert!(
+        providers.iter().any(|name| name == "openai"),
+        "usable openai provider is listed: {providers:?}"
+    );
+    let models = session.available_models();
+    assert!(
+        models.iter().any(|model| model == "gpt-4"),
+        "active provider models are listed: {models:?}"
+    );
+    assert!(
+        session
+            .available_model_choices()
+            .contains(&ModelChoice::new("openai", "gpt-4")),
+        "provider/model choices include openai:gpt-4"
+    );
+
+    // Without provider settings the accessors collapse to the fixed pair.
+    let bare_provider = Arc::new(FakeProvider::new(vec![]));
+    let bare_storage = jsonl_session_storage(tmp.path().join("s2.jsonl"));
+    let bare_config = pinned_config(bare_provider, bare_storage, cwd);
+    let bare_session = CodingSession::load(bare_config).await.unwrap();
+    assert_eq!(bare_session.available_providers(), vec!["fake".to_string()]);
+    assert_eq!(bare_session.available_models(), vec!["fake".to_string()]);
+}
+
+#[tokio::test]
+async fn set_model_updates_harness_model_and_validates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    write_openai_credential(tmp.path());
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // A configured model switches the live harness model.
+    session.set_model("gpt-4o").unwrap();
+    assert_eq!(session.model(), "gpt-4o");
+
+    // An unconfigured model is rejected and leaves the model unchanged.
+    let err = session.set_model("nonexistent-model-xyz").unwrap_err();
+    assert!(
+        err.to_string().contains("nonexistent-model-xyz"),
+        "validation error names the bad model: {err}"
+    );
+    assert_eq!(session.model(), "gpt-4o");
+}
+
+#[tokio::test]
+async fn export_writes_an_html_artifact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let session_path = tmp.path().join("session.jsonl");
+
+    let provider = Arc::new(FakeProvider::new(vec![text_turn("exported answer")]));
+    let storage = jsonl_session_storage(&session_path);
+    let config = pinned_config(provider, storage, cwd);
+    let mut session = CodingSession::load(config).await.unwrap();
+    drain(session.prompt("hi".to_string(), None)).await;
+
+    let destination = tmp.path().join("out.html");
+    let written = session
+        .export(Some(destination.clone()), None)
+        .await
+        .unwrap();
+    assert_eq!(written, destination);
+    let html = std::fs::read_to_string(&destination).unwrap();
+    assert!(!html.is_empty(), "export writes a non-empty artifact");
+    assert!(
+        html.to_lowercase().contains("<!doctype html") || html.contains("<html"),
+        "export writes HTML"
+    );
+}
+
+#[tokio::test]
+async fn reload_reports_unchanged_when_nothing_changed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    // Hermetic, empty resource root: nothing to load, nothing changes.
+    let resource_paths = temp_resource_paths(tmp.path(), &cwd);
+    let mut config = pinned_config(provider, storage, cwd);
+    config.resource_paths = Some(resource_paths);
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    let summary = session.reload().await.unwrap();
+    assert!(!summary.skills.changed);
+    assert!(!summary.prompt_templates.changed);
+    assert!(!summary.context_files.changed);
+    assert!(!summary.extensions.changed);
+    assert!(!summary.diagnostics.changed);
+    assert!(!summary.system_prompt_rebuilt);
+    assert_eq!(summary.skills.before, summary.skills.after);
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch-2 command handling + resource expansion (tau test_coding_session.py
+// `test_minimal_commands_are_handled`, `test_session_loads_and_expands_skills`,
+// `test_session_expands_prompt_templates_as_slash_commands`).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn handle_command_routes_minimal_commands() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = pinned_config(provider, storage, cwd);
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // A bare prompt and unregistered/unknown commands are unhandled; the
+    // registered commands set their result flags (tau parity).
+    assert!(!session.handle_command("hello").handled);
+    assert!(session.handle_command("/new").new_session_requested);
+    assert!(!session.handle_command("/clear").handled); // not a registered command
+    assert!(session.handle_command("/quit").exit_requested);
+    assert!(session.handle_command("/exit").exit_requested); // alias of /quit
+    assert!(!session.handle_command("/unknown").handled);
+    // A `/skill:` command is left unhandled here — it expands via prompt().
+    assert!(!session.handle_command("/skill:foo").handled);
+}
+
+#[tokio::test]
+async fn expand_prompt_text_expands_a_loaded_skill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    // A skill is a directory containing SKILL.md (Agent Skills spec, ADR 0003).
+    let skill_dir = tmp.path().join(".rho/skills/refactor");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: Refactor helper\n---\nRefactor the target module carefully.\n",
+    )
+    .unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+
+    assert_eq!(session.skills().len(), 1, "the SKILL.md is discovered");
+    let expanded = session.expand_prompt_text("/skill:refactor").unwrap();
+    assert!(
+        expanded.starts_with("<skill name=\"refactor\" location=\""),
+        "skill command expands into an invocation block: {expanded}"
+    );
+    assert!(expanded.contains("Refactor the target module carefully."));
+    // A non-skill, non-template prompt passes through unchanged.
+    assert_eq!(
+        session.expand_prompt_text("just a prompt").unwrap(),
+        "just a prompt"
+    );
+    // An unknown skill is a ResourceError (tau raises a ValueError).
+    assert!(session.expand_prompt_text("/skill:missing").is_err());
+}
+
+#[tokio::test]
+async fn expand_prompt_text_renders_a_prompt_template() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let prompts_dir = tmp.path().join(".rho/prompts");
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    std::fs::write(prompts_dir.join("greet.md"), "Hello {{ args }}, welcome.").unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+
+    assert_eq!(session.prompt_templates().len(), 1);
+    assert_eq!(
+        session.expand_prompt_text("/greet world").unwrap(),
+        "Hello world, welcome."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M4b-2 review round: print-mode indexing (C1) + compaction diagnostics (I2)
+// ---------------------------------------------------------------------------
+
+use rho_coding::{SessionPrintModeConfig, run_session_print_mode};
+
+/// C1 — the default print path persists + indexes a session (tau
+/// `run_openai_print_mode`), so `rho sessions` lists a `rho -p` run. Before this
+/// fix the print session had no manager/id, so nothing was indexed.
+#[tokio::test]
+async fn print_mode_indexes_a_default_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let manager = SessionManager::new(RhoPaths::new(
+        tmp.path().join(".rho"),
+        tmp.path().join(".agents"),
+    ));
+
+    // Two scripted turns: the agent response and the session auto-naming call
+    // (an indexed session with one user message is auto-named — a second
+    // provider call, exactly like tau's `run_openai_print_mode`).
+    let provider = Arc::new(FakeProvider::new(vec![
+        text_turn("done"),
+        text_turn("Session title"),
+    ]));
+    let mut config = SessionPrintModeConfig::new("hello there", "fake", cwd.clone(), provider);
+    config.provider_name = "fake".to_string();
+    config.clock = Arc::new(FixedClock::fixture());
+    config.id_gen = Arc::new(SequentialIdGen::new());
+    // Inject the temp-dir manager (no `session_path` → the default indexed path).
+    config.session_manager = Some(manager.clone());
+
+    assert!(run_session_print_mode(config).await, "print run succeeds");
+
+    let sessions = manager.list_sessions(Some(&cwd)).unwrap();
+    assert_eq!(sessions.len(), 1, "the print run is indexed and listed");
+    assert_eq!(sessions[0].model, "fake");
+    assert!(
+        sessions[0].path.exists(),
+        "transcript persisted at the record path"
+    );
+}
+
+/// I2 — a failing automatic compaction records a diagnostic and stashes its path
+/// (tau `_try_auto_compact` phase `auto_compact_after_prompt`) instead of being
+/// silently dropped. A huge assistant reply pushes an older message past the
+/// 20k keep-recent budget so compaction has something to summarize; the summary
+/// call is unscripted, so the fake replays an empty stream and summarization
+/// fails.
+#[tokio::test]
+async fn failing_auto_compaction_records_a_diagnostic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let cwd = home.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let huge = "x ".repeat(60_000); // ~120k chars ≈ 30k tokens > 20k keep-recent
+    let provider = Arc::new(FakeProvider::new(vec![text_turn(&huge)]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let mut config = provider_aware_config(provider, storage, cwd, home, "gpt-4");
+    config.auto_compact_token_threshold = Some(1);
+
+    let mut session = CodingSession::load(config).await.unwrap();
+    assert!(session.last_diagnostic_log_path().is_none());
+
+    drain(session.prompt("go".to_string(), None)).await;
+
+    let path = session
+        .last_diagnostic_log_path()
+        .expect("a failed auto-compaction records a diagnostic path");
+    assert!(
+        path.exists(),
+        "diagnostic file written at {}",
+        path.display()
+    );
+    let logged = std::fs::read_to_string(path).unwrap();
+    assert!(
+        logged.contains("auto_compact_after_prompt"),
+        "diagnostic records the failing phase:\n{logged}"
+    );
 }
