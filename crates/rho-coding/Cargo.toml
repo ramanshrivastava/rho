@@ -14,3 +14,19 @@ workspace = true
 [dependencies]
 rho-agent = { path = "../rho-agent" }
 rho-ai = { path = "../rho-ai" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+monostate = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+tempfile = "3"
+os_pipe = "1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
