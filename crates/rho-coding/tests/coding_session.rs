@@ -244,6 +244,52 @@ async fn new_session_is_indexed_after_first_message() {
     );
 }
 
+/// `/session` reports tau's "Session name: {title}" line only when the active
+/// session is indexed *and* named — driven through a real `CodingSession` +
+/// `SessionManager` (not a fake) so the `session_title()` wiring is exercised
+/// end to end. The prior fake-session test hard-set the title on the fake and
+/// masked that `CodingSession::session_title` was stubbed to `None`.
+#[tokio::test]
+async fn session_command_reports_indexed_title_for_a_real_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let manager = SessionManager::new(RhoPaths::new(
+        tmp.path().join(".rho"),
+        tmp.path().join(".agents"),
+    ));
+    // Index an untitled record so `get_session` resolves but `title` is None.
+    let record = manager.prepare_session(&cwd, "fake", Some("fake"), None, None);
+    manager.index_session(&record);
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(&record.path);
+    let mut config = pinned_config(provider, storage, cwd.clone());
+    config.session_id = Some(record.id.clone());
+    config.session_manager = Some(manager.clone());
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // Untitled: the "Session:" id line is present, "Session name:" is omitted
+    // (tau commands.py:418-420 gates the name line on a truthy title).
+    let message = session.handle_command("/session").message.expect("message");
+    assert!(message.contains(&format!("Session: {}", record.id)));
+    assert!(
+        !message.contains("Session name:"),
+        "untitled session must omit the name line:\n{message}"
+    );
+
+    // Name it via the manager index; `session_title()` reads the record live,
+    // so the very next `/session` now emits tau's "Session name:" line.
+    manager
+        .touch_session(&record.id, None, None, Some("Customer bugfix"))
+        .expect("record exists");
+    let message = session.handle_command("/session").message.expect("message");
+    assert!(
+        message.contains("Session name: Customer bugfix"),
+        "named session must include the title line:\n{message}"
+    );
+}
+
 /// A storage that fails `append` after `fail_after` successful writes, to
 /// exercise the persist-failure path.
 struct FailAfterStorage {

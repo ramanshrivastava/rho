@@ -166,8 +166,14 @@ then the missing-key error — proving catalog resolution), `rho -m no-such-mode
   builds real `rho-ai` providers; the DoD demo uses `--fake` or the catalog
   resolution up to the credential check. OAuth interactive login is behind the
   manual checklist.
-- **`session_title()` returns `None` in the command view** (no title is stored on
-  a print session); `/name` still writes the index via `touch_session`.
+- **`session_title()` reads the index record live** (tau
+  `CodingSession.session_title`): it resolves `session_id` → `session_manager.get_session`
+  → `record.title`, so a named session surfaces tau's `/session` "Session name:"
+  line. The `CommandSession::session_title` return type is `Option<String>` (not
+  `Option<&str>`), because `get_session` hands back an owned record — the title
+  cannot be borrowed from `self`. `/name` still writes the index via
+  `touch_session`. (Earlier this was stubbed to `None`; a fake-session unit test
+  masked the gap, now covered by a real-session integration test.)
 - **A harness provider-swap drops live event subscribers.** `set_model` /
   `set_provider` rebuild the harness from a cloned config (rho's `AgentHarness`
   has no in-place model/provider setter). Harmless today — rho has no extension

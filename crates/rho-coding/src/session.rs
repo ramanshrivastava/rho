@@ -2827,8 +2827,12 @@ impl CommandSession for CodingSession {
         self.config.session_id.as_deref()
     }
 
-    fn session_title(&self) -> Option<&str> {
-        None
+    fn session_title(&self) -> Option<String> {
+        // Mirror tau `CodingSession.session_title`: the human-friendly title
+        // lives in the manager's index record, looked up live by session id.
+        let session_id = self.config.session_id.as_deref()?;
+        let manager = self.config.session_manager.as_ref()?;
+        manager.get_session(session_id)?.title
     }
 
     fn session_manager(&self) -> Option<&SessionManager> {

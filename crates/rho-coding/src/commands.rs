@@ -87,7 +87,10 @@ pub trait CommandSession {
     /// Active session id, if persisted (tau `session_id`).
     fn session_id(&self) -> Option<&str>;
     /// Active session title, if named (tau `session_title`).
-    fn session_title(&self) -> Option<&str>;
+    ///
+    /// Returned owned because the title lives in the session-manager index
+    /// record (fetched by value), not borrowed from `self`.
+    fn session_title(&self) -> Option<String>;
     /// Session index manager, if available (tau `session_manager`).
     fn session_manager(&self) -> Option<&SessionManager>;
 
@@ -790,7 +793,7 @@ pub fn name_command(context: CommandContext<'_>) -> CommandResult {
         let title = manager
             .get_session(&session_id)
             .and_then(|record| record.title)
-            .or_else(|| context.session.session_title().map(str::to_string))
+            .or_else(|| context.session.session_title())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| "Untitled session".to_string());
         return CommandResult::message(format!(

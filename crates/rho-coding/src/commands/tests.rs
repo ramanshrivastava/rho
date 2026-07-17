@@ -140,8 +140,8 @@ impl CommandSession for FakeSession {
     fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
-    fn session_title(&self) -> Option<&str> {
-        self.session_title.as_deref()
+    fn session_title(&self) -> Option<String> {
+        self.session_title.clone()
     }
     fn session_manager(&self) -> Option<&SessionManager> {
         self.session_manager.as_ref()
