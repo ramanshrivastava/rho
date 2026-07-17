@@ -37,6 +37,15 @@ pub trait SessionStorage: Send + Sync {
 
     /// Read all entries in storage order.
     async fn read_all(&self) -> Result<Vec<SessionEntry>, SessionStorageError>;
+
+    /// Return the backing file path when this storage is file-backed.
+    ///
+    /// tau's `_storage_path` `isinstance`-checks `JsonlSessionStorage` and reads
+    /// its `.path`; rho exposes it as a trait method that defaults to `None`
+    /// (in-memory storage) and is overridden by [`JsonlSessionStorage`].
+    fn storage_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// Local append-only JSONL session storage (tau `JsonlSessionStorage`).
@@ -67,6 +76,10 @@ impl SessionStorage for JsonlSessionStorage {
             .open(&self.path)?;
         file.write_all(entry_to_json_line(entry).as_bytes())?;
         Ok(())
+    }
+
+    fn storage_path(&self) -> Option<PathBuf> {
+        Some(self.path.clone())
     }
 
     async fn read_all(&self) -> Result<Vec<SessionEntry>, SessionStorageError> {
