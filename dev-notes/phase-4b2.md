@@ -113,8 +113,65 @@ needed union-merges.
 
 ## CommandSession, the slash-command registry & the CLI
 
-<!-- Finalized during integration; see the commit series. -->
+`commands.rs` ports tau's `CommandRegistry` and the 17 print-mode commands behind
+a `CommandSession` trait (tau's `Protocol`). `CodingSession::handle_command`
+dispatches to a freshly-built default registry — a `/name [args]`
+prompt-template command is an *expansion directive* and stays unhandled so it
+flows through `prompt()`, exactly as tau does. `impl CommandSession for
+CodingSession` is the registry's view of the session; three seams differ from
+tau and are journaled at the impl:
+
+- `model()` / `system_prompt()` borrow the harness config (`&AgentHarnessConfig`)
+  because the inherent accessors return owned `String`s.
+- `context_token_estimate` / `context_usage_breakdown` recompute the estimate on
+  `&self` (the `&mut self` accessor caches); they reuse the cache when present.
+- `ensure_session_indexed` performs only the *synchronous* index-record create;
+  rho's transcript flush is `async`, so it is deferred to the next durable write
+  (tau flushes eagerly). `set_model` in the command path drops the rare
+  provider-refresh error (the handler pre-validates the model against
+  `available_models`, so it cannot fire there); tau would propagate it.
+
+Print mode now routes commands before the agent turn (tau `run_print_mode`):
+`parse_terminal_command` → `handle_command` → on a handled command, print its
+message (running `/reload` and rendering `format_reload_summary` when requested)
+and return; only an unhandled prompt drives the agent. `SessionPrintModeConfig`
+carries `provider_settings` + `runtime_provider_config`, so the print session is
+catalog-aware — `/session` reports the active provider's context window and the
+system/message/tool token breakdown.
+
+The `rho` binary grew the full surface in clap: `-p`/`--provider`/`-m` print
+mode with catalog resolution (`resolve_provider_selection` +
+`create_model_provider`), plus `sessions`, `providers`, `export`, and `setup`
+subcommands mirroring `cli.py`. `providers` lists the vendored catalog with each
+provider's credential status (`stored:` / `env:` / `missing`); `export` renders a
+session id or `.jsonl` to HTML/JSONL. `--resume` / `--new-session` are accepted
+but report that interactive mode is M5 (no-prompt, no-subcommand does the same).
+
+Verified end to end: `rho providers` (full catalog), `rho -m gpt-5.4` (resolves,
+then the missing-key error — proving catalog resolution), `rho -m no-such-model`
+(rejected with the model list), `rho export <jsonl> --format html`, and
+`rho --fake -p "/hotkeys|/session|/quit"` (print-mode commands).
 
 ## Deferred / honest ledger
 
-<!-- Finalized during integration. -->
+- **`update_check.py` — skipped by design.** It is a network beacon (queries the
+  upstream release feed at startup); porting it adds a runtime network call with
+  no parity value for the offline oracles. Deferred; the CLI simply never emits
+  a startup update/notice line.
+- **TUI-only command results are inert in print mode.** The `*_picker_requested`
+  flags on `CommandResult` (model/resume/tree/login/logout/theme pickers) are
+  carried for parity but, exactly like tau's `run_print_mode`, print mode only
+  consumes `message` + `reload_requested`. The pickers land with the M5 TUI.
+- **Live-provider paths are constructed, not exercised.** `create_model_provider`
+  builds real `rho-ai` providers; the DoD demo uses `--fake` or the catalog
+  resolution up to the credential check. OAuth interactive login is behind the
+  manual checklist.
+- **`session_title()` returns `None` in the command view** (no title is stored on
+  a print session); `/name` still writes the index via `touch_session`.
+- **A harness provider-swap drops live event subscribers.** `set_model` /
+  `set_provider` rebuild the harness from a cloned config (rho's `AgentHarness`
+  has no in-place model/provider setter). Harmless today — rho has no extension
+  runtime and per-turn event fan-out is created fresh — but a future milestone
+  relying on persistent `harness.subscribe` listeners needs a real setter.
+- **The `/skill:` unknown-skill exit code** is 1 (via `run_error`), not tau's 2
+  (`ResourceError`→`ValueError`→`BadParameter`); see the skills section above.
