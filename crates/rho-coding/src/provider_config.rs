@@ -2103,7 +2103,10 @@ fn raw_thinking_defaults_dict(
     value: Option<&JsonValue>,
     field_name: &str,
 ) -> Result<IndexMap<String, String>, ProviderConfigError> {
-    let object = value.and_then(JsonValue::as_object).ok_or_else(|| {
+    let Some(value) = value else {
+        return Ok(IndexMap::new());
+    };
+    let object = value.as_object().ok_or_else(|| {
         cfg_err(format!(
             "Provider field must be a thinking mode object: {field_name}"
         ))
@@ -3329,14 +3332,14 @@ fn parse_string_dict(
     value: Option<&JsonValue>,
     field_name: &str,
 ) -> Result<IndexMap<String, String>, ProviderConfigError> {
-    let object = value
-        .unwrap_or(&JsonValue::Null)
-        .as_object()
-        .ok_or_else(|| {
-            cfg_err(format!(
-                "Provider field must be a string object: {field_name}"
-            ))
-        })?;
+    let Some(value) = value else {
+        return Ok(IndexMap::new());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        cfg_err(format!(
+            "Provider field must be a string object: {field_name}"
+        ))
+    })?;
     let mut items = IndexMap::new();
     for (key, item) in object {
         match item {
@@ -3357,8 +3360,10 @@ fn parse_json_dict(
     value: Option<&JsonValue>,
     field_name: &str,
 ) -> Result<JsonMap, ProviderConfigError> {
+    let Some(value) = value else {
+        return Ok(JsonMap::new());
+    };
     let object = value
-        .unwrap_or(&JsonValue::Null)
         .as_object()
         .ok_or_else(|| cfg_err(format!("Provider field must be an object: {field_name}")))?;
     let mut items = JsonMap::new();
@@ -3378,8 +3383,10 @@ fn model_metadata_dict(
     models: &[String],
     field_name: &str,
 ) -> Result<IndexMap<String, ProviderModelMetadata>, ProviderConfigError> {
+    let Some(value) = value else {
+        return Ok(IndexMap::new());
+    };
     let object = value
-        .unwrap_or(&JsonValue::Null)
         .as_object()
         .ok_or_else(|| cfg_err(format!("Provider field must be an object: {field_name}")))?;
     let mut items = IndexMap::new();
@@ -3475,8 +3482,10 @@ fn parse_thinking_level_map(
     value: Option<&JsonValue>,
     field_name: &str,
 ) -> Result<IndexMap<String, Option<String>>, ProviderConfigError> {
+    let Some(value) = value else {
+        return Ok(IndexMap::new());
+    };
     let object = value
-        .unwrap_or(&JsonValue::Null)
         .as_object()
         .ok_or_else(|| cfg_err(format!("Provider field must be an object: {field_name}")))?;
     let mut items = IndexMap::new();
@@ -3507,14 +3516,14 @@ fn parse_float_dict(
     value: Option<&JsonValue>,
     field_name: &str,
 ) -> Result<IndexMap<String, f64>, ProviderConfigError> {
-    let object = value
-        .unwrap_or(&JsonValue::Null)
-        .as_object()
-        .ok_or_else(|| {
-            cfg_err(format!(
-                "Provider field must be a number object: {field_name}"
-            ))
-        })?;
+    let Some(value) = value else {
+        return Ok(IndexMap::new());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        cfg_err(format!(
+            "Provider field must be a number object: {field_name}"
+        ))
+    })?;
     let mut items = IndexMap::new();
     for (key, item) in object {
         if key.trim().is_empty() {
@@ -3571,14 +3580,14 @@ fn parse_context_window_dict(
     value: Option<&JsonValue>,
     field_name: &str,
 ) -> Result<IndexMap<String, i64>, ProviderConfigError> {
-    let object = value
-        .unwrap_or(&JsonValue::Null)
-        .as_object()
-        .ok_or_else(|| {
-            cfg_err(format!(
-                "Provider field must be an integer object: {field_name}"
-            ))
-        })?;
+    let Some(value) = value else {
+        return Ok(IndexMap::new());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        cfg_err(format!(
+            "Provider field must be an integer object: {field_name}"
+        ))
+    })?;
     let mut items = IndexMap::new();
     for (key, item) in object {
         if key.trim().is_empty() {
