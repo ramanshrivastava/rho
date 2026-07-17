@@ -80,7 +80,10 @@ fn env_proxies() -> Vec<reqwest::Proxy> {
             _ => reqwest::Proxy::all(&url),
         };
         if let Ok(proxy) = built {
-            proxies.push(proxy);
+            // Honor NO_PROXY/no_proxy exclusions, matching httpx (which tau relies
+            // on): without this, `.no_proxy()` above would route excluded hosts
+            // through the proxy anyway.
+            proxies.push(proxy.no_proxy(reqwest::NoProxy::from_env()));
         }
     }
     proxies

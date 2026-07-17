@@ -556,6 +556,9 @@ impl CodexParser {
                     if text.is_empty() {
                         Feed::empty()
                     } else {
+                        // tau yields a ProviderTextDeltaEvent here, which the outer
+                        // loop counts as emitted content (gating mid-stream retry).
+                        self.emitted_content = true;
                         self.content_parts.push(text.clone());
                         Feed::deltas(vec![Delta::Text(text)])
                     }
@@ -775,6 +778,24 @@ mod tests {
             matches!(&deltas[0], Delta::Error { message, .. } if message == "boom"),
             "expected the provider error, got {:?}",
             deltas[0]
+        );
+    }
+
+    /// Fallback text from a completed `message` item counts as emitted content,
+    /// so a subsequent network drop is not retried (matching tau, where it is a
+    /// `ProviderTextDeltaEvent`) — Codex review.
+    #[test]
+    fn fallback_message_text_marks_emitted_content() {
+        let mut parser = CodexParser::new();
+        parser.feed_line(
+            r#"data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}"#,
+        );
+        // Trigger the blank-line flush that processes the buffered object.
+        let feed = parser.feed_line("");
+        assert!(matches!(feed.deltas.as_slice(), [Delta::Text(t)] if t == "hi"));
+        assert!(
+            parser.emitted_content(),
+            "fallback text must set emitted_content"
         );
     }
 
