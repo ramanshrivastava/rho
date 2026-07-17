@@ -34,6 +34,7 @@ pub mod print_mode;
 pub mod prompt_templates;
 pub mod provider_catalog;
 pub mod provider_config;
+pub mod provider_runtime;
 mod pystr;
 pub mod reload;
 pub mod rendering;
