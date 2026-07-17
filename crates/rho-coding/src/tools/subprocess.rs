@@ -15,8 +15,8 @@ use rho_agent::provider::CancellationToken;
 
 /// How the communicate loop terminated.
 enum Stop {
-    /// The process finished on its own; carries the full output.
-    Finished(Vec<u8>),
+    /// The process exited on its own; carries its status.
+    Exited(Option<std::process::ExitStatus>),
     /// The timeout elapsed first.
     TimedOut,
     /// The cancellation signal fired first.
@@ -75,34 +75,43 @@ pub async fn run_shell(
     drop(cmd);
     let pid = child.id();
 
-    // Blocking read of the merged pipe to EOF (EOF = every writer fd closed,
-    // i.e. the whole process group has exited or been killed).
-    let mut read_handle = tokio::task::spawn_blocking(move || {
+    // Blocking read of the merged pipe to EOF (EOF = every writer fd closed).
+    let read_handle = tokio::task::spawn_blocking(move || {
         use std::io::Read;
         let mut buf = Vec::new();
         let _ = reader.read_to_end(&mut buf);
         buf
     });
 
+    // The completion signal is process *exit* (`child.wait()`), never pipe EOF:
+    // a command can close/redirect both output streams before it exits (e.g.
+    // `exec >/dev/null 2>&1; sleep 60`), which reaches EOF early — so racing the
+    // pipe read against the timeout would let such a command outlive its
+    // deadline. Racing `wait()` keeps the timeout/cancel enforced against the
+    // real process lifetime, matching tau's `communicate()` (which awaits exit).
     let stop = tokio::select! {
-        joined = &mut read_handle => Stop::Finished(joined.unwrap_or_default()),
+        status = child.wait() => Stop::Exited(status.ok()),
         () = maybe_timeout(timeout) => Stop::TimedOut,
         () = maybe_cancel(signal) => Stop::Cancelled,
     };
 
-    let (output_bytes, timed_out, cancelled) = match stop {
-        Stop::Finished(buf) => (buf, false, false),
+    // On timeout/cancel the `child.wait()` future is dropped (nothing was
+    // reaped), so calling `wait()` again after the kill is valid.
+    let (timed_out, cancelled, status) = match stop {
+        Stop::Exited(status) => (false, false, status),
         Stop::TimedOut => {
             kill_process_group(pid);
-            (read_handle.await.unwrap_or_default(), true, false)
+            (true, false, child.wait().await.ok())
         }
         Stop::Cancelled => {
             kill_process_group(pid);
-            (read_handle.await.unwrap_or_default(), false, true)
+            (false, true, child.wait().await.ok())
         }
     };
 
-    let status = child.wait().await.ok();
+    // Drain the pipe. The read completes once the exited/killed group closes
+    // every writer fd (a no-op wait already reaped the process above).
+    let output_bytes = read_handle.await.unwrap_or_default();
     let exit_code = status.and_then(exit_code_of);
 
     Ok(BashExecution {

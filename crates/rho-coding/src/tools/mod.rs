@@ -621,7 +621,10 @@ async fn bash_execute(
     let exit_code = bash_exec.exit_code;
     let status: Option<String> = if bash_exec.timed_out {
         Some(match timeout {
-            Some(t) => format!("Command timed out after {} seconds", format_g(t)),
+            Some(t) => format!(
+                "Command timed out after {} seconds",
+                crate::fmt_util::format_g(t)
+            ),
             None => "Command timed out".to_string(),
         })
     } else if bash_exec.cancelled {
@@ -802,15 +805,6 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     out
-}
-
-/// Format like Python's `%g` for the timeout status line. Rust's float `Display`
-/// already gives the minimal decimal form (`1.0 -> "1"`, `0.01 -> "0.01"`) that
-/// `%g` produces for the practical timeout range; the only divergence is the
-/// exponent form `%g` uses below `1e-4` / at/above `1e6`, which no real timeout
-/// hits (journaled in `dev-notes/phase-4a.md`).
-fn format_g(value: f64) -> String {
-    format!("{value}")
 }
 
 fn round3(value: f64) -> f64 {

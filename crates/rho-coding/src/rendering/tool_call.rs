@@ -39,7 +39,9 @@ pub fn format_tool_call_invocation(tool_call: &ToolCall) -> String {
         "bash" => match string_argument(args, "command") {
             Some(command) => {
                 let suffix = match number_argument(args, "timeout") {
-                    Some(timeout) => format!(" (timeout {}s)", format_g(timeout)),
+                    Some(timeout) => {
+                        format!(" (timeout {}s)", crate::fmt_util::format_g(timeout))
+                    }
                     None => String::new(),
                 };
                 format!("$ {command}{suffix}")
@@ -103,10 +105,6 @@ fn number_argument(args: &JsonMap, key: &str) -> Option<f64> {
         Some(JsonValue::Number(n)) => n.as_f64(),
         _ => None,
     }
-}
-
-fn format_g(value: f64) -> String {
-    format!("{value}")
 }
 
 #[cfg(test)]
