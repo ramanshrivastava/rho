@@ -57,6 +57,7 @@ use rho_agent::session::tree::{SessionTreeError, path_to_entry};
 use rho_agent::tools::AgentTool;
 
 use crate::branch_summary::summarize_branch_messages_with_model;
+use crate::commands::{CommandResult, CommandSession, create_default_command_registry};
 use crate::context::discover_project_context_with_diagnostics;
 use crate::context_window::{
     ContextUsageEstimate, DEFAULT_COMPACTION_KEEP_RECENT_TOKENS, DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -1660,6 +1661,21 @@ impl CodingSession {
         })
     }
 
+    /// Handle a coding-session slash command (tau `handle_command`).
+    ///
+    /// A `/name [args]` prompt-template command is an *expansion directive*, not
+    /// a slash command, so it stays unhandled here and flows through `prompt()`
+    /// for on-the-fly replacement; everything else dispatches to the registry.
+    pub fn handle_command(&mut self, text: &str) -> CommandResult {
+        if expand_prompt_template_command(text, &self.prompt_templates).is_some() {
+            return CommandResult::default();
+        }
+        // The default registry is stateless; rebuilding it per call avoids a
+        // borrow conflict (`&registry` + `&mut self`) with no observable cost.
+        let registry = create_default_command_registry();
+        registry.execute(self, text)
+    }
+
     /// Expand prompt text using loaded markdown resources.
     ///
     /// tau `expand_prompt_text`: a `/name [args]` prompt-template command wins
@@ -2730,6 +2746,144 @@ fn interrupted_tool_repair_plan(
         context_entry_ids[common_prefix - 1].clone(),
         repaired[common_prefix..].to_vec(),
     ))
+}
+
+/// The slash-command registry's view of a coding session (tau `CommandSession`).
+///
+/// `model`/`system_prompt` borrow the harness config directly (the inherent
+/// accessors return owned `String`s). `context_token_estimate` and
+/// `context_usage_breakdown` recompute the estimate on `&self` rather than using
+/// the `&mut self` cache. `set_model` is only reached after `_model_command`
+/// validates the model against `available_models`, so the (rare) provider-refresh
+/// error is dropped here; tau would propagate it. `ensure_session_indexed` does
+/// the synchronous index-record creation only — the async pending-entry flush is
+/// deferred to the next durable write (tau flushes it eagerly).
+impl CommandSession for CodingSession {
+    fn cwd(&self) -> &Path {
+        &self.config.cwd
+    }
+
+    fn model(&self) -> &str {
+        self.harness.config().model.as_str()
+    }
+
+    fn provider_name(&self) -> &str {
+        &self.config.provider_name
+    }
+
+    fn available_models(&self) -> Vec<String> {
+        CodingSession::available_models(self)
+    }
+
+    fn available_providers(&self) -> Vec<String> {
+        CodingSession::available_providers(self)
+    }
+
+    fn tools_len(&self) -> usize {
+        self.harness.config().tools.len()
+    }
+
+    fn skills(&self) -> &[Skill] {
+        &self.skills
+    }
+
+    fn prompt_templates(&self) -> &[PromptTemplate] {
+        &self.prompt_templates
+    }
+
+    fn context_files(&self) -> &[ProjectContextFile] {
+        &self.context_files
+    }
+
+    fn context_token_estimate(&self) -> i64 {
+        self.context_usage_estimate().total_tokens
+    }
+
+    fn auto_compact_token_threshold(&self) -> Option<i64> {
+        CodingSession::auto_compact_token_threshold(self)
+    }
+
+    fn context_window_tokens(&self) -> i64 {
+        CodingSession::context_window_tokens(self)
+    }
+
+    fn thinking_level(&self) -> &str {
+        &self.thinking_level
+    }
+
+    fn available_thinking_levels(&self) -> Vec<String> {
+        CodingSession::available_thinking_levels(self)
+    }
+
+    fn resource_diagnostics(&self) -> &[ResourceDiagnostic] {
+        &self.resource_diagnostics
+    }
+
+    fn system_prompt(&self) -> &str {
+        self.harness.config().system.as_str()
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        self.config.session_id.as_deref()
+    }
+
+    fn session_title(&self) -> Option<&str> {
+        None
+    }
+
+    fn session_manager(&self) -> Option<&SessionManager> {
+        self.config.session_manager.as_ref()
+    }
+
+    fn thinking_unavailable_reason(&self) -> Option<String> {
+        CodingSession::thinking_unavailable_reason(self)
+    }
+
+    fn context_usage_breakdown(&self) -> Option<(i64, i64, i64)> {
+        let usage = self.context_usage_estimate();
+        Some((usage.system_tokens, usage.message_tokens, usage.tool_tokens))
+    }
+
+    fn set_model(&mut self, model: &str) {
+        let _ = CodingSession::set_model(self, model);
+    }
+
+    fn reload_provider_settings(&mut self) -> Result<(), String> {
+        CodingSession::reload_provider_settings(self).map_err(|err| err.to_string())
+    }
+
+    fn ensure_session_indexed(&mut self) {
+        let (Some(session_id), Some(manager)) = (
+            self.config.session_id.clone(),
+            self.config.session_manager.clone(),
+        ) else {
+            return;
+        };
+        if manager.get_session(&session_id).is_none() {
+            let _ = manager.create_session(
+                &self.config.cwd,
+                &CodingSession::model(self),
+                Some(&self.config.provider_name),
+                None,
+                Some(&session_id),
+            );
+        }
+    }
+}
+
+impl CodingSession {
+    /// Recompute the context-usage estimate on `&self` (the `&mut self`
+    /// accessor caches; the command view needs a shared borrow).
+    fn context_usage_estimate(&self) -> ContextUsageEstimate {
+        if let Some(cached) = self.context_usage_cache {
+            return cached;
+        }
+        estimate_context_usage(
+            &self.harness.config().system,
+            &self.harness.messages(),
+            &self.harness.config().tools,
+        )
+    }
 }
 
 fn load_session_resources(

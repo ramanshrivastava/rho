@@ -28,9 +28,7 @@ use rho_coding::provider_config::{
     resolve_provider_selection, save_provider_settings, upsert_openai_compatible_provider,
 };
 use rho_coding::provider_runtime::create_model_provider;
-use rho_coding::session_export::{
-    export_session_artifact, normalize_export_format,
-};
+use rho_coding::session_export::{export_session_artifact, normalize_export_format};
 use rho_coding::session_manager::{CodingSessionRecord, SessionManager};
 use rho_coding::thinking::DEFAULT_THINKING_LEVEL;
 use rho_coding::{PrintOutputMode, SessionPrintModeConfig, run_session_print_mode};
@@ -60,7 +58,12 @@ struct Cli {
     cwd: Option<PathBuf>,
 
     /// Output mode for print mode (tau's `--output`/`-o`).
-    #[arg(short = 'o', long = "output", value_name = "MODE", default_value = "text")]
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "MODE",
+        default_value = "text"
+    )]
     output_format: OutputFormat,
 
     /// Resume a session id (TUI mode; M5).
@@ -156,7 +159,7 @@ fn main() {
 
     // Exit codes mirror tau: a configuration error (`BadParameter`) exits 2, a
     // non-recoverable run (assistant error) exits 1, success exits 0.
-    match runtime.block_on(async move { run(cli).await }) {
+    match runtime.block_on(Box::pin(run(cli))) {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
         Err(err) => {
@@ -174,7 +177,9 @@ async fn run(cli: Cli) -> Result<bool, String> {
     let Some(prompt) = cli.prompt.clone() else {
         // Interactive TUI mode is M5.
         if cli.resume.is_some() || cli.new_session {
-            return Err("--resume / --new-session require interactive mode, which is M5.".to_string());
+            return Err(
+                "--resume / --new-session require interactive mode, which is M5.".to_string(),
+            );
         }
         return Err(format!(
             "rho {}: interactive mode is not implemented yet (M5). Use -p to run a prompt, or a \
@@ -183,7 +188,7 @@ subcommand (sessions/providers/export/setup).",
         ));
     };
 
-    run_print(cli, prompt).await
+    Box::pin(run_print(cli, prompt)).await
 }
 
 async fn run_subcommand(command: Command) -> Result<bool, String> {
@@ -223,7 +228,7 @@ async fn run_subcommand(command: Command) -> Result<bool, String> {
             let settings = load_provider_settings(None, None).map_err(|err| err.0)?;
             let mut config = OpenAICompatibleProviderConfig::new(provider);
             config.base_url = base_url.trim_end_matches('/').to_string();
-            config.api_key_env = api_key_env.clone();
+            config.api_key_env.clone_from(&api_key_env);
             config.models = vec![model.clone()];
             config.default_model = model;
             config.timeout_seconds = timeout_seconds;
@@ -254,6 +259,8 @@ async fn run_print(cli: Cli, prompt: String) -> Result<bool, String> {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let use_fake = cli.fake || std::env::var("RHO_FAKE").is_ok_and(|v| v == "1");
+    let mut settings = None;
+    let mut runtime_provider = None;
     let (provider, model, provider_name): (Arc<dyn ModelProvider>, String, String) = if use_fake {
         (
             Arc::new(demo_fake_provider()),
@@ -262,11 +269,15 @@ async fn run_print(cli: Cli, prompt: String) -> Result<bool, String> {
         )
     } else {
         let credentials = FileCredentialStore::at_default();
-        let settings = load_provider_settings(None, Some(&credentials as &dyn CredentialReader))
-            .map_err(|err| err.0)?;
-        let selection =
-            resolve_provider_selection(&settings, cli.provider.as_deref(), cli.model.as_deref())
+        let provider_settings =
+            load_provider_settings(None, Some(&credentials as &dyn CredentialReader))
                 .map_err(|err| err.0)?;
+        let selection = resolve_provider_selection(
+            &provider_settings,
+            cli.provider.as_deref(),
+            cli.model.as_deref(),
+        )
+        .map_err(|err| err.0)?;
         let provider = create_model_provider(
             &selection.provider,
             None,
@@ -275,6 +286,8 @@ async fn run_print(cli: Cli, prompt: String) -> Result<bool, String> {
         )
         .map_err(|err| err.0)?;
         let provider_name = selection.provider.name().to_string();
+        runtime_provider = Some(selection.provider.clone());
+        settings = Some(provider_settings);
         (provider, selection.model, provider_name)
     };
 
@@ -282,6 +295,8 @@ async fn run_print(cli: Cli, prompt: String) -> Result<bool, String> {
         .with_output(cli.output_format.into())
         .with_session_path(cli.session.clone());
     config.provider_name = provider_name;
+    config.provider_settings = settings;
+    config.runtime_provider_config = runtime_provider;
     Ok(run_session_print_mode(config).await)
 }
 
@@ -303,7 +318,10 @@ fn render_session_list(records: &[CodingSessionRecord]) {
 }
 
 /// Render configured providers for the CLI (tau `render_provider_settings`).
-fn render_provider_settings(settings: &ProviderSettings, credentials: Option<&FileCredentialStore>) {
+fn render_provider_settings(
+    settings: &ProviderSettings,
+    credentials: Option<&FileCredentialStore>,
+) {
     for provider in &settings.providers {
         let marker = if provider.name() == settings.default_provider {
             "*"
@@ -362,7 +380,8 @@ async fn export_session_command(
         .and_then(|ext| ext.to_str());
     let normalized_format = normalize_export_format(format.or(output_suffix).or(Some("html")))
         .map_err(|err| err.to_string())?;
-    let destination = resolve_export_destination(output.as_deref(), &session_path, &normalized_format);
+    let destination =
+        resolve_export_destination(output.as_deref(), &session_path, &normalized_format);
     export_session_artifact(
         &entries,
         &destination,
@@ -411,9 +430,11 @@ fn resolve_export_destination(
             format,
         ),
         Some(path) if path.extension().is_some() => path.to_path_buf(),
-        Some(dir) => {
-            rho_coding::session_export::default_session_export_artifact_path(session_path, dir, format)
-        }
+        Some(dir) => rho_coding::session_export::default_session_export_artifact_path(
+            session_path,
+            dir,
+            format,
+        ),
     }
 }
 
@@ -435,7 +456,8 @@ fn expanduser(path: &str) -> PathBuf {
 /// zeros; whole numbers render without a decimal point).
 fn format_g(value: f64) -> String {
     if value.is_finite() && value.fract() == 0.0 && value.abs() < 1e16 {
-        return format!("{}", value as i64);
+        // Whole number: render with no fractional part (avoids a lossy cast).
+        return format!("{value:.0}");
     }
     let mut text = format!("{value}");
     if text.contains('.') {

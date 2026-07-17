@@ -20,7 +20,9 @@ use rho_agent::provider::ModelProvider;
 use rho_agent::session::entries::SessionEntry;
 use rho_agent::session::storage::{SessionStorage, SessionStorageError};
 
+use crate::commands::format_reload_summary;
 use crate::events::CodingSessionEvent;
+use crate::provider_config::{ProviderConfig, ProviderSettings};
 use crate::rendering::{PrintOutputMode, create_event_renderer};
 use crate::session::{CodingSession, CodingSessionConfig, jsonl_session_storage};
 use crate::system_prompt::{BuildSystemPromptOptions, build_system_prompt};
@@ -65,6 +67,10 @@ pub struct SessionPrintModeConfig {
     pub id_gen: Arc<dyn IdGen>,
     /// Active provider name.
     pub provider_name: String,
+    /// Durable provider settings (enables catalog-aware model/thinking).
+    pub provider_settings: Option<ProviderSettings>,
+    /// Runtime provider config for the active selection.
+    pub runtime_provider_config: Option<ProviderConfig>,
     /// JSONL session path (`--session`); `None` uses in-memory storage.
     pub session_path: Option<PathBuf>,
 }
@@ -88,6 +94,8 @@ impl SessionPrintModeConfig {
             clock: system_clock(),
             id_gen: uuid_id_gen(),
             provider_name: "openai".to_string(),
+            provider_settings: None,
+            runtime_provider_config: None,
             session_path: None,
         }
     }
@@ -123,6 +131,8 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
     session_config.clock = config.clock;
     session_config.id_gen = config.id_gen;
     session_config.provider_name = config.provider_name;
+    session_config.provider_settings = config.provider_settings;
+    session_config.runtime_provider_config = config.runtime_provider_config;
 
     let mut session = match CodingSession::load(session_config).await {
         Ok(session) => session,
@@ -148,6 +158,26 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
                 false
             }
         };
+    }
+
+    // Slash commands are handled before the agent turn (tau `run_print_mode`):
+    // a handled command prints its message (running `/reload` if requested) and
+    // returns; only an unhandled prompt drives the agent.
+    let command = session.handle_command(&config.prompt);
+    if command.handled {
+        let mut message = command.message;
+        if command.reload_requested {
+            message = Some(match session.reload().await {
+                Ok(summary) => format_reload_summary(&summary),
+                Err(err) => format!("Could not reload: {err}"),
+            });
+        }
+        if let Some(message) = message {
+            if !message.is_empty() {
+                println!("{message}");
+            }
+        }
+        return true;
     }
 
     let mut renderer = create_event_renderer(config.output);
