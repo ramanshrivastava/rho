@@ -63,6 +63,16 @@ fn cfg_err(message: impl Into<String>) -> ProviderConfigError {
     ProviderConfigError(message.into())
 }
 
+/// Python truthiness for optional CLI/config strings: an empty string is falsy
+/// and falls back to `default`, matching tau's pervasive `value or default`
+/// (`provider_name or default_provider`, `model or provider.default_model`).
+/// So `--provider ""` / `--model ""` resolve to the defaults, not an error.
+fn or_default<'a>(value: Option<&'a str>, default: &'a str) -> &'a str {
+    value
+        .filter(|candidate| !candidate.is_empty())
+        .unwrap_or(default)
+}
+
 impl From<CatalogError> for ProviderConfigError {
     fn from(error: CatalogError) -> Self {
         Self(error.0)
@@ -871,7 +881,7 @@ impl Default for ProviderSettings {
 impl ProviderSettings {
     /// Return a configured provider by name (tau `get_provider`).
     pub fn get_provider(&self, name: Option<&str>) -> Result<&ProviderConfig, ProviderConfigError> {
-        let target = name.unwrap_or(&self.default_provider);
+        let target = or_default(name, &self.default_provider);
         self.providers
             .iter()
             .find(|provider| provider.name() == target)
@@ -2345,7 +2355,7 @@ pub fn openai_compatible_config_from_provider(
 ) -> Result<OpenAICompatibleConfig, ProviderConfigError> {
     let wrapped = ProviderConfig::OpenAICompatible(provider.clone());
     let api_key = api_key_from_provider(&wrapped, credential_reader)?;
-    let selected_model = model.unwrap_or(&provider.default_model).to_string();
+    let selected_model = or_default(model, &provider.default_model).to_string();
     let mut base_url = model_base_url(&wrapped, &selected_model);
     if provider.name == DEFAULT_PROVIDER_NAME && provider.api_key_env == "OPENAI_API_KEY" {
         if let Ok(env_url) = std::env::var("OPENAI_BASE_URL") {
@@ -2387,7 +2397,7 @@ pub fn anthropic_config_from_provider(
 ) -> Result<AnthropicConfig, ProviderConfigError> {
     let wrapped = ProviderConfig::Anthropic(provider.clone());
     let api_key = api_key_from_provider(&wrapped, credential_reader)?;
-    let selected_model = model.unwrap_or(&provider.default_model).to_string();
+    let selected_model = or_default(model, &provider.default_model).to_string();
     let thinking_budget_tokens =
         anthropic_thinking_budget_from_provider(provider, Some(&selected_model), thinking_level)?;
     let headers = header_list(&model_headers(&wrapped, &selected_model));
@@ -2496,7 +2506,7 @@ pub fn resolve_provider_selection(
     model: Option<&str>,
 ) -> Result<ProviderSelection, ProviderConfigError> {
     let provider = settings.get_provider(provider_name)?;
-    let selected_model = model.unwrap_or(provider.default_model());
+    let selected_model = or_default(model, provider.default_model());
     if selected_model.is_empty() {
         return Err(cfg_err(format!(
             "Provider {} does not define a default model",
@@ -2535,7 +2545,7 @@ pub fn validate_provider_model(
 /// `provider_thinking_levels`).
 #[must_use]
 pub fn provider_thinking_levels(provider: &ProviderConfig, model: Option<&str>) -> Vec<String> {
-    let selected_model = model.unwrap_or(provider.default_model());
+    let selected_model = or_default(model, provider.default_model());
     let metadata = metadata_for_model(provider, selected_model);
     if let Some(metadata) = metadata {
         if metadata.reasoning == Some(false) {
@@ -2574,7 +2584,7 @@ pub fn provider_thinking_unavailable_reason(
     provider: &ProviderConfig,
     model: Option<&str>,
 ) -> Option<String> {
-    let selected_model = model.unwrap_or(provider.default_model());
+    let selected_model = or_default(model, provider.default_model());
     let metadata = metadata_for_model(provider, selected_model);
     if let Some(metadata) = metadata {
         if metadata.reasoning == Some(false) {
@@ -2795,7 +2805,7 @@ fn reasoning_effort_from_provider(
     if levels.is_empty() {
         return Ok(None);
     }
-    let selected_model = model.unwrap_or(&provider.default_model).to_string();
+    let selected_model = or_default(model, &provider.default_model).to_string();
     let normalized = normalize_thinking_level(Some(thinking_level)).map_err(cfg_err)?;
     if !levels.contains(&normalized) {
         return Err(cfg_err(format!(
@@ -2827,7 +2837,7 @@ fn anthropic_thinking_budget_from_provider(
         return Ok(None);
     }
     let wrapped = ProviderConfig::Anthropic(provider.clone());
-    let selected_model = model.unwrap_or(&provider.default_model).to_string();
+    let selected_model = or_default(model, &provider.default_model).to_string();
     if anthropic_thinking_mode(&wrapped, &selected_model) == "adaptive" {
         return Ok(None);
     }

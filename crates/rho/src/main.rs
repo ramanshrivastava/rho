@@ -123,9 +123,12 @@ enum Command {
         /// Provider retry delay cap in seconds.
         #[arg(long = "max-retry-delay-seconds", default_value_t = 1.0)]
         max_retry_delay_seconds: f64,
-        /// Make this provider the default.
-        #[arg(long = "no-set-default", action = clap::ArgAction::SetFalse)]
+        /// Make this provider the default (the default behavior).
+        #[arg(long = "set-default", action = clap::ArgAction::SetTrue, overrides_with = "no_set_default")]
         set_default: bool,
+        /// Do not make this provider the default.
+        #[arg(long = "no-set-default", action = clap::ArgAction::SetTrue, overrides_with = "set_default")]
+        no_set_default: bool,
     },
 }
 
@@ -195,7 +198,10 @@ async fn run_subcommand(command: Command) -> Result<bool, String> {
     match command {
         Command::Sessions => {
             let manager = SessionManager::new(rho_coding::paths::RhoPaths::default());
-            render_session_list(&manager.list_sessions(None));
+            // A corrupt index is fatal (tau parity): surface it as a non-zero
+            // CLI exit rather than silently listing a subset.
+            let records = manager.list_sessions(None).map_err(|err| err.0)?;
+            render_session_list(&records);
             Ok(true)
         }
         Command::Providers => {
@@ -224,7 +230,11 @@ async fn run_subcommand(command: Command) -> Result<bool, String> {
             max_retries,
             max_retry_delay_seconds,
             set_default,
+            no_set_default,
         } => {
+            // tau `--set-default/--no-set-default`: default true; `overrides_with`
+            // makes the last-specified flag win.
+            let set_default = set_default || !no_set_default;
             let settings = load_provider_settings(None, None).map_err(|err| err.0)?;
             let mut config = OpenAICompatibleProviderConfig::new(provider);
             config.base_url = base_url.trim_end_matches('/').to_string();
@@ -410,6 +420,7 @@ fn resolve_export_source(session_ref: &str) -> Result<(PathBuf, String), String>
     let manager = SessionManager::new(rho_coding::paths::RhoPaths::default());
     let record = manager
         .get_session(session_ref)
+        .map_err(|err| err.0)?
         .ok_or_else(|| format!("Unknown session or file: {session_ref}"))?;
     let title = record
         .title

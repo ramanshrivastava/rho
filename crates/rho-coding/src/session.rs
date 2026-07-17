@@ -130,6 +130,20 @@ pub enum SessionError {
     Export(String),
 }
 
+impl SessionError {
+    /// A tau-style exception class name for diagnostic-log entries. Not covered
+    /// by any golden (diagnostic files are runtime-only), so this is a faithful
+    /// approximation of `type(exc).__name__`, not a byte-checked mapping.
+    #[must_use]
+    fn error_type(&self) -> &'static str {
+        match self {
+            SessionError::Storage(_) => "StorageError",
+            SessionError::Tree(_) => "SessionTreeError",
+            SessionError::Value(_) | SessionError::Export(_) => "ValueError",
+        }
+    }
+}
+
 impl From<ProviderConfigError> for SessionError {
     /// Preserve tau's `ProviderConfigError` message verbatim (tau catches these
     /// as user-facing `ValueError`s at the command boundary).
@@ -812,7 +826,8 @@ impl CodingSession {
                 }
             }
 
-            self.try_auto_compact(&context).await;
+            self.try_auto_compact(&context, "auto_compact_before_prompt")
+                .await;
             let mut persisted_count = self.harness.messages().len();
             let mut auto_name_attempted = false;
             let mut overflow_message: Option<AssistantMessage> = None;
@@ -944,7 +959,8 @@ impl CodingSession {
                 return;
             }
 
-            self.try_auto_compact(&context).await;
+            self.try_auto_compact(&context, "auto_compact_after_prompt")
+                .await;
             yield CodingSessionEvent::Session(AgentSettledEvent::new().into());
         }
     }
@@ -995,7 +1011,8 @@ impl CodingSession {
             {
                 return;
             }
-            self.try_auto_compact(&context).await;
+            self.try_auto_compact(&context, "auto_compact_after_continue")
+                .await;
             yield CodingSessionEvent::Session(AgentSettledEvent::new().into());
         }
     }
@@ -1344,23 +1361,59 @@ impl CodingSession {
         Ok(format!("Compacted {replaced} context entries."))
     }
 
-    async fn try_auto_compact(&mut self, _context: &AgentCallDiagnosticContext) -> bool {
-        (self.maybe_auto_compact().await).unwrap_or(false)
+    async fn try_auto_compact(
+        &mut self,
+        context: &AgentCallDiagnosticContext,
+        phase: &str,
+    ) -> bool {
+        // Automatic compaction must never lose a turn (tau `_try_auto_compact`):
+        // on failure, log a diagnostic (remembering its path) and carry on.
+        match self.maybe_auto_compact().await {
+            Ok(compacted) => compacted,
+            Err(err) => self.log_compaction_failure(context, phase, &err),
+        }
     }
 
-    async fn try_overflow_compact(&mut self, _context: &AgentCallDiagnosticContext) -> bool {
+    async fn try_overflow_compact(&mut self, context: &AgentCallDiagnosticContext) -> bool {
+        // A `None` plan is not a failure (nothing to compact); only a raised
+        // error is logged, so the original overflow stays visible (tau
+        // `_try_overflow_compact`, phase `overflow_compact`).
         let Some(plan) = self.recent_preserving_compaction_plan() else {
             return false;
         };
-        let Ok(summary) = self
+        let summary = match self
             .generate_compaction_summary(&plan.messages_to_summarize, None)
             .await
-        else {
-            return false;
+        {
+            Ok(summary) => summary,
+            Err(err) => return self.log_compaction_failure(context, "overflow_compact", &err),
         };
-        self.append_compaction(&summary, plan.replace_entry_ids)
+        match self
+            .append_compaction(&summary, plan.replace_entry_ids)
             .await
-            .is_ok()
+        {
+            Ok(()) => true,
+            Err(err) => self.log_compaction_failure(context, "overflow_compact", &err),
+        }
+    }
+
+    /// Record a compaction-failure diagnostic and return `false` (no compaction
+    /// happened). Mirrors tau's `log_exception` + `_last_diagnostic_log_path`
+    /// stash so the failure is surfaced without aborting the turn.
+    fn log_compaction_failure(
+        &mut self,
+        context: &AgentCallDiagnosticContext,
+        phase: &str,
+        err: &SessionError,
+    ) -> bool {
+        let path = self.diagnostic_logger.log_exception(
+            context,
+            phase,
+            err.error_type(),
+            &err.to_string(),
+        );
+        self.last_diagnostic_log_path = Some(path);
+        false
     }
 
     async fn maybe_auto_compact(&mut self) -> Result<bool, SessionError> {
@@ -1826,7 +1879,7 @@ impl CodingSession {
             self.config.session_id.as_ref(),
             self.config.session_manager.as_ref(),
         ) {
-            if let Some(record) = manager.get_session(session_id) {
+            if let Some(record) = manager.get_session(session_id).ok().flatten() {
                 if let Some(title) = record.title.filter(|t| !t.is_empty()) {
                     return title;
                 }
@@ -1846,7 +1899,7 @@ impl CodingSession {
         ) else {
             return Ok(());
         };
-        if manager.get_session(&session_id).is_none() {
+        if manager.get_session(&session_id).ok().flatten().is_none() {
             let _ = manager.create_session(
                 &self.config.cwd,
                 &self.model(),
@@ -2035,7 +2088,7 @@ impl CodingSession {
         ) else {
             return;
         };
-        if manager.get_session(session_id).is_some() {
+        if manager.get_session(session_id).ok().flatten().is_some() {
             return;
         }
         let _ = manager.create_session(
@@ -2081,7 +2134,7 @@ impl CodingSession {
         ) else {
             return false;
         };
-        if let Some(record) = manager.get_session(session_id) {
+        if let Some(record) = manager.get_session(session_id).ok().flatten() {
             if record.title.as_ref().is_some_and(|t| !t.is_empty()) {
                 return false;
             }
@@ -2116,7 +2169,7 @@ impl CodingSession {
         ) else {
             return;
         };
-        if let Some(record) = manager.get_session(session_id) {
+        if let Some(record) = manager.get_session(session_id).ok().flatten() {
             if record.title.as_ref().is_some_and(|t| !t.is_empty()) {
                 return;
             }
@@ -2832,7 +2885,9 @@ impl CommandSession for CodingSession {
         // lives in the manager's index record, looked up live by session id.
         let session_id = self.config.session_id.as_deref()?;
         let manager = self.config.session_manager.as_ref()?;
-        manager.get_session(session_id)?.title
+        // Best-effort like tau's try/except-wrapped internal reads: a corrupt
+        // index shows no title rather than aborting `/session` rendering.
+        manager.get_session(session_id).ok().flatten()?.title
     }
 
     fn session_manager(&self) -> Option<&SessionManager> {
@@ -2863,7 +2918,7 @@ impl CommandSession for CodingSession {
         ) else {
             return;
         };
-        if manager.get_session(&session_id).is_none() {
+        if manager.get_session(&session_id).ok().flatten().is_none() {
             let _ = manager.create_session(
                 &self.config.cwd,
                 &CodingSession::model(self),

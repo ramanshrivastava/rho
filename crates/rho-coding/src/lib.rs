@@ -75,7 +75,7 @@ pub use session_export::{
     default_session_export_path, export_session_artifact, export_session_html,
     export_session_jsonl, normalize_export_format, render_session_html,
 };
-pub use session_manager::{CodingSessionRecord, SessionManager};
+pub use session_manager::{CodingSessionRecord, SessionManager, SessionManagerError};
 pub use skills::{
     Skill, SkillInvocation, build_skill_index, expand_skill_command, format_skill_invocation,
     load_skills, load_skills_with_diagnostics, parse_skill_invocation,

@@ -181,6 +181,22 @@ then the missing-key error — proving catalog resolution), `rho -m no-such-mode
   relying on persistent `harness.subscribe` listeners needs a real setter.
 - **The `/skill:` unknown-skill exit code** is 1 (via `run_error`), not tau's 2
   (`ResourceError`→`ValueError`→`BadParameter`); see the skills section above.
+- **`--fake` and `--session <path>` are rho-only CLI additions.** `--fake`
+  selects the deterministic demo provider (no tau equivalent — tau's fake lives
+  only in tests); `--session <path>` persists the transcript to an explicit JSONL
+  file, *unindexed*, as an escape hatch. The default print path matches tau
+  (`run_openai_print_mode`): create + index a session, persist at `record.path`.
+- **`--extension` / `-x` and precise `--resume` + `--new-session` errors are M5
+  scope.** rho accepts `--resume` / `--new-session` but reports interactive mode
+  as M5 rather than reproducing tau's exact `BadParameter` "mutually exclusive"
+  specificity; extension flags land with the M7 WASM host. Both are deferred, not
+  divergences to keep.
+- **Index reads are strict; index writes are best-effort.** A malformed /
+  schema-invalid index line makes the *read* APIs (`list_sessions` / `get_session`
+  / `latest_session_for_cwd`, and thus `rho sessions` / `rho export`) fail with a
+  non-zero exit (tau's propagating `ValidationError`). The write-path `upsert` and
+  a few internal best-effort lookups (auto-naming, ensure-indexed — which tau also
+  wraps in try/except) tolerate a corrupt index rather than abort a write.
 
 ## Review round (bots)
 
@@ -206,3 +222,41 @@ would break byte-parity with pydantic-core. The Python float-repr shape exists
 only on `json.dumps` paths, which in this milestone is exactly the two export
 serializers. Teaching nugget: "port Python float repr" is not a blanket rule —
 it applies where tau reaches for `json.dumps`, not where it reaches for pydantic.
+
+## Review round 2 (adversarial verify)
+
+A second review pass (on top of the Codex float fix) surfaced accepted-scope
+carryovers from M4b-1 plus polish. All are fixed with tau evidence and tests:
+
+- **C1 (critical) — print mode now persists + indexes like tau.** The default
+  `rho -p` path was building an *in-memory* session with no `session_manager` /
+  `session_id`, so `ensure_session_indexed` never ran and a print run never
+  appeared in `rho sessions`. `run_session_print_mode` now mirrors
+  `cli.run_openai_print_mode`: it `create_session(cwd, model)`s (indexing
+  immediately), persists JSONL at `record.path`, and wires `session_id` +
+  `session_manager`. `--session <path>` stays as the rho-only unindexed override.
+  Note the print flow makes **two** provider calls — the agent turn and the
+  one-shot session auto-naming — exactly as tau does.
+- **I1 — a corrupt session index is fatal on read.** `read_index` returned a
+  best-effort `Vec` that silently dropped unparseable lines; tau's `_read_index`
+  lets pydantic's `ValidationError` propagate. `read_index` (and the read APIs
+  above it) now return `Result<_, SessionManagerError>`; see the ledger note on
+  the strict-read / best-effort-write split.
+- **I2 — failed automatic compaction is logged, not swallowed.** `try_auto_compact`
+  / `try_overflow_compact` ignored their diagnostic `context`; on failure they now
+  `log_exception` and stash `last_diagnostic_log_path`, with tau's per-call-site
+  phase (`auto_compact_before_prompt` / `_after_prompt` / `_after_continue` /
+  `overflow_compact`), matching `_try_auto_compact` / `_try_overflow_compact`.
+- **M1 — empty CLI strings fall back like Python `or`.** `--provider ""` /
+  `--model ""` used `Option::unwrap_or`, so an empty string won (→ "Unknown
+  provider: " / an empty model). A shared `or_default` helper reproduces tau's
+  `value or default` truthiness at `get_provider` and every
+  `model or provider.default_model` site.
+- **M2 — `setup` gains the explicit `--set-default`.** The tuning flags
+  (`--base-url` / `--api-key-env` / `--timeout-seconds` / `--max-retries` /
+  `--max-retry-delay-seconds`) already existed; added `--set-default` as the
+  `overrides_with` counterpart to `--no-set-default` (tau's `--set-default/
+  --no-set-default`, default true).
+- **M3 — frontmatter parsing uses `pystr::splitlines`.** `resources.rs` split on
+  `'\n'` only; tau uses `str.splitlines()` (every Unicode line boundary, no
+  trailing empty). Swapped to the existing `pystr::splitlines` port.

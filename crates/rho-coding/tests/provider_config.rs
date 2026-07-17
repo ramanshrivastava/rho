@@ -1232,3 +1232,22 @@ fn openai_compatible_provider_config_rejects_invalid_retries() {
     };
     assert!(bad_delay.validate().unwrap_err().0.contains("0 or greater"));
 }
+
+#[test]
+fn empty_provider_and_model_fall_back_to_defaults() {
+    // Python truthiness (M1): `--provider ""` / `--model ""` are falsy and
+    // resolve to the defaults (tau `provider_name or default_provider`,
+    // `model or provider.default_model`) rather than erroring on an empty name.
+    let settings = ProviderSettings::default();
+    let default_provider = settings.get_provider(None).unwrap();
+
+    assert_eq!(
+        settings.get_provider(Some("")).unwrap().name(),
+        default_provider.name(),
+        "empty provider name resolves to the default provider"
+    );
+
+    let selection = resolve_provider_selection(&settings, Some(""), Some("")).unwrap();
+    assert_eq!(selection.provider.name(), default_provider.name());
+    assert_eq!(selection.model, default_provider.default_model());
+}

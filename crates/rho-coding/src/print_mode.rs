@@ -3,10 +3,12 @@
 //! [`run_print_mode`] is the M4a bare-[`AgentHarness`] slice, retained as the
 //! crosscheck-v1 oracle (its stream is exactly the harness stream).
 //! [`run_session_print_mode`] is the M4b session-backed path the `rho -p` CLI
-//! now drives: it builds a [`CodingSession`], persists the transcript (JSONL
-//! when `--session` is given, in-memory otherwise), and renders the full
-//! `CodingSessionEvent` stream (harness events plus the session-owned
-//! `agent_settled` / `queue_update` / `compaction_*` / `auto_retry_*`).
+//! now drives: it builds a [`CodingSession`], creates + indexes a session record
+//! and persists the transcript as JSONL at its path (tau
+//! `run_openai_print_mode`; `--session <path>` is a rho-only unindexed override),
+//! and renders the full `CodingSessionEvent` stream (harness events plus the
+//! session-owned `agent_settled` / `queue_update` / `compaction_*` /
+//! `auto_retry_*`).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -22,9 +24,11 @@ use rho_agent::session::storage::{SessionStorage, SessionStorageError};
 
 use crate::commands::format_reload_summary;
 use crate::events::CodingSessionEvent;
+use crate::paths::RhoPaths;
 use crate::provider_config::{ProviderConfig, ProviderSettings};
 use crate::rendering::{PrintOutputMode, create_event_renderer};
 use crate::session::{CodingSession, CodingSessionConfig, jsonl_session_storage};
+use crate::session_manager::SessionManager;
 use crate::system_prompt::{BuildSystemPromptOptions, build_system_prompt};
 use crate::tools::create_coding_tools;
 
@@ -71,8 +75,16 @@ pub struct SessionPrintModeConfig {
     pub provider_settings: Option<ProviderSettings>,
     /// Runtime provider config for the active selection.
     pub runtime_provider_config: Option<ProviderConfig>,
-    /// JSONL session path (`--session`); `None` uses in-memory storage.
+    /// Explicit JSONL session path (`--session`, rho-only override). When set,
+    /// the transcript is persisted here and *not* indexed. When `None`, the
+    /// default tau path runs: a session record is created + indexed in
+    /// [`session_manager`](Self::session_manager) and the transcript persists at
+    /// its `record.path`.
     pub session_path: Option<PathBuf>,
+    /// Session manager for the default (indexed) path. `None` uses the real
+    /// `~/.rho` index; tests inject a temp-dir manager. Ignored when
+    /// `session_path` is set.
+    pub session_manager: Option<SessionManager>,
 }
 
 impl SessionPrintModeConfig {
@@ -97,6 +109,7 @@ impl SessionPrintModeConfig {
             provider_settings: None,
             runtime_provider_config: None,
             session_path: None,
+            session_manager: None,
         }
     }
 
@@ -117,22 +130,50 @@ impl SessionPrintModeConfig {
 
 /// Run one prompt through a [`CodingSession`] and render its event stream.
 ///
-/// This is the session-backed CLI path. When `session_path` is set the
-/// transcript is persisted as JSONL (resumable with `--session`); otherwise an
-/// in-memory store is used so a one-shot `rho -p` leaves no files behind.
+/// This is the session-backed CLI path. By default (tau parity) a session
+/// record is created + indexed and the transcript persists as JSONL at its
+/// `record.path`, so the run is listed by `rho sessions` and resumable. When
+/// `session_path` is set (the rho-only `--session` override) the transcript is
+/// persisted there instead and left unindexed.
 pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
-    let storage: Arc<dyn SessionStorage> = match &config.session_path {
-        Some(path) => jsonl_session_storage(path),
-        None => Arc::new(MemorySessionStorage::default()),
+    // Default path (tau `run_openai_print_mode`): create + index a session
+    // record and persist the transcript at `record.path`, so the run is listed
+    // by `rho sessions` and resumable. `--session <path>` is a rho-only explicit
+    // override: persist there, unindexed.
+    let (storage, cwd, session_id, session_manager): (
+        Arc<dyn SessionStorage>,
+        PathBuf,
+        Option<String>,
+        Option<SessionManager>,
+    ) = if let Some(path) = config.session_path {
+        (jsonl_session_storage(&path), config.cwd, None, None)
+    } else {
+        let manager = config
+            .session_manager
+            .unwrap_or_else(|| SessionManager::new(RhoPaths::default()));
+        let record = manager.create_session(
+            &config.cwd,
+            &config.model,
+            Some(&config.provider_name),
+            None,
+            None,
+        );
+        (
+            jsonl_session_storage(&record.path),
+            record.cwd.clone(),
+            Some(record.id),
+            Some(manager),
+        )
     };
-    let mut session_config =
-        CodingSessionConfig::new(config.provider, config.model, storage, config.cwd);
+    let mut session_config = CodingSessionConfig::new(config.provider, config.model, storage, cwd);
     session_config.shell_command_prefix = config.shell_command_prefix;
     session_config.clock = config.clock;
     session_config.id_gen = config.id_gen;
     session_config.provider_name = config.provider_name;
     session_config.provider_settings = config.provider_settings;
     session_config.runtime_provider_config = config.runtime_provider_config;
+    session_config.session_id = session_id;
+    session_config.session_manager = session_manager;
 
     let mut session = match CodingSession::load(session_config).await {
         Ok(session) => session,

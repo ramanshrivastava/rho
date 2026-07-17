@@ -681,6 +681,7 @@ fn name_command_renames_current_session() {
 
     let renamed = verify_manager
         .get_session(&record_id)
+        .unwrap()
         .expect("renamed record");
     assert_eq!(renamed.title.as_deref(), Some("Customer bugfix"));
     assert_eq!(renamed.model, "fake-model");
@@ -705,6 +706,7 @@ fn name_command_indexes_pending_session_before_renaming() {
 
     let record = verify_manager
         .get_session("pending-session")
+        .unwrap()
         .expect("indexed record");
     assert_eq!(record.title.as_deref(), Some("Customer bugfix"));
 }
@@ -738,7 +740,10 @@ fn name_command_rejects_multiline_name() {
         result.message.as_deref(),
         Some("Session name must be a single line.")
     );
-    let unchanged = verify_manager.get_session(&record_id).expect("record");
+    let unchanged = verify_manager
+        .get_session(&record_id)
+        .unwrap()
+        .expect("record");
     assert_eq!(unchanged.title, record.title);
 }
 

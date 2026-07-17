@@ -756,7 +756,7 @@ pub fn resume_command(context: CommandContext<'_>) -> CommandResult {
         return CommandResult::message("Session manager is not available.");
     };
     let session_id = context.args.trim();
-    if manager.get_session(session_id).is_none() {
+    if manager.get_session(session_id).ok().flatten().is_none() {
         return CommandResult::message(format!("Unknown session: {session_id}"));
     }
     CommandResult {
@@ -792,6 +792,8 @@ pub fn name_command(context: CommandContext<'_>) -> CommandResult {
             .expect("session manager present");
         let title = manager
             .get_session(&session_id)
+            .ok()
+            .flatten()
             .and_then(|record| record.title)
             .or_else(|| context.session.session_title())
             .filter(|title| !title.is_empty())
@@ -811,6 +813,8 @@ pub fn name_command(context: CommandContext<'_>) -> CommandResult {
         .session_manager()
         .expect("session manager present")
         .get_session(&session_id)
+        .ok()
+        .flatten()
         .is_some();
     if !session_indexed {
         context.session.ensure_session_indexed();
@@ -839,7 +843,9 @@ pub fn format_sessions(context: &CommandContext<'_>) -> String {
     let Some(manager) = context.session.session_manager() else {
         return "Session manager is not available.".to_string();
     };
-    let records = manager.list_sessions(Some(context.session.cwd()));
+    let records = manager
+        .list_sessions(Some(context.session.cwd()))
+        .unwrap_or_default();
     if records.is_empty() {
         return "No sessions found.".to_string();
     }

@@ -234,12 +234,12 @@ async fn new_session_is_indexed_after_first_message() {
 
     let mut session = CodingSession::load(config).await.unwrap();
     assert!(
-        manager.get_session(&record.id).is_none(),
+        manager.get_session(&record.id).unwrap().is_none(),
         "not indexed before the first durable write"
     );
     drain(session.prompt("go".to_string(), None)).await;
     assert!(
-        manager.get_session(&record.id).is_some(),
+        manager.get_session(&record.id).unwrap().is_some(),
         "indexed after the first durable write"
     );
 }
@@ -775,5 +775,88 @@ async fn expand_prompt_text_renders_a_prompt_template() {
     assert_eq!(
         session.expand_prompt_text("/greet world").unwrap(),
         "Hello world, welcome."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M4b-2 review round: print-mode indexing (C1) + compaction diagnostics (I2)
+// ---------------------------------------------------------------------------
+
+use rho_coding::{SessionPrintModeConfig, run_session_print_mode};
+
+/// C1 — the default print path persists + indexes a session (tau
+/// `run_openai_print_mode`), so `rho sessions` lists a `rho -p` run. Before this
+/// fix the print session had no manager/id, so nothing was indexed.
+#[tokio::test]
+async fn print_mode_indexes_a_default_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let manager = SessionManager::new(RhoPaths::new(
+        tmp.path().join(".rho"),
+        tmp.path().join(".agents"),
+    ));
+
+    // Two scripted turns: the agent response and the session auto-naming call
+    // (an indexed session with one user message is auto-named — a second
+    // provider call, exactly like tau's `run_openai_print_mode`).
+    let provider = Arc::new(FakeProvider::new(vec![
+        text_turn("done"),
+        text_turn("Session title"),
+    ]));
+    let mut config = SessionPrintModeConfig::new("hello there", "fake", cwd.clone(), provider);
+    config.provider_name = "fake".to_string();
+    config.clock = Arc::new(FixedClock::fixture());
+    config.id_gen = Arc::new(SequentialIdGen::new());
+    // Inject the temp-dir manager (no `session_path` → the default indexed path).
+    config.session_manager = Some(manager.clone());
+
+    assert!(run_session_print_mode(config).await, "print run succeeds");
+
+    let sessions = manager.list_sessions(Some(&cwd)).unwrap();
+    assert_eq!(sessions.len(), 1, "the print run is indexed and listed");
+    assert_eq!(sessions[0].model, "fake");
+    assert!(
+        sessions[0].path.exists(),
+        "transcript persisted at the record path"
+    );
+}
+
+/// I2 — a failing automatic compaction records a diagnostic and stashes its path
+/// (tau `_try_auto_compact` phase `auto_compact_after_prompt`) instead of being
+/// silently dropped. A huge assistant reply pushes an older message past the
+/// 20k keep-recent budget so compaction has something to summarize; the summary
+/// call is unscripted, so the fake replays an empty stream and summarization
+/// fails.
+#[tokio::test]
+async fn failing_auto_compaction_records_a_diagnostic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let cwd = home.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let huge = "x ".repeat(60_000); // ~120k chars ≈ 30k tokens > 20k keep-recent
+    let provider = Arc::new(FakeProvider::new(vec![text_turn(&huge)]));
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let mut config = provider_aware_config(provider, storage, cwd, home, "gpt-4");
+    config.auto_compact_token_threshold = Some(1);
+
+    let mut session = CodingSession::load(config).await.unwrap();
+    assert!(session.last_diagnostic_log_path().is_none());
+
+    drain(session.prompt("go".to_string(), None)).await;
+
+    let path = session
+        .last_diagnostic_log_path()
+        .expect("a failed auto-compaction records a diagnostic path");
+    assert!(
+        path.exists(),
+        "diagnostic file written at {}",
+        path.display()
+    );
+    let logged = std::fs::read_to_string(path).unwrap();
+    assert!(
+        logged.contains("auto_compact_after_prompt"),
+        "diagnostic records the failing phase:\n{logged}"
     );
 }
