@@ -41,7 +41,8 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 dashmap = "6"
 async-trait = "0.1"
-toml = "0.8"
+toml = { version = "0.8", features = ["preserve_order"] }
+indexmap = "2"
 
 # Lints applied across every member crate. Clippy runs at pedantic with a small
 # set of pragmatic allows; CI treats all warnings as errors (`-D warnings`).
