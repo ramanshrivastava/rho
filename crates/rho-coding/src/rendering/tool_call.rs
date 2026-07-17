@@ -61,7 +61,12 @@ fn read_line_suffix(args: &JsonMap) -> String {
     let start = offset.map_or(1, |o| o.max(1));
     match limit {
         None => format!(":{start}-"),
-        Some(limit) => format!(":{start}-{}", start + limit.max(1) - 1),
+        // Saturating: `start`/`limit` come from arbitrary tool-call JSON, and a
+        // debug build would otherwise panic on `i64` overflow for huge values.
+        Some(limit) => {
+            let end = start.saturating_add(limit.max(1).saturating_sub(1));
+            format!(":{start}-{end}")
+        }
     }
 }
 

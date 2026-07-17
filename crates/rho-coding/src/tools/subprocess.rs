@@ -124,7 +124,14 @@ pub async fn run_shell(
 
 async fn maybe_timeout(timeout: Option<f64>) {
     match timeout {
-        Some(secs) if secs > 0.0 => tokio::time::sleep(Duration::from_secs_f64(secs)).await,
+        // `try_from_secs_f64` (not `from_secs_f64`) so an absurdly large but
+        // valid timeout (e.g. `1e300`) does not panic on `Duration` overflow. An
+        // un-representable timeout degrades to "no effective deadline", matching
+        // Python's `asyncio.wait(timeout=1e300)` (a wait far longer than any run).
+        Some(secs) if secs > 0.0 => match Duration::try_from_secs_f64(secs) {
+            Ok(duration) => tokio::time::sleep(duration).await,
+            Err(_) => std::future::pending::<()>().await,
+        },
         _ => std::future::pending::<()>().await,
     }
 }

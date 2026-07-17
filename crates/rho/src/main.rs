@@ -141,6 +141,11 @@ fn select_provider(model: Option<String>) -> Result<(Arc<dyn ModelProvider>, Str
                 .unwrap_or_else(|| "gpt-4o".to_string());
             Ok((Arc::new(provider), model))
         }
+        // A configured OPENAI_API_KEY with an invalid timeout/retry var is a
+        // real misconfiguration — surface it instead of the generic message.
+        Err(err) if std::env::var("OPENAI_API_KEY").is_ok_and(|key| !key.is_empty()) => {
+            Err(format!("Invalid OpenAI configuration: {err}"))
+        }
         Err(_) => Err(
             "No provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or pass --fake for \
 an offline demo."
