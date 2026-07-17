@@ -80,6 +80,52 @@ async fn retries_transient_status_then_succeeds() {
 }
 
 #[tokio::test]
+async fn credentials_resolved_once_across_retries() {
+    // 500 then 200: two attempts, but the OpenAI credential resolver must run
+    // exactly once (tau resolves before the retry loop).
+    let ok_body = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    let responses = Arc::new(Mutex::new(vec![
+        (500u16, "try again".to_string()),
+        (200u16, ok_body.to_string()),
+    ]));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server = spawn_sequenced(responses, attempts.clone()).await;
+
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
+    let calls = resolver_calls.clone();
+    let resolver: rho_ai::env::RuntimeProviderAuthResolver = Arc::new(move || {
+        let calls = calls.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(rho_ai::RuntimeProviderAuth {
+                api_key: "resolved-key".to_string(),
+                base_url: None,
+                headers: None,
+            })
+        })
+    });
+
+    let provider = OpenAICompatibleProvider::new(
+        OpenAICompatibleConfig::new("k")
+            .with_base_url(server.base_url())
+            .with_max_retries(1)
+            .with_max_retry_delay_seconds(0.0)
+            .with_credential_resolver(resolver),
+    )
+    .with_clock(clock());
+    let stream = provider.stream_response("m", "You are Tau.", &[user("Say ok")], &[], None);
+    let _ = event_types(stream).await;
+    server.shutdown().await;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "two HTTP attempts");
+    assert_eq!(
+        resolver_calls.load(Ordering::SeqCst),
+        1,
+        "credentials must be resolved once, not per attempt"
+    );
+}
+
+#[tokio::test]
 async fn does_not_retry_non_transient_status() {
     let body = r#"{"error":{"message":"The selected model is unavailable."}}"#;
     let responses = Arc::new(Mutex::new(vec![(400u16, body.to_string())]));
