@@ -427,6 +427,13 @@ impl ProviderParser for CodexParser {
         if !self.done && !self.buffer.is_empty() {
             let data = std::mem::take(&mut self.buffer).join("\n");
             deltas.extend(self.process(&data).deltas);
+            // If that flushed object was a terminal `error`/`response.failed`, tau
+            // yields the error and `return`s — no trailing `ResponseEnd`. The
+            // engine's pre-finalize `fatal()` check can't see this fatal (it only
+            // materializes here), so guard it: emit the error alone.
+            if self.fatal {
+                return deltas;
+            }
         }
         let message = assistant_message(
             assistant_content(&self.content_parts.concat(), Vec::new()),
@@ -740,4 +747,46 @@ fn error_message(event: &Map<String, Value>, fallback: &str) -> String {
         }
     }
     fallback.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::ProviderParser;
+
+    /// A terminal `response.failed` frame with **no** trailing blank line is
+    /// processed by the EOF flush in `finalize`. tau yields the error and
+    /// returns without a `ResponseEnd`, so `finalize` must emit the error alone —
+    /// never a contradictory `done` after `error` (Codex review P1).
+    #[test]
+    fn eof_flush_of_terminal_error_emits_error_without_end() {
+        let mut parser = CodexParser::new();
+        let feed = parser.feed_line(
+            r#"data: {"type":"response.failed","response":{"error":{"message":"boom"}}}"#,
+        );
+        assert!(
+            feed.deltas.is_empty(),
+            "buffered, not processed until flush"
+        );
+        let deltas = parser.finalize();
+        assert!(parser.fatal(), "the failed frame is fatal");
+        assert_eq!(deltas.len(), 1, "only the error delta, no End");
+        assert!(
+            matches!(&deltas[0], Delta::Error { message, .. } if message == "boom"),
+            "expected the provider error, got {:?}",
+            deltas[0]
+        );
+    }
+
+    /// A non-terminal object flushed at EOF still gets a trailing `End`.
+    #[test]
+    fn eof_flush_of_completed_emits_end() {
+        let mut parser = CodexParser::new();
+        parser
+            .feed_line(r#"data: {"type":"response.completed","response":{"status":"completed"}}"#);
+        let deltas = parser.finalize();
+        assert!(!parser.fatal());
+        assert_eq!(deltas.len(), 1);
+        assert!(matches!(&deltas[0], Delta::End { .. }));
+    }
 }
