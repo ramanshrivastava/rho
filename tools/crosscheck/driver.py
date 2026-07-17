@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extract-fixtures"))
 
+from _common import patch_determinism  # noqa: E402
 from normalizer import normalize_stream  # noqa: E402
 
 from tau_agent import (  # noqa: E402
@@ -93,6 +94,13 @@ async def _run(name: str, spec: dict) -> list[str]:
 
 
 async def _main() -> None:
+    # Freeze tau's message clock so every timestamp is the same fixed value
+    # (`1_700_000_000_123` ms). The normalizer then collapses them all to
+    # `<ts:0>`, making the crosscheck language-independent: rho reproduces the
+    # identical stream with `FixedClock::fixture()`. Without this, the tokens
+    # depend on wall-clock millisecond collisions that a Rust re-implementation
+    # cannot reproduce. See dev-notes/phase-4a.md.
+    patch_determinism()
     out_dir = Path(__file__).resolve().parent / "expected"
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, spec in _scenarios().items():
