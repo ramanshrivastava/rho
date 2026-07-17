@@ -26,6 +26,7 @@ mod pystr;
 pub mod rendering;
 pub mod resources;
 pub mod session;
+pub mod session_export;
 pub mod session_manager;
 pub mod system_prompt;
 pub mod thinking;
@@ -43,6 +44,11 @@ pub use rendering::{
 pub use session::{
     CodingSession, CodingSessionConfig, SessionError, StreamingBehavior, jsonl_session_storage,
     parse_terminal_command,
+};
+pub use session_export::{
+    DEFAULT_EXPORT_TITLE, SessionExportError, default_session_export_artifact_path,
+    default_session_export_path, export_session_artifact, export_session_html,
+    export_session_jsonl, normalize_export_format, render_session_html,
 };
 pub use session_manager::{CodingSessionRecord, SessionManager};
 pub use system_prompt::{BuildSystemPromptOptions, Date, build_system_prompt};
