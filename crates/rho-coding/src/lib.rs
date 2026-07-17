@@ -15,6 +15,7 @@
 //! provider catalog, OAuth, and HTML export. See `dev-notes/phase-4a.md`.
 
 pub mod branch_summary;
+pub mod catalog_loader;
 pub mod context;
 pub mod context_window;
 pub mod diagnostics;
@@ -22,6 +23,8 @@ pub mod events;
 mod fmt_util;
 pub mod paths;
 pub mod print_mode;
+pub mod provider_catalog;
+pub mod provider_config;
 mod pystr;
 pub mod rendering;
 pub mod resources;
