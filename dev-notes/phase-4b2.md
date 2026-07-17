@@ -187,8 +187,16 @@ structure to the wrapped `Compact`/`Pretty` base, applied to both the JSONL
 (`dump_entry_line`) and HTML (`json_dump`) paths; whole-number floats are
 unchanged so the byte-match goldens hold, with a small-float regression test.
 
-Adjacent, **left for a follow-up**: `rho-agent`'s wire codec
-(`entry_to_json_line`) serializes typed `f64`s via serde's default too, so a
-sub-`1e-4` cost would render `5e-7` on the *storage* path as well. It passes
-crosscheck v2 (the pinned fixtures carry no such costs), and confirming a real
-divergence needs a `pydantic-core` float-output check — an M1-scoped task.
+Why the fix is **export-only** (a genuine tau quirk, verified against the
+interpreter): tau serializes floats *two different ways* depending on the path.
+- Storage / wire (`model_dump_json`) goes through **pydantic-core**, whose
+  serializer is written in Rust on top of serde — so `UsageCost(input=0.0000005)`
+  emits `"input":5e-7`, identical to serde's default.
+- Export (`json.dumps`) uses Python's stdlib, i.e. `float.__repr__` → `5e-07`.
+
+So `rho-agent`'s wire codec (`entry_to_json_line`, plain serde) is *already
+correct* and must **not** get the `PyFloat` treatment — matching it to `5e-07`
+would break byte-parity with pydantic-core. The Python float-repr shape exists
+only on `json.dumps` paths, which in this milestone is exactly the two export
+serializers. Teaching nugget: "port Python float repr" is not a blanket rule —
+it applies where tau reaches for `json.dumps`, not where it reaches for pydantic.
