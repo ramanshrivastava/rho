@@ -18,7 +18,7 @@ use rho_agent::provider_events::{
     ToolCallEndEvent,
 };
 use rho_ai::{AnthropicConfig, AnthropicProvider, FakeProvider, OpenAICompatibleProvider};
-use rho_coding::{PrintModeConfig, PrintOutputMode, run_print_mode};
+use rho_coding::{PrintOutputMode, SessionPrintModeConfig, run_session_print_mode};
 
 /// A minimalist Pi-style coding-agent harness (Rust port of tau).
 #[derive(Debug, Parser)]
@@ -48,6 +48,11 @@ struct Cli {
     /// Use the scripted `FakeProvider` (offline demo; ignores real API keys).
     #[arg(long = "fake")]
     fake: bool,
+
+    /// Persist the session transcript to this JSONL path (resumable). Without
+    /// it, print mode uses an in-memory session and leaves no files behind.
+    #[arg(long = "session", value_name = "PATH")]
+    session: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -116,9 +121,10 @@ async fn run(cli: Cli, prompt: String) -> Result<bool, String> {
         select_provider(cli.model.clone())?
     };
 
-    let config =
-        PrintModeConfig::new(prompt, model, cwd, provider).with_output(cli.output_format.into());
-    Ok(run_print_mode(config).await)
+    let config = SessionPrintModeConfig::new(prompt, model, cwd, provider)
+        .with_output(cli.output_format.into())
+        .with_session_path(cli.session.clone());
+    Ok(run_session_print_mode(config).await)
 }
 
 /// Minimal env-based provider selection (full catalog is M4b): `ANTHROPIC_API_KEY`

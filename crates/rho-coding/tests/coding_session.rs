@@ -252,9 +252,22 @@ async fn resume_of_every_fixture_session_matches_direct_replay() {
         let session = CodingSession::load(pinned_config(provider, storage, cwd))
             .await
             .unwrap();
+        // Compare (role, text) per message rather than full structs: a
+        // branch-summary message is *synthesized* during replay with a
+        // wall-clock timestamp (rho-agent M2 behavior), so the two independent
+        // reconstructions can differ by a millisecond in that field alone.
+        let got: Vec<(&str, String)> = session
+            .messages()
+            .iter()
+            .map(|m| (m.role(), m.text()))
+            .collect();
+        let want: Vec<(&str, String)> = expected
+            .messages
+            .iter()
+            .map(|m| (m.role(), m.text()))
+            .collect();
         assert_eq!(
-            session.messages(),
-            expected.messages,
+            got, want,
             "resume of sessions/{name}.jsonl replays to the same transcript"
         );
     }
