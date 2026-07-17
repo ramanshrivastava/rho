@@ -1,26 +1,145 @@
-//! The M4a non-interactive print-mode vertical slice (a thin port of tau's
-//! `cli.run_print_mode` core path).
+//! Non-interactive print mode (a port of tau's `cli.run_print_mode`).
 //!
-//! This builds the coding tools + system prompt, drives an [`AgentHarness`] with
-//! one prompt, and renders the harness event stream through the selected
-//! renderer. It deliberately does **not** build a `CodingSession`: session
-//! persistence, slash/terminal commands, project-context discovery, skills, and
-//! extensions are M4b. The event stream it renders is therefore exactly the
-//! harness stream — which is what the crosscheck oracle pins.
+//! [`run_print_mode`] is the M4a bare-[`AgentHarness`] slice, retained as the
+//! crosscheck-v1 oracle (its stream is exactly the harness stream).
+//! [`run_session_print_mode`] is the M4b session-backed path the `rho -p` CLI
+//! now drives: it builds a [`CodingSession`], persists the transcript (JSONL
+//! when `--session` is given, in-memory otherwise), and renders the full
+//! `CodingSessionEvent` stream (harness events plus the session-owned
+//! `agent_settled` / `queue_update` / `compaction_*` / `auto_retry_*`).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use futures::StreamExt;
 
-use rho_agent::clock::{Clock, system_clock};
+use rho_agent::clock::{Clock, IdGen, system_clock, uuid_id_gen};
 use rho_agent::harness::{AgentHarness, AgentHarnessConfig};
 use rho_agent::provider::ModelProvider;
+use rho_agent::session::entries::SessionEntry;
+use rho_agent::session::storage::{SessionStorage, SessionStorageError};
 
 use crate::events::CodingSessionEvent;
 use crate::rendering::{PrintOutputMode, create_event_renderer};
+use crate::session::{CodingSession, CodingSessionConfig, jsonl_session_storage};
 use crate::system_prompt::{BuildSystemPromptOptions, build_system_prompt};
 use crate::tools::create_coding_tools;
+
+/// An in-memory [`SessionStorage`] for one-shot print runs that do not persist
+/// to a JSONL file (tau's `_MemorySessionStorage`).
+#[derive(Debug, Default)]
+pub struct MemorySessionStorage {
+    entries: Mutex<Vec<SessionEntry>>,
+}
+
+#[async_trait]
+impl SessionStorage for MemorySessionStorage {
+    async fn append(&self, entry: &SessionEntry) -> Result<(), SessionStorageError> {
+        self.entries.lock().expect("poisoned").push(entry.clone());
+        Ok(())
+    }
+
+    async fn read_all(&self) -> Result<Vec<SessionEntry>, SessionStorageError> {
+        Ok(self.entries.lock().expect("poisoned").clone())
+    }
+}
+
+/// Configuration for [`run_session_print_mode`].
+pub struct SessionPrintModeConfig {
+    /// The prompt to run.
+    pub prompt: String,
+    /// The requested model id.
+    pub model: String,
+    /// The working directory for the coding tools.
+    pub cwd: PathBuf,
+    /// The model provider.
+    pub provider: Arc<dyn ModelProvider>,
+    /// The output mode.
+    pub output: PrintOutputMode,
+    /// Optional shell-command prefix for the bash tool.
+    pub shell_command_prefix: Option<String>,
+    /// Clock for message/entry timestamps.
+    pub clock: Arc<dyn Clock>,
+    /// Id generator for session entries.
+    pub id_gen: Arc<dyn IdGen>,
+    /// Active provider name.
+    pub provider_name: String,
+    /// JSONL session path (`--session`); `None` uses in-memory storage.
+    pub session_path: Option<PathBuf>,
+}
+
+impl SessionPrintModeConfig {
+    /// Build a config with the real-time clock and default ids.
+    #[must_use]
+    pub fn new(
+        prompt: impl Into<String>,
+        model: impl Into<String>,
+        cwd: PathBuf,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Self {
+        Self {
+            prompt: prompt.into(),
+            model: model.into(),
+            cwd,
+            provider,
+            output: PrintOutputMode::Text,
+            shell_command_prefix: None,
+            clock: system_clock(),
+            id_gen: uuid_id_gen(),
+            provider_name: "openai".to_string(),
+            session_path: None,
+        }
+    }
+
+    /// Set the output mode.
+    #[must_use]
+    pub fn with_output(mut self, output: PrintOutputMode) -> Self {
+        self.output = output;
+        self
+    }
+
+    /// Set the JSONL session path.
+    #[must_use]
+    pub fn with_session_path(mut self, path: Option<PathBuf>) -> Self {
+        self.session_path = path;
+        self
+    }
+}
+
+/// Run one prompt through a [`CodingSession`] and render its event stream.
+///
+/// This is the session-backed CLI path. When `session_path` is set the
+/// transcript is persisted as JSONL (resumable with `--session`); otherwise an
+/// in-memory store is used so a one-shot `rho -p` leaves no files behind.
+pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
+    let storage: Arc<dyn SessionStorage> = match &config.session_path {
+        Some(path) => jsonl_session_storage(path),
+        None => Arc::new(MemorySessionStorage::default()),
+    };
+    let mut session_config =
+        CodingSessionConfig::new(config.provider, config.model, storage, config.cwd);
+    session_config.shell_command_prefix = config.shell_command_prefix;
+    session_config.clock = config.clock;
+    session_config.id_gen = config.id_gen;
+    session_config.provider_name = config.provider_name;
+
+    let mut session = match CodingSession::load(session_config).await {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            return false;
+        }
+    };
+
+    let mut renderer = create_event_renderer(config.output);
+    let stream = session.prompt(config.prompt, None);
+    futures::pin_mut!(stream);
+    while let Some(event) = stream.next().await {
+        renderer.render(&event);
+    }
+    renderer.finish()
+}
 
 /// Configuration for [`run_print_mode`].
 pub struct PrintModeConfig {

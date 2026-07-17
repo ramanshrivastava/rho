@@ -32,7 +32,10 @@ pub mod thinking;
 pub mod tools;
 
 pub use events::{CodingSessionEvent, SessionOwnEvent};
-pub use print_mode::{PrintModeConfig, run_print_mode};
+pub use print_mode::{
+    MemorySessionStorage, PrintModeConfig, SessionPrintModeConfig, run_print_mode,
+    run_session_print_mode,
+};
 pub use rendering::{
     EventRenderer, FinalTextRenderer, JsonEventRenderer, PrintOutputMode, TranscriptRenderer,
     create_event_renderer,
