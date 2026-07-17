@@ -158,3 +158,27 @@ pins the harness stream directly.
   the session-core cases are covered by `tests/coding_session.rs`.
 - `--resume <id>` (indexed-session resume in print mode) and the
   `providers`/`sessions`/`export` subcommands land with dispatch 2's CLI surface.
+
+## Review round (bot findings)
+
+Codex surfaced two real P1 bugs, both fixed: an explicit root leaf must replay
+to the *empty* pre-root context (tau `from_entries(entries, leaf_id=None)`), not
+a linear replay of the abandoned log; and `persist_messages_since` must
+propagate storage errors (returning `Result`, aborting the turn) rather than
+returning a stale count that re-appends an already-durable message. CodeRabbit
+added two more fixes — `RhoResourcePaths::default` now honors `$RHO_HOME` via
+`RhoPaths::default`, and the `json.dumps` port renders floats through Python's
+`float.__repr__` (`1e-7` → `1e-07`).
+
+Three CodeRabbit suggestions were **rebutted as deliberate tau-parity choices**
+(byte/behavior parity is the arbiter, AGENTS.md):
+
+- **No `session_id` path validation.** tau's `prepare_session` uses
+  `record_id = session_id or uuid4().hex` as a path component with no
+  sanitization; session ids are internally generated, never user-supplied.
+- **Non-atomic, unlocked index writes.** tau's `_write_index` is a plain
+  `path.write_text(content)` — no flock, no temp-rename. rho mirrors it. If tau
+  hardens the index writer, rho follows.
+- **`will_retry=False` on the overflow `agent_end`.** tau hardcodes it in the
+  main loop (`session.py:1506-1507`), before the overflow branch; the pending
+  retry is signaled by `auto_retry_start`/`auto_retry_end`, not this field.
