@@ -8,6 +8,28 @@
 //! The port targets visual parity with tau's TUI, validated in M5 against golden
 //! render snapshots.
 //!
-//! Layering: depends on [`rho_coding`].
+//! The crate is built immediate-mode: every frame is rebuilt from the pure
+//! [`state::TuiState`], which the [`adapter::TuiEventAdapter`] mutates from the
+//! session event stream. See `dev-notes/phase-5.md` for the retained-mode
+//! (Textual) → immediate-mode (ratatui) re-derivation notes.
 //!
-//! Milestone M0 ships this crate as an empty scaffold; the TUI lands in M5.
+//! Layering: depends on [`rho_coding`] (+ `rho_agent` for the wire types the
+//! state/adapter consume). `rho-coding` does **not** depend on ratatui.
+
+pub mod adapter;
+pub mod autocomplete;
+mod pystr;
+pub mod state;
+pub mod terminal_title;
+pub mod theme;
+
+pub use adapter::TuiEventAdapter;
+pub use autocomplete::{
+    CompletionInputs, CompletionItem, CompletionOption, CompletionState, build_completion_state,
+};
+pub use state::{ChatItem, ChatItemRole, TuiState};
+pub use terminal_title::{TerminalTitleController, build_terminal_title};
+pub use theme::{
+    BUILTIN_TUI_THEME_NAMES, TuiConfigError, TuiKeybindings, TuiSettings, TuiTheme, TuiThemeName,
+    get_tui_theme, load_tui_settings, save_tui_settings,
+};
