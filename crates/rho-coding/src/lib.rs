@@ -1,23 +1,32 @@
 //! `rho-coding` — the coding-agent application layer (port of tau's `tau_coding`).
 //!
-//! This crate composes [`rho_agent`] and [`rho_ai`] into a real coding assistant:
-//! filesystem and shell tools, the stateful `CodingSession`, slash commands,
-//! skills, the provider catalog, OAuth flows, session export, and the event
-//! renderers used by print mode.
+//! M4a lands the first runnable vertical slice:
 //!
-//! Planned contents:
+//! - [`tools`] — the four built-in coding tools (`read`/`write`/`edit`/`bash`)
+//!   with tau-parity truncation, image handling, per-file locking, a faithful
+//!   `difflib` port for `edit`, and process-group-killing `bash`.
+//! - [`system_prompt`] — deterministic Pi-style system-prompt assembly.
+//! - [`events`] — the `CodingSessionEvent` union rendered by print mode.
+//! - [`rendering`] — the `text` / `json` / `transcript` print-mode renderers.
+//! - [`print_mode`] — the harness-driven `rho -p` slice.
 //!
-//! - **tools** — read/write/edit/bash and friends, plus the tool catalog.
-//! - **session** — `CodingSession` and its `SessionOwnEvent` stream (compaction,
-//!   steering queue updates, auto-retry, …) layered over the agent harness.
-//! - **commands / skills / catalog** — slash-command registry, skill invocation,
-//!   and config-driven provider catalog loading.
-//! - **oauth** — device-flow and provider OAuth (Anthropic, GitHub Copilot, …).
-//! - **export / rendering** — HTML session export and the JSON/plain/transcript
-//!   event renderers (`tau -p` parity).
-//!
-//! Layering: depends on [`rho_ai`] and [`rho_agent`]; consumed by `rho-tui` and
-//! the `rho` binary.
-//!
-//! Milestone M0 ships this crate as an empty scaffold; the vertical slice lands
-//! in M4a and the full surface in M4b.
+//! Deferred to M4b (the full `CodingSession` surface): session persistence,
+//! slash/terminal commands, project-context discovery, skills, extensions, the
+//! provider catalog, OAuth, and HTML export. See `dev-notes/phase-4a.md`.
+
+pub mod events;
+pub mod print_mode;
+pub mod rendering;
+pub mod system_prompt;
+pub mod tools;
+
+pub use events::{CodingSessionEvent, SessionOwnEvent};
+pub use print_mode::{PrintModeConfig, run_print_mode};
+pub use rendering::{
+    EventRenderer, FinalTextRenderer, JsonEventRenderer, PrintOutputMode, TranscriptRenderer,
+    create_event_renderer,
+};
+pub use system_prompt::{BuildSystemPromptOptions, Date, build_system_prompt};
+pub use tools::{
+    create_bash_tool, create_coding_tools, create_edit_tool, create_read_tool, create_write_tool,
+};
