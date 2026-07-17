@@ -73,8 +73,14 @@ use crate::events::{
     SessionAgentEndEvent,
 };
 use crate::paths::RhoPaths;
-use crate::resources::{ResourceDiagnostic, RhoResourcePaths, resource_paths_with_cwd};
+use crate::prompt_templates::{
+    PromptTemplate, expand_prompt_template_command, load_prompt_templates_with_diagnostics,
+};
+use crate::resources::{
+    ResourceDiagnostic, ResourceError, RhoResourcePaths, resource_paths_with_cwd,
+};
 use crate::session_manager::SessionManager;
+use crate::skills::{Skill, expand_skill_command, load_skills_with_diagnostics};
 use crate::system_prompt::{BuildSystemPromptOptions, ProjectContextFile, build_system_prompt};
 use crate::thinking::{
     DEFAULT_THINKING_LEVEL, THINKING_LEVELS, next_thinking_level, normalize_thinking_level,
@@ -243,9 +249,11 @@ impl CodingSessionConfig {
     }
 }
 
-/// Tau-owned resources loaded around a coding session (dispatch-1 subset:
-/// context files + diagnostics; skills/prompt templates are dispatch-2).
+/// Tau-owned resources loaded around a coding session (skills, prompt
+/// templates, discovered project-context files, and non-fatal diagnostics).
 struct SessionResources {
+    skills: Vec<Skill>,
+    prompt_templates: Vec<PromptTemplate>,
     context_files: Vec<ProjectContextFile>,
     diagnostics: Vec<ResourceDiagnostic>,
 }
@@ -258,6 +266,8 @@ pub struct CodingSession {
     last_parent_id: Option<String>,
     pending_initial_entries: Vec<SessionEntry>,
     context_files: Vec<ProjectContextFile>,
+    skills: Vec<Skill>,
+    prompt_templates: Vec<PromptTemplate>,
     resource_diagnostics: Vec<ResourceDiagnostic>,
     thinking_level: String,
     auto_compact_token_threshold: Option<i64>,
@@ -310,7 +320,8 @@ impl CodingSession {
         };
 
         let resource_paths = resource_paths_with_cwd(config.resource_paths.clone(), &config.cwd);
-        let resources = load_session_resources(&resource_paths, &config.context_files);
+        let resources =
+            load_session_resources(&resource_paths, &config.context_files, config.skills_enabled);
 
         let base_tools = config.tools.clone().unwrap_or_else(|| {
             create_coding_tools(&config.cwd, config.shell_command_prefix.as_deref())
@@ -349,6 +360,8 @@ impl CodingSession {
             last_parent_id,
             pending_initial_entries,
             context_files,
+            skills: resources.skills,
+            prompt_templates: resources.prompt_templates,
             resource_diagnostics: resources.diagnostics,
             thinking_level,
             auto_compact_token_threshold,
@@ -404,6 +417,18 @@ impl CodingSession {
     #[must_use]
     pub fn context_files(&self) -> &[ProjectContextFile] {
         &self.context_files
+    }
+
+    /// Loaded markdown skills.
+    #[must_use]
+    pub fn skills(&self) -> &[Skill] {
+        &self.skills
+    }
+
+    /// Loaded markdown prompt templates.
+    #[must_use]
+    pub fn prompt_templates(&self) -> &[PromptTemplate] {
+        &self.prompt_templates
     }
 
     /// Non-fatal resource diagnostics.
@@ -547,7 +572,16 @@ impl CodingSession {
         async_stream::stream! {
             self.run_error = None;
             let context = self.diagnostic_context();
-            let expanded_content = self.expand_prompt_text(&content);
+            // tau raises the `/skill:` `ResourceError` out of `prompt()`, aborting
+            // the turn; rho records it on the session so the print-mode CLI exits
+            // non-zero (mirroring the persistence-failure path).
+            let expanded_content = match self.expand_prompt_text(&content) {
+                Ok(expanded) => expanded,
+                Err(err) => {
+                    self.run_error = Some(err.0);
+                    return;
+                }
+            };
 
             if self.harness.is_running() {
                 match streaming_behavior {
@@ -1111,11 +1145,20 @@ impl CodingSession {
         })
     }
 
-    /// Expand prompt text (dispatch-1: prompt templates/skills are dispatch-2,
-    /// so this is currently the identity).
-    #[must_use]
-    pub fn expand_prompt_text(&self, text: &str) -> String {
-        text.to_string()
+    /// Expand prompt text using loaded markdown resources.
+    ///
+    /// tau `expand_prompt_text`: a `/name [args]` prompt-template command wins
+    /// first (it never errors), then a `/skill:name` command (which raises
+    /// `ResourceError` — a `ValueError` in tau — for an unknown/empty skill).
+    /// Otherwise the text passes through unchanged.
+    pub fn expand_prompt_text(&self, text: &str) -> Result<String, ResourceError> {
+        if let Some(expanded) = expand_prompt_template_command(text, &self.prompt_templates) {
+            return Ok(expanded);
+        }
+        match expand_skill_command(text, &self.skills)? {
+            Some(expanded) => Ok(expanded),
+            None => Ok(text.to_string()),
+        }
     }
 
     /// Persist pending session metadata and add this session to the resume index.
@@ -1888,10 +1931,25 @@ fn interrupted_tool_repair_plan(
 fn load_session_resources(
     resource_paths: &RhoResourcePaths,
     explicit_context_files: &[ProjectContextFile],
+    skills_enabled: bool,
 ) -> SessionResources {
-    let (discovered, diagnostics) =
+    // tau `_load_session_resources`: skill loading is gated on `skills_enabled`;
+    // diagnostics are concatenated in skill → prompt → context order.
+    let (skills, skill_diagnostics) = if skills_enabled {
+        load_skills_with_diagnostics(Some(resource_paths))
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let (prompt_templates, prompt_diagnostics) =
+        load_prompt_templates_with_diagnostics(Some(resource_paths));
+    let (discovered, context_diagnostics) =
         discover_project_context_with_diagnostics(Some(resource_paths.clone()));
+    let mut diagnostics = skill_diagnostics;
+    diagnostics.extend(prompt_diagnostics);
+    diagnostics.extend(context_diagnostics);
     SessionResources {
+        skills,
+        prompt_templates,
         context_files: merge_context_files(explicit_context_files, &discovered),
         diagnostics,
     }
