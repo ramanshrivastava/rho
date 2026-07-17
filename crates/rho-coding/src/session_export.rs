@@ -50,6 +50,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize as _;
+use serde_json::Serializer;
+use serde_json::ser::{CompactFormatter, Formatter, PrettyFormatter};
 use serde_json::{Map, Value};
 
 use rho_agent::messages::AgentMessage;
@@ -201,7 +204,79 @@ fn ensure_parent(path: &Path) -> io::Result<()> {
 
 fn dump_entry_line(entry: &SessionEntry) -> String {
     let value = serde_json::to_value(entry).unwrap_or(Value::Null);
-    serde_json::to_string(&densify_entry(&value)).unwrap_or_default()
+    to_compact_json(&densify_entry(&value))
+}
+
+/// A `serde_json` formatter that renders floats via Python's `float.__repr__`
+/// (`5e-07`, not serde's `5e-7`), matching tau's `json.dumps` output. Only
+/// `write_f64` diverges; the wrapped base handles structure (so `PrettyFormatter`
+/// keeps its indentation). This is why the export re-serializes through a
+/// `serde_json::Value` rather than the wire codec — the wire path writes
+/// `exclude_none`, the export writes nulls, and both must keep Python float
+/// shapes on small cost values.
+struct PyFloat<F>(F);
+
+impl<F: Formatter> Formatter for PyFloat<F> {
+    fn write_f64<W: ?Sized + io::Write>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
+        writer.write_all(crate::pystr::python_float_repr(value).as_bytes())
+    }
+
+    fn begin_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.begin_array(writer)
+    }
+    fn end_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_array(writer)
+    }
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.0.begin_array_value(writer, first)
+    }
+    fn end_array_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_array_value(writer)
+    }
+    fn begin_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.begin_object(writer)
+    }
+    fn end_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_object(writer)
+    }
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.0.begin_object_key(writer, first)
+    }
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.begin_object_value(writer)
+    }
+    fn end_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_object_value(writer)
+    }
+}
+
+/// Compact JSON with Python float shapes (tau `json.dumps` separators).
+fn to_compact_json(value: &Value) -> String {
+    let mut buf = Vec::new();
+    let mut ser = Serializer::with_formatter(&mut buf, PyFloat(CompactFormatter));
+    if value.serialize(&mut ser).is_err() {
+        return String::new();
+    }
+    String::from_utf8(buf).unwrap_or_default()
+}
+
+/// Pretty (2-space) JSON with Python float shapes.
+fn to_pretty_json(value: &Value) -> String {
+    let mut buf = Vec::new();
+    let mut ser =
+        Serializer::with_formatter(&mut buf, PyFloat(PrettyFormatter::with_indent(b"  ")));
+    if value.serialize(&mut ser).is_err() {
+        return String::new();
+    }
+    String::from_utf8(buf).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -821,8 +896,7 @@ fn render_json_block(value: &Value) -> String {
 /// 2-space indent, `ensure_ascii` (non-ASCII → `\uXXXX`).
 fn json_dump(value: &Value) -> String {
     let sorted = sort_value(value);
-    let pretty = serde_json::to_string_pretty(&sorted).unwrap_or_default();
-    ensure_ascii(&pretty)
+    ensure_ascii(&to_pretty_json(&sorted))
 }
 
 fn sort_value(value: &Value) -> Value {
@@ -1793,6 +1867,28 @@ const HTML_8: &str = r####"
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn export_json_uses_python_float_repr_not_serde_scientific() {
+        // tau's export goes through `json.dumps`, whose `float.__repr__` renders a
+        // small cost as `5e-07`; serde's default emits `5e-7`. The custom
+        // formatter must preserve the Python shape (and keep `0.0` / whole-number
+        // floats) so exports stay byte-compatible with tau (Codex PR#8 P2).
+        let value = serde_json::json!({
+            "cost": 0.000_000_5_f64,
+            "whole": 0.0_f64,
+            "ts": 1_731_234_567.0_f64,
+        });
+        let compact = to_compact_json(&value);
+        assert_eq!(compact, r#"{"cost":5e-07,"whole":0.0,"ts":1731234567.0}"#);
+        assert!(
+            !compact.contains("5e-7,"),
+            "no bare serde exponent: {compact}"
+        );
+        let pretty = to_pretty_json(&value);
+        assert!(pretty.contains("\"cost\": 5e-07"), "{pretty}");
+        assert!(pretty.contains("\"whole\": 0.0"));
+    }
 
     use rho_agent::messages::{
         AgentMessage, AssistantContent, AssistantMessage, TextContent, ToolCall, ToolResultContent,
