@@ -164,12 +164,9 @@ impl TerminalTitleController {
     }
 
     fn write(&mut self, sequence: &str) -> bool {
-        match (self.writer)(sequence) {
-            Ok(()) => true,
-            Err(_) => {
-                self.enabled = false;
-                false
-            }
+        if let Ok(()) = (self.writer)(sequence) { true } else {
+            self.enabled = false;
+            false
         }
     }
 }

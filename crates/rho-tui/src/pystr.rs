@@ -8,7 +8,7 @@
 /// Python `str.splitlines()` — split on every Unicode line boundary, dropping the
 /// terminators, with no trailing empty element for a final boundary.
 ///
-/// Matches CPython's boundary set: `\n \r \r\n \v \f \x1c \x1d \x1e \x85
+/// Matches `CPython`'s boundary set: `\n \r \r\n \v \f \x1c \x1d \x1e \x85
 ///  `.
 #[must_use]
 pub fn splitlines(text: &str) -> Vec<&str> {

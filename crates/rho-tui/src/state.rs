@@ -12,7 +12,7 @@
 //! in M5 — the WASM extension runtime is M7 — so `resolve_*` always falls back to
 //! the generic text, exactly as tau does before its extension runtime connects.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 

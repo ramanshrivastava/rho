@@ -7,7 +7,7 @@
 //! as tau's exact hex strings; the render layer parses them into ratatui styles,
 //! so the palette matches tau per theme.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rho_coding::paths::RhoPaths;
 use serde_json::{Map, Value};
@@ -22,8 +22,10 @@ pub const BUILTIN_TUI_THEME_NAMES: [&str; 3] = ["tau-dark", "tau-light", "high-c
 
 /// A built-in theme name (tau `TuiThemeName`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum TuiThemeName {
     /// The default dark theme.
+    #[default]
     TauDark,
     /// The light theme.
     TauLight,
@@ -54,11 +56,6 @@ impl TuiThemeName {
     }
 }
 
-impl Default for TuiThemeName {
-    fn default() -> Self {
-        Self::TauDark
-    }
-}
 
 /// The 13 configurable keybinding action names, in tau's `to_json` order.
 pub const KEYBINDING_FIELDS: [&str; 13] = [
