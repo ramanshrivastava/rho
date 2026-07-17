@@ -13,6 +13,7 @@ import extract_event_streams
 import extract_export
 import extract_sessions
 import extract_sse
+import extract_system_prompt
 import extract_wire
 import extract_wire_legacy
 from _common import tau_rev
@@ -26,6 +27,7 @@ def main() -> None:
     print(f"  sessions:      {extract_sessions.extract()} files")
     print(f"  sse:           {extract_sse.extract()} cases")
     print(f"  export:        {extract_export.extract()} file(s)")
+    print(f"  system-prompt: {extract_system_prompt.extract()} fixture(s)")
     print("done.")
 
 
