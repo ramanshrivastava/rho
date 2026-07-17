@@ -139,6 +139,7 @@ fn google_config() -> OpenAICompatibleConfig {
 fn google_text_request() {
     let payload = rho_ai::google::build_google_payload(
         &google_config(),
+        "gemini-2.5-flash",
         "You are Tau.",
         &[user("Say hello")],
         &[],
@@ -150,6 +151,7 @@ fn google_text_request() {
 fn google_tool_calls_request() {
     let payload = rho_ai::google::build_google_payload(
         &google_config(),
+        "gemini-2.5-flash",
         "You are Tau.",
         &[user("run ls")],
         &[bash_tool()],
