@@ -61,8 +61,8 @@ pub use rendering::{
     create_event_renderer,
 };
 pub use session::{
-    CodingSession, CodingSessionConfig, SessionError, StreamingBehavior, jsonl_session_storage,
-    parse_terminal_command,
+    CodingSession, CodingSessionConfig, ModelChoice, SessionError, StreamingBehavior,
+    jsonl_session_storage, parse_terminal_command,
 };
 pub use session_export::{
     DEFAULT_EXPORT_TITLE, SessionExportError, default_session_export_artifact_path,

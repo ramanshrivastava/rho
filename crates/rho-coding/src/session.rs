@@ -64,6 +64,7 @@ use crate::context_window::{
     build_compaction_summary_prompt, estimate_context_usage, estimate_message_tokens,
     summarize_messages_for_compaction,
 };
+use crate::credentials::{FileCredentialStore, credentials_path};
 use crate::diagnostics::{
     AgentCallDiagnosticContext, AgentCallDiagnosticLogger, new_agent_call_run_id,
 };
@@ -76,8 +77,19 @@ use crate::paths::RhoPaths;
 use crate::prompt_templates::{
     PromptTemplate, expand_prompt_template_command, load_prompt_templates_with_diagnostics,
 };
+use crate::provider_config::{
+    ProviderConfig, ProviderConfigError, ProviderSettings, load_provider_settings,
+    provider_default_thinking_level, provider_has_usable_credentials, provider_thinking_levels,
+    provider_thinking_unavailable_reason, save_default_provider_model,
+    save_provider_thinking_level, toggle_saved_scoped_model, validate_provider_model,
+};
+use crate::provider_runtime::create_model_provider;
+use crate::reload::{CodingReloadSummary, ReloadCategorySummary};
 use crate::resources::{
     ResourceDiagnostic, ResourceError, RhoResourcePaths, resource_paths_with_cwd,
+};
+use crate::session_export::{
+    default_session_export_artifact_path, export_session_artifact, normalize_export_format,
 };
 use crate::session_manager::SessionManager;
 use crate::skills::{Skill, expand_skill_command, load_skills_with_diagnostics};
@@ -112,6 +124,37 @@ pub enum SessionError {
     /// A user-facing error (bad argument, unavailable feature).
     #[error("{0}")]
     Value(String),
+    /// A session-export failure (bad format or filesystem error).
+    #[error("{0}")]
+    Export(String),
+}
+
+impl From<ProviderConfigError> for SessionError {
+    /// Preserve tau's `ProviderConfigError` message verbatim (tau catches these
+    /// as user-facing `ValueError`s at the command boundary).
+    fn from(err: ProviderConfigError) -> Self {
+        SessionError::Value(err.0)
+    }
+}
+
+/// A selectable model and the provider that serves it (tau `ModelChoice`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModelChoice {
+    /// The provider name that serves the model.
+    pub provider_name: String,
+    /// The model id.
+    pub model: String,
+}
+
+impl ModelChoice {
+    /// Build a provider/model choice.
+    #[must_use]
+    pub fn new(provider_name: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider_name: provider_name.into(),
+            model: model.into(),
+        }
+    }
 }
 
 /// Result of an input-bar terminal command.
@@ -195,6 +238,16 @@ pub struct CodingSessionConfig {
     pub session_manager: Option<SessionManager>,
     /// Active provider name.
     pub provider_name: String,
+    /// Durable provider settings (the provider catalog + saved preferences).
+    ///
+    /// When `None` the whole provider-catalog surface collapses to its fixed
+    /// defaults (model pinned by config, all thinking levels available, the
+    /// fallback context window).
+    pub provider_settings: Option<ProviderSettings>,
+    /// The provider config backing the live runtime provider, if the session was
+    /// constructed from a durable provider config (drives `set_model` /
+    /// thinking-level provider refreshes).
+    pub runtime_provider_config: Option<ProviderConfig>,
     /// Explicit auto-compaction threshold override.
     pub auto_compact_token_threshold: Option<i64>,
     /// Whether auto-compaction is enabled.
@@ -237,6 +290,8 @@ impl CodingSessionConfig {
             session_id: None,
             session_manager: None,
             provider_name: "openai".to_string(),
+            provider_settings: None,
+            runtime_provider_config: None,
             auto_compact_token_threshold: None,
             auto_compact_enabled: true,
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
@@ -276,6 +331,13 @@ pub struct CodingSession {
     diagnostic_logger: AgentCallDiagnosticLogger,
     last_diagnostic_log_path: Option<PathBuf>,
     run_error: Option<String>,
+    provider_settings: Option<ProviderSettings>,
+    runtime_provider_config: Option<ProviderConfig>,
+    resource_paths: RhoResourcePaths,
+    credential_store: Arc<FileCredentialStore>,
+    /// Providers swapped in by `set_model`/`set_provider`; kept alive here
+    /// (tau's `_owned_providers`) so the live harness reference stays valid.
+    owned_providers: Vec<Arc<dyn ModelProvider>>,
 }
 
 impl CodingSession {
@@ -291,12 +353,14 @@ impl CodingSession {
             info.created_at = config.clock.now_secs();
             info.cwd = Some(config.cwd.to_string_lossy().to_string());
 
-            let mut model = ModelChangeEntry::new(config.model.clone());
+            let initial_model = initial_model_for_config(&config);
+            let mut model = ModelChangeEntry::new(initial_model.clone());
             model.id = config.id_gen.new_id();
             model.timestamp = config.clock.now_secs();
             model.parent_id = Some(info.id.clone());
 
-            let mut thinking = ThinkingLevelChangeEntry::new(Some(config.thinking_level.clone()));
+            let initial_thinking = initial_thinking_level_for_config(&config, &initial_model);
+            let mut thinking = ThinkingLevelChangeEntry::new(Some(initial_thinking));
             thinking.id = config.id_gen.new_id();
             thinking.timestamp = config.clock.now_secs();
             thinking.parent_id = Some(model.id.clone());
@@ -320,8 +384,11 @@ impl CodingSession {
         };
 
         let resource_paths = resource_paths_with_cwd(config.resource_paths.clone(), &config.cwd);
-        let resources =
-            load_session_resources(&resource_paths, &config.context_files, config.skills_enabled);
+        let resources = load_session_resources(
+            &resource_paths,
+            &config.context_files,
+            config.skills_enabled,
+        );
 
         let base_tools = config.tools.clone().unwrap_or_else(|| {
             create_coding_tools(&config.cwd, config.shell_command_prefix.as_deref())
@@ -339,19 +406,38 @@ impl CodingSession {
 
         let runtime_model = runtime_model_for_state(&config, &state);
         let harness = AgentHarness::new(
-            AgentHarnessConfig::new(config.provider.clone(), runtime_model, system)
+            AgentHarnessConfig::new(config.provider.clone(), runtime_model.clone(), system)
                 .with_tools(base_tools)
                 .with_clock(config.clock.clone()),
             state.messages.clone(),
         );
 
-        let thinking_level = state_thinking_level(&state, &config.thinking_level);
+        // tau `__init__`: the initial thinking level defaults to the active
+        // provider's preferred level for the runtime model (falling back to the
+        // config default when there are no provider settings).
+        let default_thinking = match active_provider_config_from(
+            config.provider_settings.as_ref(),
+            &config.provider_name,
+        ) {
+            Some(provider) => preferred_thinking_level_for_model(
+                &provider,
+                &runtime_model,
+                &config.thinking_level,
+            ),
+            None => config.thinking_level.clone(),
+        };
+        let thinking_level = state_thinking_level(&state, &default_thinking);
         let diagnostic_logger =
             AgentCallDiagnosticLogger::new(diagnostics_log_path(&resource_paths));
         let auto_compact_token_threshold = config.auto_compact_token_threshold;
         let auto_compact_enabled = config.auto_compact_enabled;
         let last_parent_id = last_parent_id_from_state(&state);
         let context_files = resources.context_files.clone();
+        let provider_settings = config.provider_settings.clone();
+        let runtime_provider_config = config.runtime_provider_config.clone();
+        let credential_store = Arc::new(FileCredentialStore::new(credentials_path(
+            resource_paths.paths.as_ref(),
+        )));
 
         let mut session = Self {
             config,
@@ -370,8 +456,15 @@ impl CodingSession {
             diagnostic_logger,
             last_diagnostic_log_path: None,
             run_error: None,
+            provider_settings,
+            runtime_provider_config,
+            resource_paths,
+            credential_store,
+            owned_providers: Vec::new(),
         };
         session.persist_loaded_interrupted_tool_repairs().await?;
+        session.sync_thinking_level_to_active_model();
+        session.refresh_runtime_provider()?;
         Ok(session)
     }
 
@@ -455,10 +548,94 @@ impl CodingSession {
         &self.thinking_level
     }
 
-    /// Thinking levels available for the active model (dispatch-1: all of them).
+    /// Provider names rho can call with available credentials (tau
+    /// `available_providers`).
+    #[must_use]
+    pub fn available_providers(&self) -> Vec<String> {
+        let Some(_) = self.provider_settings.as_ref() else {
+            return vec![self.provider_name().to_string()];
+        };
+        self.usable_provider_configs()
+            .iter()
+            .map(|provider| provider.name().to_string())
+            .collect()
+    }
+
+    /// Model names for the active provider when it is usable (tau
+    /// `available_models`).
+    #[must_use]
+    pub fn available_models(&self) -> Vec<String> {
+        let Some(settings) = self.provider_settings.as_ref() else {
+            return vec![self.model()];
+        };
+        let Ok(provider) = settings.get_provider(Some(self.provider_name())) else {
+            return vec![self.model()];
+        };
+        if !self.provider_is_usable(provider) {
+            return Vec::new();
+        }
+        provider.models().to_vec()
+    }
+
+    /// Provider/model choices rho can call with available credentials (tau
+    /// `available_model_choices`).
+    #[must_use]
+    pub fn available_model_choices(&self) -> Vec<ModelChoice> {
+        let Some(_) = self.provider_settings.as_ref() else {
+            return vec![ModelChoice::new(self.provider_name(), self.model())];
+        };
+        self.usable_provider_configs()
+            .iter()
+            .flat_map(|provider| {
+                provider
+                    .models()
+                    .iter()
+                    .map(|model| ModelChoice::new(provider.name(), model.clone()))
+            })
+            .collect()
+    }
+
+    /// Configured quick-switch model choices that are currently usable (tau
+    /// `scoped_model_choices`).
+    #[must_use]
+    pub fn scoped_model_choices(&self) -> Vec<ModelChoice> {
+        let Some(settings) = self.provider_settings.as_ref() else {
+            return Vec::new();
+        };
+        let available: std::collections::HashSet<ModelChoice> =
+            self.available_model_choices().into_iter().collect();
+        settings
+            .scoped_models
+            .iter()
+            .map(|item| ModelChoice::new(item.provider.clone(), item.model.clone()))
+            .filter(|choice| available.contains(choice))
+            .collect()
+    }
+
+    /// Thinking modes supported by the active provider/model (tau
+    /// `available_thinking_levels`).
     #[must_use]
     pub fn available_thinking_levels(&self) -> Vec<String> {
-        THINKING_LEVELS.iter().map(|s| (*s).to_string()).collect()
+        if self.provider_settings.is_none() {
+            return THINKING_LEVELS.iter().map(|s| (*s).to_string()).collect();
+        }
+        let Some(provider) = self.active_provider_config() else {
+            return Vec::new();
+        };
+        provider_thinking_levels(&provider, Some(&self.model()))
+    }
+
+    /// Why thinking controls are unavailable for the active model, if they are
+    /// (tau `thinking_unavailable_reason`).
+    #[must_use]
+    pub fn thinking_unavailable_reason(&self) -> Option<String> {
+        if !self.available_thinking_levels().is_empty() {
+            return None;
+        }
+        let Some(provider) = self.active_provider_config() else {
+            return Some("Active provider settings are not available".to_string());
+        };
+        provider_thinking_unavailable_reason(&provider, Some(&self.model()))
     }
 
     /// Session id, if any.
@@ -539,10 +716,45 @@ impl CodingSession {
         self.context_usage().total_tokens
     }
 
-    /// Active model's context window (dispatch-1 fallback).
+    /// Active model's configured context window, or rho's fallback (tau
+    /// `context_window_tokens`).
     #[must_use]
     pub fn context_window_tokens(&self) -> i64 {
-        DEFAULT_CONTEXT_WINDOW_TOKENS
+        let Some(provider) = self.active_provider_config() else {
+            return DEFAULT_CONTEXT_WINDOW_TOKENS;
+        };
+        provider
+            .context_windows()
+            .get(&self.model())
+            .copied()
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS)
+    }
+
+    // ---- provider config internals ---------------------------------------
+
+    /// The active provider's config from provider settings, if any (tau
+    /// `_active_provider_config`).
+    fn active_provider_config(&self) -> Option<ProviderConfig> {
+        active_provider_config_from(self.provider_settings.as_ref(), self.provider_name())
+    }
+
+    /// Provider configs from settings that have usable credentials (tau
+    /// `_usable_provider_configs`).
+    fn usable_provider_configs(&self) -> Vec<ProviderConfig> {
+        let Some(settings) = self.provider_settings.as_ref() else {
+            return Vec::new();
+        };
+        settings
+            .providers
+            .iter()
+            .filter(|provider| self.provider_is_usable(provider))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether a provider has usable credentials (tau `_provider_is_usable`).
+    fn provider_is_usable(&self, provider: &ProviderConfig) -> bool {
+        provider_has_usable_credentials(provider, Some(self.credential_store.as_ref()))
     }
 
     /// Effective automatic compaction threshold, if any.
@@ -789,13 +1001,32 @@ impl CodingSession {
 
     // ---- thinking ---------------------------------------------------------
 
-    /// Persist and activate a thinking mode for future turns.
+    /// Persist and activate a thinking mode for future turns (tau
+    /// `set_thinking_level`).
     pub async fn set_thinking_level(&mut self, level: &str) -> Result<String, SessionError> {
         let normalized = normalize_thinking_level(Some(level)).map_err(SessionError::Value)?;
+        let available = self.available_thinking_levels();
+        if available.is_empty() {
+            return Err(SessionError::Value(unavailable_thinking_message(self)));
+        }
+        if !available.contains(&normalized) {
+            let modes = available.join(", ");
+            return Err(SessionError::Value(format!(
+                "Thinking mode {normalized} is not available for {}:{}. Available modes: {modes}",
+                self.provider_name(),
+                self.model(),
+            )));
+        }
         if normalized == self.thinking_level {
             return Ok(format!("Thinking mode: {normalized}"));
         }
+
+        let previous = self.thinking_level.clone();
         self.thinking_level = normalized.clone();
+        if let Err(err) = self.refresh_runtime_provider() {
+            self.thinking_level = previous;
+            return Err(err);
+        }
 
         let mut entry = ThinkingLevelChangeEntry::new(Some(normalized.clone()));
         entry.id = self.config.id_gen.new_id();
@@ -806,15 +1037,296 @@ impl CodingSession {
             .await?;
         self.append_leaf(Some(entry_id.clone())).await?;
         self.last_parent_id = Some(entry_id.clone());
+        self.persist_thinking_level_choice();
         self.refresh_persisted_state(Some(&entry_id)).await?;
         Ok(format!("Thinking mode: {normalized}"))
     }
 
-    /// Cycle to the next thinking mode and persist it.
+    /// Cycle to the next supported thinking mode and persist it (tau
+    /// `cycle_thinking_level`).
     pub async fn cycle_thinking_level(&mut self) -> Result<String, SessionError> {
-        let available: Vec<&str> = THINKING_LEVELS.to_vec();
-        let next = next_thinking_level(Some(&self.thinking_level), &available);
+        let available = self.available_thinking_levels();
+        let available_refs: Vec<&str> = available.iter().map(String::as_str).collect();
+        let next = next_thinking_level(Some(&self.thinking_level), &available_refs);
         self.set_thinking_level(&next).await
+    }
+
+    // ---- provider / model mutators ---------------------------------------
+
+    /// Switch the active model for future turns and make it the default (tau
+    /// `set_model`).
+    pub fn set_model(&mut self, model: &str) -> Result<(), SessionError> {
+        if let Some(provider) = self.active_provider_config() {
+            validate_provider_model(&provider, model)?;
+        }
+        self.set_harness_model(model);
+        self.sync_thinking_level_to_active_model();
+        self.refresh_runtime_provider()?;
+        self.persist_default_model_choice();
+        if let (Some(session_id), Some(manager)) = (
+            self.config.session_id.as_ref(),
+            self.config.session_manager.as_ref(),
+        ) {
+            let _ =
+                manager.touch_session(session_id, Some(model), Some(self.provider_name()), None);
+        }
+        Ok(())
+    }
+
+    /// Switch provider/model as one operation (tau `set_model_choice`).
+    pub fn set_model_choice(&mut self, choice: &ModelChoice) -> Result<(), SessionError> {
+        if choice.provider_name == self.provider_name() {
+            return self.set_model(&choice.model);
+        }
+        self.set_provider_model(&choice.provider_name, &choice.model, true)
+    }
+
+    /// Whether a provider/model pair is in the scoped model list (tau
+    /// `is_scoped_model`).
+    #[must_use]
+    pub fn is_scoped_model(&self, choice: &ModelChoice) -> bool {
+        self.scoped_model_choices().contains(choice)
+    }
+
+    /// Add or remove a model from the persisted scoped model list (tau
+    /// `toggle_scoped_model`).
+    pub fn toggle_scoped_model(
+        &mut self,
+        choice: &ModelChoice,
+    ) -> Result<Vec<ModelChoice>, SessionError> {
+        if self.provider_settings.is_none() {
+            return Err(SessionError::Value(
+                "Provider settings are not available for this session".to_string(),
+            ));
+        }
+        let available: std::collections::HashSet<ModelChoice> =
+            self.available_model_choices().into_iter().collect();
+        if !available.contains(choice) {
+            return Err(SessionError::Value(format!(
+                "Model is not available: {}:{}",
+                choice.provider_name, choice.model
+            )));
+        }
+        let updated = toggle_saved_scoped_model(
+            &choice.provider_name,
+            &choice.model,
+            self.resource_paths.paths.as_ref(),
+            self.provider_settings.as_ref(),
+            Some(self.credential_store.as_ref()),
+        )?;
+        self.provider_settings = Some(updated);
+        self.sync_thinking_level_to_active_model();
+        Ok(self.scoped_model_choices())
+    }
+
+    /// Switch to the next configured scoped model (tau `cycle_scoped_model`).
+    pub fn cycle_scoped_model(&mut self, reverse: bool) -> Result<ModelChoice, SessionError> {
+        let scoped = self.scoped_model_choices();
+        if scoped.is_empty() {
+            return Err(SessionError::Value(
+                "No scoped models configured.".to_string(),
+            ));
+        }
+        let current = ModelChoice::new(self.provider_name(), self.model());
+        let current_index = scoped.iter().position(|choice| *choice == current);
+        // tau: a missing current maps to -1 forward / 0 reverse, so the next
+        // step lands on the first / last configured scoped model.
+        let base = match current_index {
+            Some(index) => index as isize,
+            None => {
+                if reverse {
+                    0
+                } else {
+                    -1
+                }
+            }
+        };
+        let delta: isize = if reverse { -1 } else { 1 };
+        let len = scoped.len() as isize;
+        let index = ((base + delta) % len + len) % len;
+        let choice = scoped[index as usize].clone();
+        self.set_model_choice(&choice)?;
+        Ok(choice)
+    }
+
+    /// Switch the active provider and reset to its default model (tau
+    /// `set_provider`).
+    pub fn set_provider(
+        &mut self,
+        provider_name: &str,
+        persist_default: bool,
+    ) -> Result<(), SessionError> {
+        let Some(settings) = self.provider_settings.as_ref() else {
+            return Err(SessionError::Value(
+                "Provider settings are not available for this session".to_string(),
+            ));
+        };
+        let provider = settings.get_provider(Some(provider_name))?;
+        let default_model = provider.default_model().to_string();
+        self.set_provider_model(provider_name, &default_model, persist_default)
+    }
+
+    /// Switch active provider/model, building a fresh runtime provider (tau
+    /// `_set_provider_model`).
+    fn set_provider_model(
+        &mut self,
+        provider_name: &str,
+        model: &str,
+        persist_default: bool,
+    ) -> Result<(), SessionError> {
+        let Some(settings) = self.provider_settings.as_ref() else {
+            return Err(SessionError::Value(
+                "Provider settings are not available for this session".to_string(),
+            ));
+        };
+        let provider_config = settings.get_provider(Some(provider_name))?.clone();
+        if !provider_config.models().iter().any(|m| m == model) {
+            return Err(SessionError::Value(format!(
+                "Model is not configured: {provider_name}:{model}"
+            )));
+        }
+        let thinking_level =
+            coerced_thinking_level(&provider_config, model, &self.thinking_level, None);
+        let provider = create_model_provider(
+            &provider_config,
+            Some(self.credential_store.clone()),
+            Some(model),
+            Some(&thinking_level),
+        )?;
+        self.owned_providers.push(provider.clone());
+        self.set_harness_provider_and_model(provider, model);
+        self.config.provider_name = provider_config.name().to_string();
+        self.runtime_provider_config = Some(provider_config);
+        self.thinking_level = thinking_level;
+        if persist_default {
+            self.persist_default_model_choice();
+        }
+        if let (Some(session_id), Some(manager)) = (
+            self.config.session_id.as_ref(),
+            self.config.session_manager.as_ref(),
+        ) {
+            let _ =
+                manager.touch_session(session_id, Some(model), Some(self.provider_name()), None);
+        }
+        Ok(())
+    }
+
+    /// Reload provider settings for login and model-selection flows (tau
+    /// `reload_provider_settings`).
+    pub fn reload_provider_settings(&mut self) -> Result<(), SessionError> {
+        if self.provider_settings.is_none() {
+            return Ok(());
+        }
+        let previous_settings = self.provider_settings.clone();
+        let previous_thinking_level = self.thinking_level.clone();
+        self.provider_settings = Some(load_provider_settings(
+            self.resource_paths.paths.as_ref(),
+            Some(self.credential_store.as_ref()),
+        )?);
+        self.sync_thinking_level_to_active_model();
+        if let Err(err) = self.refresh_runtime_provider() {
+            self.provider_settings = previous_settings;
+            self.thinking_level = previous_thinking_level;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn persist_default_model_choice(&mut self) {
+        if self.provider_settings.is_none() {
+            return;
+        }
+        if let Ok(updated) = save_default_provider_model(
+            self.provider_name(),
+            &self.model(),
+            self.resource_paths.paths.as_ref(),
+            self.provider_settings.as_ref(),
+            Some(self.credential_store.as_ref()),
+        ) {
+            self.provider_settings = Some(updated);
+        }
+        self.sync_thinking_level_to_active_model();
+    }
+
+    fn persist_thinking_level_choice(&mut self) {
+        if self.provider_settings.is_none() {
+            return;
+        }
+        let Some(provider) = self.active_provider_config() else {
+            return;
+        };
+        if !provider_thinking_levels(&provider, Some(&self.model())).contains(&self.thinking_level)
+        {
+            return;
+        }
+        if let Ok(updated) = save_provider_thinking_level(
+            self.provider_name(),
+            &self.model(),
+            &self.thinking_level,
+            self.resource_paths.paths.as_ref(),
+            self.provider_settings.as_ref(),
+            Some(self.credential_store.as_ref()),
+        ) {
+            self.provider_settings = Some(updated);
+        }
+    }
+
+    fn sync_thinking_level_to_active_model(&mut self) {
+        let Some(provider) = self.active_provider_config() else {
+            return;
+        };
+        let model = self.model();
+        let preferred = provider.thinking_defaults().get(&model).cloned();
+        self.thinking_level = coerced_thinking_level(
+            &provider,
+            &model,
+            &self.thinking_level,
+            preferred.as_deref(),
+        );
+    }
+
+    fn refresh_runtime_provider(&mut self) -> Result<(), SessionError> {
+        let Some(runtime_config) = self.runtime_provider_config.clone() else {
+            return Ok(());
+        };
+        let provider_config = self.active_provider_config().unwrap_or(runtime_config);
+        let model = self.model();
+        validate_provider_model(&provider_config, &model)?;
+        let provider = create_model_provider(
+            &provider_config,
+            Some(self.credential_store.clone()),
+            Some(&model),
+            Some(&self.thinking_level),
+        )?;
+        self.owned_providers.push(provider.clone());
+        self.set_harness_provider(provider);
+        self.runtime_provider_config = Some(provider_config);
+        Ok(())
+    }
+
+    /// Rebuild the live harness with a new model, preserving the transcript.
+    ///
+    /// rho's `AgentHarness` exposes no in-place model/provider setter (tau
+    /// mutates `harness.config.model` directly); the port instead rebuilds the
+    /// harness from a cloned config, which is safe because model/provider swaps
+    /// happen between turns.
+    fn set_harness_model(&mut self, model: &str) {
+        let mut config = self.harness.config().clone();
+        config.model = model.to_string();
+        self.harness = AgentHarness::new(config, self.harness.messages());
+    }
+
+    fn set_harness_provider(&mut self, provider: Arc<dyn ModelProvider>) {
+        let mut config = self.harness.config().clone();
+        config.provider = provider;
+        self.harness = AgentHarness::new(config, self.harness.messages());
+    }
+
+    fn set_harness_provider_and_model(&mut self, provider: Arc<dyn ModelProvider>, model: &str) {
+        let mut config = self.harness.config().clone();
+        config.provider = provider;
+        config.model = model.to_string();
+        self.harness = AgentHarness::new(config, self.harness.messages());
     }
 
     // ---- compaction -------------------------------------------------------
@@ -1071,7 +1583,10 @@ impl CodingSession {
         self.refresh_persisted_state(target_id.as_deref()).await?;
         self.harness.replace_messages(self.state.messages.clone());
         self.invalidate_context_usage_cache();
-        self.thinking_level = state_thinking_level(&self.state, &self.config.thinking_level);
+        let default_thinking = self.default_thinking_level_for_active_model();
+        self.thinking_level = state_thinking_level(&self.state, &default_thinking);
+        self.sync_thinking_level_to_active_model();
+        self.refresh_runtime_provider()?;
 
         if let Some(prefill) = input_prefill {
             return Ok(SessionTreeBranchResult {
@@ -1158,6 +1673,152 @@ impl CodingSession {
         match expand_skill_command(text, &self.skills)? {
             Some(expanded) => Ok(expanded),
             None => Ok(text.to_string()),
+        }
+    }
+
+    // ---- export / reload --------------------------------------------------
+
+    /// Export the current session to a user-facing artifact (tau `export`).
+    pub async fn export(
+        &self,
+        destination: Option<PathBuf>,
+        format: Option<&str>,
+    ) -> Result<PathBuf, SessionError> {
+        let entries = self.read_session_entries().await?;
+        let session_path = self.storage().storage_path();
+        // tau: an explicit `format`, else the destination's suffix, else html.
+        let inferred_format = format.map(str::to_string).or_else(|| {
+            destination
+                .as_ref()
+                .and_then(|d| d.extension())
+                .map(|ext| ext.to_string_lossy().into_owned())
+        });
+        let export_format = normalize_export_format(inferred_format.as_deref())
+            .map_err(|err| SessionError::Export(err.to_string()))?;
+        let output_path = resolve_export_destination(
+            destination.as_deref(),
+            &self.config.cwd,
+            session_path.as_deref(),
+            &export_format,
+        );
+        let title = self.session_export_title();
+        let source = session_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| self.session_id().map(str::to_string));
+        export_session_artifact(
+            &entries,
+            &output_path,
+            &title,
+            source.as_deref(),
+            Some(&export_format),
+        )
+        .map_err(|err| SessionError::Export(err.to_string()))
+    }
+
+    /// Reload local coding resources and report the before/after delta (tau
+    /// `reload`, with the extension runtime elided — rho has no extensions).
+    ///
+    /// Kept `async` for parity with tau (whose reload awaits the extension
+    /// lifecycle) and with the command surface that awaits it; the elided body
+    /// has nothing to await here.
+    #[allow(clippy::unused_async)]
+    pub async fn reload(&mut self) -> Result<CodingReloadSummary, SessionError> {
+        let before_skills = skill_signatures(&self.skills);
+        let before_prompt_templates = prompt_template_signatures(&self.prompt_templates);
+        let before_context_files = context_file_signatures(&self.context_files);
+        let before_diagnostics = diagnostic_signatures(self.resource_diagnostics());
+        let before_system_prompt_inputs =
+            system_prompt_resource_signatures(&self.skills, &self.context_files);
+        // rho has no extension runtime, so the extensions category is always a
+        // zero-count no-op (tau tracks live extension names here).
+        let before_extensions: usize = 0;
+
+        let resources = load_session_resources(
+            &self.resource_paths,
+            &self.config.context_files,
+            self.config.skills_enabled,
+        );
+
+        let after_skills = skill_signatures(&resources.skills);
+        let after_prompt_templates = prompt_template_signatures(&resources.prompt_templates);
+        let after_context_files = context_file_signatures(&resources.context_files);
+        let after_system_prompt_inputs =
+            system_prompt_resource_signatures(&resources.skills, &resources.context_files);
+        let after_extensions: usize = 0;
+
+        // rho drops tau's extension tool-name and guideline terms (there are no
+        // extension-composed tools or prompt guidelines here): the system prompt
+        // is rebuilt only when it is not fixed by config and the skill/context
+        // signatures changed.
+        let mut rebuilt_system_prompt: Option<String> = None;
+        if self.config.system.is_none() && before_system_prompt_inputs != after_system_prompt_inputs
+        {
+            rebuilt_system_prompt = Some(build_system_prompt(&BuildSystemPromptOptions {
+                cwd: self.config.cwd.clone(),
+                tools: self.harness.config().tools.clone(),
+                custom_prompt: self.config.custom_system_prompt.clone(),
+                append_system_prompt: self.config.append_system_prompt.clone(),
+                context_files: resources.context_files.clone(),
+                ..Default::default()
+            }));
+        }
+        let system_prompt_rebuilt = rebuilt_system_prompt.is_some();
+
+        self.skills = resources.skills;
+        self.prompt_templates = resources.prompt_templates;
+        self.context_files = resources.context_files;
+        self.resource_diagnostics = resources.diagnostics;
+        let after_diagnostics = diagnostic_signatures(self.resource_diagnostics());
+        if let Some(system) = rebuilt_system_prompt {
+            let mut config = self.harness.config().clone();
+            config.system = system;
+            self.harness = AgentHarness::new(config, self.harness.messages());
+            self.invalidate_context_usage_cache();
+        }
+
+        Ok(CodingReloadSummary {
+            skills: category_summary_from(&before_skills, &after_skills),
+            prompt_templates: category_summary_from(
+                &before_prompt_templates,
+                &after_prompt_templates,
+            ),
+            context_files: category_summary_from(&before_context_files, &after_context_files),
+            extensions: ReloadCategorySummary::new(before_extensions, after_extensions, false),
+            diagnostics: category_summary_from(&before_diagnostics, &after_diagnostics),
+            system_prompt_rebuilt,
+        })
+    }
+
+    /// The active provider's preferred thinking level for the current model,
+    /// falling back to the config default (tau
+    /// `_default_thinking_level_for_active_model`).
+    fn default_thinking_level_for_active_model(&self) -> String {
+        match self.active_provider_config() {
+            Some(provider) => preferred_thinking_level_for_model(
+                &provider,
+                &self.model(),
+                &self.config.thinking_level,
+            ),
+            None => self.config.thinking_level.clone(),
+        }
+    }
+
+    /// The export artifact title (tau `_session_export_title`).
+    fn session_export_title(&self) -> String {
+        if let (Some(session_id), Some(manager)) = (
+            self.config.session_id.as_ref(),
+            self.config.session_manager.as_ref(),
+        ) {
+            if let Some(record) = manager.get_session(session_id) {
+                if let Some(title) = record.title.filter(|t| !t.is_empty()) {
+                    return title;
+                }
+            }
+        }
+        match self.session_id() {
+            Some(session_id) => format!("Tau session {session_id}"),
+            None => "Tau Session Export".to_string(),
         }
     }
 
@@ -1590,7 +2251,150 @@ fn state_thinking_level(state: &SessionState, default: &str) -> String {
 }
 
 fn runtime_model_for_state(config: &CodingSessionConfig, state: &SessionState) -> String {
-    state.model.clone().unwrap_or_else(|| config.model.clone())
+    let state_model = state.model.clone().unwrap_or_else(|| config.model.clone());
+    if config.provider_settings.is_none() || config.runtime_provider_config.is_none() {
+        return state_model;
+    }
+    let Some(provider) = provider_config_for_name(config, &config.provider_name) else {
+        return state_model;
+    };
+    match validate_provider_model(&provider, &state_model) {
+        Ok(()) => state_model,
+        Err(_) => {
+            if provider.models().contains(&config.model) {
+                config.model.clone()
+            } else {
+                provider.default_model().to_string()
+            }
+        }
+    }
+}
+
+/// tau `_initial_model_for_config`: the model recorded in a fresh session's
+/// `ModelChangeEntry`, validated against the active provider.
+fn initial_model_for_config(config: &CodingSessionConfig) -> String {
+    if config.provider_settings.is_none() || config.runtime_provider_config.is_none() {
+        return config.model.clone();
+    }
+    let Some(provider) = provider_config_for_name(config, &config.provider_name) else {
+        return config.model.clone();
+    };
+    match validate_provider_model(&provider, &config.model) {
+        Ok(()) => config.model.clone(),
+        Err(_) => provider.default_model().to_string(),
+    }
+}
+
+/// tau `_initial_thinking_level_for_config`: the thinking level recorded in a
+/// fresh session, coerced to the active provider's preferred level.
+fn initial_thinking_level_for_config(config: &CodingSessionConfig, model: &str) -> String {
+    match provider_config_for_name(config, &config.provider_name) {
+        Some(provider) => {
+            preferred_thinking_level_for_model(&provider, model, &config.thinking_level)
+        }
+        None => config.thinking_level.clone(),
+    }
+}
+
+/// tau `_provider_config_for_name`: the named provider from settings, else the
+/// runtime provider config.
+fn provider_config_for_name(
+    config: &CodingSessionConfig,
+    provider_name: &str,
+) -> Option<ProviderConfig> {
+    if let Some(settings) = config.provider_settings.as_ref() {
+        if let Ok(provider) = settings.get_provider(Some(provider_name)) {
+            return Some(provider.clone());
+        }
+    }
+    config.runtime_provider_config.clone()
+}
+
+/// tau `_active_provider_config`: the named provider from settings only (no
+/// runtime fallback).
+fn active_provider_config_from(
+    settings: Option<&ProviderSettings>,
+    provider_name: &str,
+) -> Option<ProviderConfig> {
+    settings?.get_provider(Some(provider_name)).ok().cloned()
+}
+
+/// tau `_preferred_thinking_level_for_model`.
+fn preferred_thinking_level_for_model(
+    provider: &ProviderConfig,
+    model: &str,
+    fallback: &str,
+) -> String {
+    let levels = provider_thinking_levels(provider, Some(model));
+    if let Some(preferred) = provider.thinking_defaults().get(model) {
+        if levels.iter().any(|level| level == preferred) {
+            return preferred.clone();
+        }
+    }
+    if levels.iter().any(|level| level == fallback) || levels.is_empty() {
+        return fallback.to_string();
+    }
+    provider_default_thinking_level(provider, Some(model)).unwrap_or_else(|| levels[0].clone())
+}
+
+/// tau `_coerced_thinking_level`.
+fn coerced_thinking_level(
+    provider: &ProviderConfig,
+    model: &str,
+    current: &str,
+    preferred: Option<&str>,
+) -> String {
+    let levels = provider_thinking_levels(provider, Some(model));
+    if levels.is_empty() || levels.iter().any(|level| level == current) {
+        return current.to_string();
+    }
+    if let Some(preferred) = preferred {
+        if levels.iter().any(|level| level == preferred) {
+            return preferred.to_string();
+        }
+    }
+    provider_default_thinking_level(provider, Some(model)).unwrap_or_else(|| levels[0].clone())
+}
+
+/// tau `_unavailable_thinking_message`.
+fn unavailable_thinking_message(session: &CodingSession) -> String {
+    let message = format!(
+        "Thinking controls are unavailable for {}:{}",
+        session.provider_name(),
+        session.model()
+    );
+    match session.thinking_unavailable_reason() {
+        Some(reason) => format!("{message}: {reason}"),
+        None => message,
+    }
+}
+
+/// tau `_resolve_export_destination`.
+fn resolve_export_destination(
+    destination: Option<&Path>,
+    cwd: &Path,
+    session_path: Option<&Path>,
+    format: &str,
+) -> PathBuf {
+    let Some(destination) = destination else {
+        return match session_path {
+            Some(path) => default_session_export_artifact_path(path, cwd, format),
+            None => cwd.join(format!("tau-session.{format}")),
+        };
+    };
+    let resolved = if destination.is_absolute() {
+        destination.to_path_buf()
+    } else {
+        cwd.join(destination)
+    };
+    if resolved.extension().is_some() {
+        return resolved;
+    }
+    let name = session_path.and_then(Path::file_stem).map_or_else(
+        || "tau-session".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    default_session_export_artifact_path(Path::new(&name), &resolved, format)
 }
 
 fn is_branchable_tree_entry(entry: &SessionEntry) -> bool {
@@ -1967,6 +2771,95 @@ fn merge_context_files(
         }
     }
     merged
+}
+
+// ---- reload signatures ----------------------------------------------------
+
+/// Resource-set signature type. Two reloads with equal signatures produce the
+/// same rendered resources (tau compares these tuples for `changed`).
+type ResourceSignature = (String, String, Option<String>, String);
+
+/// Diagnostic signature: `(kind, message, path, name, severity)`.
+type DiagnosticSignature = (String, String, Option<String>, Option<String>, String);
+
+fn skill_signatures(skills: &[Skill]) -> Vec<ResourceSignature> {
+    skills
+        .iter()
+        .map(|skill| {
+            (
+                skill.name.clone(),
+                skill.path.to_string_lossy().into_owned(),
+                skill.description.clone(),
+                skill.content.clone(),
+            )
+        })
+        .collect()
+}
+
+fn prompt_template_signatures(templates: &[PromptTemplate]) -> Vec<ResourceSignature> {
+    templates
+        .iter()
+        .map(|template| {
+            (
+                template.name.clone(),
+                template.path.to_string_lossy().into_owned(),
+                template.description.clone(),
+                template.content.clone(),
+            )
+        })
+        .collect()
+}
+
+fn context_file_signatures(context_files: &[ProjectContextFile]) -> Vec<(String, String)> {
+    context_files
+        .iter()
+        .map(|file| (file.path.clone(), file.content.clone()))
+        .collect()
+}
+
+fn diagnostic_signatures(diagnostics: &[ResourceDiagnostic]) -> Vec<DiagnosticSignature> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic.kind.clone(),
+                diagnostic.message.clone(),
+                diagnostic
+                    .path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                diagnostic.name.clone(),
+                diagnostic.severity.clone(),
+            )
+        })
+        .collect()
+}
+
+/// tau `_system_prompt_resource_signatures`, minus the extension tool/guideline
+/// terms rho does not have: the skill index (sorted by name, without content)
+/// and the context-file signatures that drive the next-turn system prompt.
+#[allow(clippy::type_complexity)]
+fn system_prompt_resource_signatures(
+    skills: &[Skill],
+    context_files: &[ProjectContextFile],
+) -> (Vec<(String, String, Option<String>)>, Vec<(String, String)>) {
+    let mut sorted: Vec<&Skill> = skills.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let prompt_skills = sorted
+        .iter()
+        .map(|skill| {
+            (
+                skill.name.clone(),
+                skill.path.to_string_lossy().into_owned(),
+                skill.description.clone(),
+            )
+        })
+        .collect();
+    (prompt_skills, context_file_signatures(context_files))
+}
+
+fn category_summary_from<T: PartialEq>(before: &[T], after: &[T]) -> ReloadCategorySummary {
+    ReloadCategorySummary::new(before.len(), after.len(), before != after)
 }
 
 fn set_parent_id(entry: &mut SessionEntry, parent: Option<String>) {

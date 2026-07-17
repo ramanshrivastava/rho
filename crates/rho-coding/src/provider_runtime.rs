@@ -19,6 +19,11 @@
 //! - A `CredentialStoreError` while reading a credential surfaces as `None`
 //!   (treated as "no stored credential"), matching how a missing store reads.
 
+// Same rationale as `session.rs`/`tools/difflib.rs`: the port mirrors tau's
+// terse field-by-field config assembly, so a few pedantic style lints are
+// allowed module-wide rather than idiomatized away from the source.
+#![allow(clippy::assigning_clones, clippy::map_unwrap_or)]
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,8 +47,8 @@ use crate::oauth_types::OAuthProvider;
 use crate::provider_config::{
     AnthropicProviderConfig, CredentialReader, OpenAICodexProviderConfig,
     OpenAICompatibleProviderConfig, ProviderConfig, ProviderConfigError,
-    anthropic_config_from_provider, openai_compatible_config_from_provider, provider_thinking_levels,
-    validate_provider_model,
+    anthropic_config_from_provider, openai_compatible_config_from_provider,
+    provider_thinking_levels, validate_provider_model,
 };
 use crate::thinking::{normalize_thinking_level, reasoning_effort_for_level};
 
@@ -239,8 +244,7 @@ fn codex_reasoning_effort(
     if levels.is_empty() {
         return Ok(None);
     }
-    let normalized =
-        normalize_thinking_level(Some(thinking_level)).map_err(ProviderConfigError)?;
+    let normalized = normalize_thinking_level(Some(thinking_level)).map_err(ProviderConfigError)?;
     if !levels.iter().any(|level| level == &normalized) {
         let selected_model = model.unwrap_or(&provider.default_model);
         let available = levels.join(", ");
@@ -286,16 +290,17 @@ fn runtime_auth_resolver(
     credential_store: Arc<FileCredentialStore>,
     oauth_provider: Arc<dyn OAuthProvider>,
 ) -> RuntimeProviderAuthResolver {
-    Arc::new(move || -> BoxFuture<'static, Result<RuntimeProviderAuth, String>> {
-        let provider_name = provider_name.clone();
-        let credential_name = credential_name.clone();
-        let credential_store = credential_store.clone();
-        let oauth_provider = oauth_provider.clone();
-        Box::pin(async move {
-            let Some(credential_name) = credential_name else {
-                return Err(format!("Provider {provider_name} has no credential name"));
-            };
-            let credential = credential_store
+    Arc::new(
+        move || -> BoxFuture<'static, Result<RuntimeProviderAuth, String>> {
+            let provider_name = provider_name.clone();
+            let credential_name = credential_name.clone();
+            let credential_store = credential_store.clone();
+            let oauth_provider = oauth_provider.clone();
+            Box::pin(async move {
+                let Some(credential_name) = credential_name else {
+                    return Err(format!("Provider {provider_name} has no credential name"));
+                };
+                let credential = credential_store
                 .get_oauth(&credential_name)
                 .map_err(|err| err.to_string())?
                 .ok_or_else(|| {
@@ -303,24 +308,25 @@ fn runtime_auth_resolver(
                         "Missing OAuth credentials for {provider_name}. Run /login {provider_name}."
                     )
                 })?;
-            let client = ReqwestOAuthClient::default();
-            let refreshed = oauth_provider
-                .refresh(&credential, &client, now_ms())
-                .await
-                .map_err(|err| err.to_string())?;
-            if refreshed != credential {
-                credential_store
-                    .set_oauth(&credential_name, refreshed.clone())
+                let client = ReqwestOAuthClient::default();
+                let refreshed = oauth_provider
+                    .refresh(&credential, &client, now_ms())
+                    .await
                     .map_err(|err| err.to_string())?;
-            }
-            let auth = oauth_provider.runtime_auth(&refreshed);
-            Ok(RuntimeProviderAuth {
-                api_key: auth.api_key,
-                base_url: auth.base_url,
-                headers: auth.headers,
+                if refreshed != credential {
+                    credential_store
+                        .set_oauth(&credential_name, refreshed.clone())
+                        .map_err(|err| err.to_string())?;
+                }
+                let auth = oauth_provider.runtime_auth(&refreshed);
+                Ok(RuntimeProviderAuth {
+                    api_key: auth.api_key,
+                    base_url: auth.base_url,
+                    headers: auth.headers,
+                })
             })
-        })
-    })
+        },
+    )
 }
 
 /// Build a Codex credential resolver (tau `OpenAICodexCredentialResolver`).
@@ -330,50 +336,50 @@ fn codex_credential_resolver(
     api_key_env: String,
     credential_store: Arc<FileCredentialStore>,
 ) -> rho_ai::env::OpenAICodexCredentialResolver {
-    Arc::new(move || -> BoxFuture<'static, Result<OpenAICodexCredentials, String>> {
-        let provider_name = provider_name.clone();
-        let credential_name = credential_name.clone();
-        let api_key_env = api_key_env.clone();
-        let credential_store = credential_store.clone();
-        Box::pin(async move {
-            if let Some(credential_name) = credential_name.as_deref() {
-                if let Some(credential) = credential_store
-                    .get_oauth(credential_name)
-                    .map_err(|err| err.to_string())?
-                {
-                    let credential = codex_refresh_if_needed(
-                        credential_name,
-                        credential,
-                        &credential_store,
-                    )
-                    .await?;
-                    let account_id = credential.account_id.ok_or_else(|| {
-                        "OpenAI Codex OAuth credential is missing account_id".to_string()
-                    })?;
-                    return Ok(OpenAICodexCredentials {
-                        access_token: credential.access,
-                        account_id,
-                    });
+    Arc::new(
+        move || -> BoxFuture<'static, Result<OpenAICodexCredentials, String>> {
+            let provider_name = provider_name.clone();
+            let credential_name = credential_name.clone();
+            let api_key_env = api_key_env.clone();
+            let credential_store = credential_store.clone();
+            Box::pin(async move {
+                if let Some(credential_name) = credential_name.as_deref() {
+                    if let Some(credential) = credential_store
+                        .get_oauth(credential_name)
+                        .map_err(|err| err.to_string())?
+                    {
+                        let credential =
+                            codex_refresh_if_needed(credential_name, credential, &credential_store)
+                                .await?;
+                        let account_id = credential.account_id.ok_or_else(|| {
+                            "OpenAI Codex OAuth credential is missing account_id".to_string()
+                        })?;
+                        return Ok(OpenAICodexCredentials {
+                            access_token: credential.access,
+                            account_id,
+                        });
+                    }
                 }
-            }
 
-            if let Ok(access_token) = std::env::var(&api_key_env) {
-                if !access_token.is_empty() {
-                    let account_id = account_id_from_access_token(&access_token).ok_or_else(|| {
-                        format!("{api_key_env} must contain an OpenAI Codex access JWT")
-                    })?;
-                    return Ok(OpenAICodexCredentials {
-                        access_token,
-                        account_id,
-                    });
+                if let Ok(access_token) = std::env::var(&api_key_env) {
+                    if !access_token.is_empty() {
+                        let account_id =
+                            account_id_from_access_token(&access_token).ok_or_else(|| {
+                                format!("{api_key_env} must contain an OpenAI Codex access JWT")
+                            })?;
+                        return Ok(OpenAICodexCredentials {
+                            access_token,
+                            account_id,
+                        });
+                    }
                 }
-            }
 
-            Err(format!(
-                "Missing OpenAI Codex OAuth credentials. Run /login {provider_name}."
-            ))
-        })
-    })
+                Err(format!(
+                    "Missing OpenAI Codex OAuth credentials. Run /login {provider_name}."
+                ))
+            })
+        },
+    )
 }
 
 async fn codex_refresh_if_needed(
@@ -385,9 +391,10 @@ async fn codex_refresh_if_needed(
         return Ok(credential);
     }
     let client = ReqwestOAuthClient::default();
-    let refreshed = crate::oauth::refresh_openai_codex_token(&credential.refresh, &client, now_ms())
-        .await
-        .map_err(|err| err.to_string())?;
+    let refreshed =
+        crate::oauth::refresh_openai_codex_token(&credential.refresh, &client, now_ms())
+            .await
+            .map_err(|err| err.to_string())?;
     if refreshed != credential {
         credential_store
             .set_oauth(credential_name, refreshed.clone())
