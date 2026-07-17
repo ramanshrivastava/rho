@@ -132,6 +132,24 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
         }
     };
 
+    // `!cmd` / `!!cmd` run a terminal command instead of prompting the agent
+    // (tau's `run_print_mode` routes these before the agent turn).
+    if let Some(request) = crate::session::parse_terminal_command(&config.prompt) {
+        return match session
+            .run_terminal_command(&request.command, request.add_to_context)
+            .await
+        {
+            Ok(result) => {
+                println!("{}", result.output);
+                result.ok
+            }
+            Err(err) => {
+                eprintln!("Error: {err}");
+                false
+            }
+        };
+    }
+
     let mut renderer = create_event_renderer(config.output);
     let stream = session.prompt(config.prompt, None);
     futures::pin_mut!(stream);
