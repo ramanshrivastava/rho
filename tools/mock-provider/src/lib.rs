@@ -212,8 +212,13 @@ async fn handle_request(
         }
     };
 
+    // Fail fast on a misconfigured status rather than silently masquerading a
+    // bad code as 200 (this is test tooling; a bogus status is a bug in the
+    // caller, not a runtime condition to tolerate).
+    let status = StatusCode::from_u16(status)
+        .unwrap_or_else(|_| panic!("mock-provider: invalid HTTP status {status}"));
     Response::builder()
-        .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
+        .status(status)
         .header("content-type", content_type)
         .body(Body::from_stream(stream))
         .expect("build response")

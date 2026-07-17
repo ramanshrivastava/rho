@@ -408,7 +408,9 @@ fn timeout_seconds_from_env(name: &str, default: f64) -> Result<f64, String> {
     let value: f64 = raw
         .parse()
         .map_err(|_| format!("Environment variable must be a number: {name}"))?;
-    if value <= 0.0 {
+    // Reject NaN/±inf: unlike Python (where `nan <= 0` is False and httpx tolerates
+    // it), Rust's `Duration::from_secs_f64` panics on a non-finite timeout.
+    if !value.is_finite() || value <= 0.0 {
         return Err(format!(
             "Environment variable must be greater than 0: {name}"
         ));
@@ -438,7 +440,7 @@ fn non_negative_float_from_env(name: &str, default: f64) -> Result<f64, String> 
     let value: f64 = raw
         .parse()
         .map_err(|_| format!("Environment variable must be a number: {name}"))?;
-    if value < 0.0 {
+    if !value.is_finite() || value < 0.0 {
         return Err(format!("Environment variable must be 0 or greater: {name}"));
     }
     Ok(value)

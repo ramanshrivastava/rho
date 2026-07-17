@@ -7,10 +7,11 @@ Phase 3 makes `rho-ai` *talk to models*. M2 gave us the provider seam
 M3 fills that seam with the six real adapters — Anthropic, OpenAI-compatible
 (chat + responses), OpenAI Codex, Google Gemini, Mistral — plus the shared
 HTTP/retry/canonicalization plumbing they stand on, all over `reqwest`. The
-correctness bar is again byte-for-byte: for each of the 15 recorded cases in
-`fixtures/sse/` there is a request-payload JSON, a raw SSE body, and an expected
-canonical `AssistantMessageEvent` sequence, and every one of them reproduces
-tau's bytes exactly (`tests/request_goldens.rs`, `tests/sse_goldens.rs`).
+correctness bar is again byte-for-byte: the extraction recorded **14 HTTP/SSE
+cases** (each with a request-payload JSON, a raw SSE body, and an expected
+canonical `AssistantMessageEvent` sequence) plus **one fake-provider replay** (an
+event script fed through the HTTP-less `FakeProvider`). Every one of them
+reproduces tau's bytes exactly (`tests/request_goldens.rs`, `tests/sse_goldens.rs`).
 
 This note records the decisions a faithful port forced: collapsing tau's
 two-layer streaming into one direct-emit accumulator, hand-rolling the SSE
