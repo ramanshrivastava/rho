@@ -1,2 +1,2 @@
-{"role":"user","text":"first"}
-{"role":"assistant","text":"first reply"}
+{"role":"user","content":"first","timestamp":0}
+{"role":"assistant","content":[{"type":"text","text":"first reply"}],"api":"unknown","provider":"unknown","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":0}

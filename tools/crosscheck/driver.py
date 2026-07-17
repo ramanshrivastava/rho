@@ -49,7 +49,6 @@ from tau_agent import (  # noqa: E402
     TextContent,
     ToolCall,
 )
-from tau_agent.messages import message_text  # noqa: E402
 from tau_agent.session.jsonl import entry_from_json_line  # noqa: E402
 from tau_agent.tools import AgentTool  # noqa: E402
 from tau_ai import FakeProvider  # noqa: E402
@@ -150,6 +149,26 @@ def _v2_scenarios() -> dict:
     }
 
 
+def _neutralize_timestamps(value) -> None:
+    """Recursively set every timestamp field to 0 (replay-only, never persisted)."""
+    if isinstance(value, dict):
+        for key in value:
+            if key in ("timestamp", "createdAt", "created_at"):
+                value[key] = 0
+            else:
+                _neutralize_timestamps(value[key])
+    elif isinstance(value, list):
+        for item in value:
+            _neutralize_timestamps(item)
+
+
+def _canonical_message(message) -> str:
+    """Full canonical message JSON (tau's wire serialization), timestamp neutralized."""
+    obj = json.loads(message.model_dump_json(by_alias=True, exclude_none=True))
+    _neutralize_timestamps(obj)
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
 def _select_entry(session_path: Path, selector: str) -> str:
     """Resolve a branch target (e.g. the first assistant message entry id)."""
     entries = [
@@ -201,12 +220,11 @@ async def _run_v2(name: str, spec: dict, sessions_dir: Path, v2_dir: Path) -> No
     normalized = normalize_stream(events)
     (v2_dir / f"{name}.events.jsonl").write_text(
         "\n".join(normalized) + ("\n" if normalized else ""), encoding="utf-8")
-    # Resume-swap oracle: (role, text) of the transcript replayed from a fresh reload.
+    # Resume-swap oracle: full canonical JSON of the transcript replayed from a
+    # fresh reload (structured content + metadata), with the replay-only
+    # timestamp neutralized (see `_canonical_message`).
     reloaded = await _load_v2_session(session_path, tools)
-    state = [
-        json.dumps({"role": m.role, "text": message_text(m)}, ensure_ascii=False, separators=(",", ":"))
-        for m in reloaded.messages
-    ]
+    state = [_canonical_message(m) for m in reloaded.messages]
     (v2_dir / f"{name}.state.jsonl").write_text(
         "\n".join(state) + ("\n" if state else ""), encoding="utf-8")
     print(f"crosscheck[tau/v2]: {name} -> {len(normalized)} events, "

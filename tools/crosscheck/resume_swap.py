@@ -21,7 +21,6 @@ import json
 import sys
 from pathlib import Path
 
-from tau_agent.messages import message_text
 from tau_coding.session import (
     CodingSession,
     CodingSessionConfig,
@@ -42,10 +41,26 @@ async def _replay_state(session_path: Path) -> list[str]:
         provider_name="fake",
         tools=[],
     ))
-    return [
-        json.dumps({"role": m.role, "text": message_text(m)}, ensure_ascii=False, separators=(",", ":"))
-        for m in session.messages
-    ]
+    return [_canonical_message(m) for m in session.messages]
+
+
+def _neutralize_timestamps(value) -> None:
+    if isinstance(value, dict):
+        for key in value:
+            if key in ("timestamp", "createdAt", "created_at"):
+                value[key] = 0
+            else:
+                _neutralize_timestamps(value[key])
+    elif isinstance(value, list):
+        for item in value:
+            _neutralize_timestamps(item)
+
+
+def _canonical_message(message) -> str:
+    """Full canonical message JSON (tau's wire serialization), timestamp neutralized."""
+    obj = json.loads(message.model_dump_json(by_alias=True, exclude_none=True))
+    _neutralize_timestamps(obj)
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
 def _null_provider():

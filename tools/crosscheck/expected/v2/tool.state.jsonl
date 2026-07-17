@@ -1,4 +1,4 @@
-{"role":"user","text":"use echo"}
-{"role":"assistant","text":""}
-{"role":"toolResult","text":"ok"}
-{"role":"assistant","text":"done"}
+{"role":"user","content":"use echo","timestamp":0}
+{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"echo","arguments":{"n":1}}],"api":"unknown","provider":"unknown","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":0}
+{"role":"toolResult","toolCallId":"call-1","toolName":"echo","content":[{"type":"text","text":"ok"}],"details":{},"isError":false,"timestamp":0}
+{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"unknown","provider":"unknown","model":"fake","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":0}
