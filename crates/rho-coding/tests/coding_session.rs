@@ -449,3 +449,201 @@ fn entry_type(entry: &SessionEntry) -> &'static str {
         SessionEntry::Custom(_) => "custom",
     }
 }
+
+// ---------------------------------------------------------------------------
+// dispatch-2 provider/model/thinking/export/reload surface
+// ---------------------------------------------------------------------------
+
+use rho_coding::ModelChoice;
+use rho_coding::context_window::DEFAULT_CONTEXT_WINDOW_TOKENS;
+use rho_coding::credentials::FileCredentialStore;
+use rho_coding::provider_config::{ProviderSettings, builtin_provider_configs};
+use rho_coding::resources::RhoResourcePaths;
+
+/// A hermetic resource-paths root under `home`, with an empty project cwd so
+/// skill/prompt/context discovery finds nothing.
+fn temp_resource_paths(home: &Path, cwd: &Path) -> RhoResourcePaths {
+    let rho_home = home.join(".rho");
+    let agents_home = home.join(".agents");
+    std::fs::create_dir_all(&rho_home).unwrap();
+    RhoResourcePaths {
+        root: rho_home.clone(),
+        cwd: Some(cwd.to_path_buf()),
+        agents_root: Some(agents_home.clone()),
+        paths: Some(RhoPaths::new(rho_home, agents_home)),
+    }
+}
+
+/// Provider settings backed by the built-in catalog, defaulting to `openai`.
+fn openai_provider_settings() -> ProviderSettings {
+    ProviderSettings {
+        default_provider: "openai".to_string(),
+        providers: builtin_provider_configs(),
+        scoped_models: Vec::new(),
+    }
+}
+
+/// Write a plain API-key credential into the hermetic store so the provider is
+/// reported usable.
+fn write_openai_credential(home: &Path) {
+    let rho_home = home.join(".rho");
+    std::fs::create_dir_all(&rho_home).unwrap();
+    let store = FileCredentialStore::new(rho_home.join("credentials.json"));
+    store.set("openai", "sk-test-key").unwrap();
+}
+
+fn provider_aware_config(
+    provider: Arc<dyn ModelProvider>,
+    storage: Arc<dyn SessionStorage>,
+    cwd: PathBuf,
+    home: &Path,
+    model: &str,
+) -> CodingSessionConfig {
+    let resource_paths = temp_resource_paths(home, &cwd);
+    let mut config = CodingSessionConfig::new(provider, model, storage, cwd);
+    config.clock = Arc::new(FixedClock::fixture());
+    config.id_gen = Arc::new(SequentialIdGen::new());
+    config.provider_name = "openai".to_string();
+    config.provider_settings = Some(openai_provider_settings());
+    config.resource_paths = Some(resource_paths);
+    config
+}
+
+#[tokio::test]
+async fn context_window_tokens_reads_active_provider_then_falls_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    // With provider settings: the active provider's per-model window wins.
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("with.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd.clone(), tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+    assert_eq!(session.model(), "gpt-4");
+    assert_eq!(session.context_window_tokens(), 8192);
+
+    // Without provider settings: rho's fixed fallback.
+    let provider2 = Arc::new(FakeProvider::new(vec![]));
+    let storage2 = jsonl_session_storage(tmp.path().join("without.jsonl"));
+    let config2 = pinned_config(provider2, storage2, cwd);
+    let session2 = CodingSession::load(config2).await.unwrap();
+    assert_eq!(
+        session2.context_window_tokens(),
+        DEFAULT_CONTEXT_WINDOW_TOKENS
+    );
+}
+
+#[tokio::test]
+async fn available_models_and_providers_reflect_provider_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    write_openai_credential(tmp.path());
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd.clone(), tmp.path(), "gpt-4");
+    let session = CodingSession::load(config).await.unwrap();
+
+    let providers = session.available_providers();
+    assert!(
+        providers.iter().any(|name| name == "openai"),
+        "usable openai provider is listed: {providers:?}"
+    );
+    let models = session.available_models();
+    assert!(
+        models.iter().any(|model| model == "gpt-4"),
+        "active provider models are listed: {models:?}"
+    );
+    assert!(
+        session
+            .available_model_choices()
+            .contains(&ModelChoice::new("openai", "gpt-4")),
+        "provider/model choices include openai:gpt-4"
+    );
+
+    // Without provider settings the accessors collapse to the fixed pair.
+    let bare_provider = Arc::new(FakeProvider::new(vec![]));
+    let bare_storage = jsonl_session_storage(tmp.path().join("s2.jsonl"));
+    let bare_config = pinned_config(bare_provider, bare_storage, cwd);
+    let bare_session = CodingSession::load(bare_config).await.unwrap();
+    assert_eq!(bare_session.available_providers(), vec!["fake".to_string()]);
+    assert_eq!(bare_session.available_models(), vec!["fake".to_string()]);
+}
+
+#[tokio::test]
+async fn set_model_updates_harness_model_and_validates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    write_openai_credential(tmp.path());
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // A configured model switches the live harness model.
+    session.set_model("gpt-4o").unwrap();
+    assert_eq!(session.model(), "gpt-4o");
+
+    // An unconfigured model is rejected and leaves the model unchanged.
+    let err = session.set_model("nonexistent-model-xyz").unwrap_err();
+    assert!(
+        err.to_string().contains("nonexistent-model-xyz"),
+        "validation error names the bad model: {err}"
+    );
+    assert_eq!(session.model(), "gpt-4o");
+}
+
+#[tokio::test]
+async fn export_writes_an_html_artifact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let session_path = tmp.path().join("session.jsonl");
+
+    let provider = Arc::new(FakeProvider::new(vec![text_turn("exported answer")]));
+    let storage = jsonl_session_storage(&session_path);
+    let config = pinned_config(provider, storage, cwd);
+    let mut session = CodingSession::load(config).await.unwrap();
+    drain(session.prompt("hi".to_string(), None)).await;
+
+    let destination = tmp.path().join("out.html");
+    let written = session
+        .export(Some(destination.clone()), None)
+        .await
+        .unwrap();
+    assert_eq!(written, destination);
+    let html = std::fs::read_to_string(&destination).unwrap();
+    assert!(!html.is_empty(), "export writes a non-empty artifact");
+    assert!(
+        html.to_lowercase().contains("<!doctype html") || html.contains("<html"),
+        "export writes HTML"
+    );
+}
+
+#[tokio::test]
+async fn reload_reports_unchanged_when_nothing_changed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    // Hermetic, empty resource root: nothing to load, nothing changes.
+    let resource_paths = temp_resource_paths(tmp.path(), &cwd);
+    let mut config = pinned_config(provider, storage, cwd);
+    config.resource_paths = Some(resource_paths);
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    let summary = session.reload().await.unwrap();
+    assert!(!summary.skills.changed);
+    assert!(!summary.prompt_templates.changed);
+    assert!(!summary.context_files.changed);
+    assert!(!summary.extensions.changed);
+    assert!(!summary.diagnostics.changed);
+    assert!(!summary.system_prompt_rebuilt);
+    assert_eq!(summary.skills.before, summary.skills.after);
+}

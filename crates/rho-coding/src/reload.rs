@@ -7,6 +7,11 @@
 //! (tau keeps the extension lifecycle hooks out of the synchronous command
 //! registry — see `commands.py::_reload_command`).
 
+// `delta()` intentionally subtracts two counts as `isize` (tau returns a signed
+// Python `int`); the category counts are small, so the wrap-around the lint
+// warns about cannot occur.
+#![allow(clippy::cast_possible_wrap)]
+
 /// Before/after state for one reload category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReloadCategorySummary {
