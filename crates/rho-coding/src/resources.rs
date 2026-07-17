@@ -99,10 +99,14 @@ pub struct RhoResourcePaths {
 
 impl Default for RhoResourcePaths {
     fn default() -> Self {
+        // Derive the root through `RhoPaths::default()` so `$RHO_HOME` is
+        // honored consistently — otherwise sessions would use `$RHO_HOME` while
+        // resource discovery still loaded from `$HOME/.rho`.
+        let defaults = RhoPaths::default();
         Self {
-            root: home_dir().join(".rho"),
+            root: defaults.home,
             cwd: None,
-            agents_root: Some(home_dir().join(".agents")),
+            agents_root: Some(defaults.agents_home),
             paths: None,
         }
     }

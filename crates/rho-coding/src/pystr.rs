@@ -153,7 +153,10 @@ fn python_str_repr(s: &str) -> String {
 /// Python `repr(float)`: keep a trailing `.0` for whole values and use Python's
 /// signed, ≥2-digit exponent form (`1e+20`). Rust's `{:?}` already gives the
 /// shortest round-tripping mantissa; only its exponent shape differs.
-fn python_float_repr(value: f64) -> String {
+///
+/// Also reused by `branch_summary`'s `json.dumps(..., sort_keys=True)` port so
+/// float arguments render Python-identically (`1e-07`, not serde's `1e-7`).
+pub(crate) fn python_float_repr(value: f64) -> String {
     let s = format!("{value:?}");
     match s.split_once('e') {
         Some((mantissa, exp)) => {

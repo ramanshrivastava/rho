@@ -232,7 +232,19 @@ fn write_json_sorted(value: &JsonValue, out: &mut String) {
         JsonValue::Null => out.push_str("null"),
         JsonValue::Bool(true) => out.push_str("true"),
         JsonValue::Bool(false) => out.push_str("false"),
-        JsonValue::Number(number) => out.push_str(&number.to_string()),
+        // Python `json.dumps` renders floats via `float.__repr__` — so `1e-7`
+        // is `1e-07`, not serde's `1e-7`. Integers stay plain. (crate::pystr).
+        JsonValue::Number(number) => {
+            if number.is_f64() {
+                if let Some(f) = number.as_f64() {
+                    out.push_str(&crate::pystr::python_float_repr(f));
+                } else {
+                    out.push_str(&number.to_string());
+                }
+            } else {
+                out.push_str(&number.to_string());
+            }
+        }
         JsonValue::String(text) => write_json_string(text, out),
         JsonValue::Array(items) => {
             out.push('[');
@@ -421,6 +433,17 @@ mod tests {
         assert_eq!(
             format_tool_call_arguments(&arguments),
             "note=\"caf\\u00e9\""
+        );
+    }
+
+    #[test]
+    fn tool_call_arguments_use_python_float_formatting() {
+        // Python `json.dumps(1e-7)` == "1e-07" (float.__repr__), not serde's
+        // "1e-7"; integers stay plain.
+        let arguments = args(json!({"scale": 1e-7, "count": 5, "ratio": 1.5}));
+        assert_eq!(
+            format_tool_call_arguments(&arguments),
+            "count=5, ratio=1.5, scale=1e-07"
         );
     }
 
