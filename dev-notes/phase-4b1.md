@@ -143,15 +143,43 @@ pins the harness stream directly.
 - All prior goldens (`golden_roundtrip`, `crosscheck` v1, `system_prompt`) stay
   green.
 
+## Crosscheck v2 — sessions are byte-interchangeable on disk
+
+The milestone's core oracle. Where v1 (`tests/crosscheck.rs`) pins the bare
+harness event stream, v2 (`tests/crosscheck_v2.rs`) drives the full
+`CodingSession` on **both** sides and proves the two implementations produce
+*and* resume the same session files.
+
+The enabling fact: tau's `patch_determinism` (`_CounterUUID` → `{n:032x}`, plus
+`_FIXED_MESSAGE_TIME`/`_FIXED_ENTRY_TIME`) is **numerically identical** to rho's
+`SequentialIdGen` + `FixedClock::fixture`. With a pinned `cwd`
+(`/rho-crosscheck-cwd`, the one otherwise environment-dependent field —
+`session_info.cwd`) the raw session JSONL files are **byte-for-byte identical**
+across tau and rho. So the interchange artifact is literal: one committed file
+per scenario under `tools/crosscheck/sessions/`, which both implementations
+write identically and each can resume.
+
+`tools/crosscheck/driver.py` grew a v2 section that drives tau's `CodingSession`
+through four scenarios — **text, tool, compaction (manual, with a
+`CompactionEntry` + `replaces_entry_ids`), and branch (mid-history
+`branch_to_entry`)** — resetting the id counter per scenario, and emits three
+artifacts each: the raw `sessions/<name>.session.jsonl`, the normalized
+`expected/v2/<name>.events.jsonl` event stream, and the resume `(role, text)`
+oracle `expected/v2/<name>.state.jsonl`.
+
+`tests/crosscheck_v2.rs` (CI-runnable, no `uv`) reproduces all three per
+scenario: rho's writer must match the session file **byte-for-byte**, its
+normalized `CodingSessionEvent` stream must match, and it loads the committed
+(tau-written) file and asserts the replayed transcript — the **tau → rho
+resume-swap**. The **rho → tau** direction is `tools/crosscheck/resume_swap.py`:
+tau loads each committed (rho-byte-identical) session file and must replay to the
+same state; it runs under `#[ignore]` (`crosscheck_v2_resume_swap_rho_to_tau`,
+shelling `uv`) and in `just crosscheck`. `just crosscheck` now runs the full
+pipeline: regenerate tau side → rho v1 → rho v2 (files + streams + tau→rho) →
+rho→tau resume-swap.
+
 ## Deferred / remaining (honest ledger)
 
-- **Cross-language crosscheck v2.** The rho-side resume parity is covered above;
-  the *cross-language* byte-diff (rho-written session == tau-written session,
-  and rho resumes a tau-written file to identical state, driven through
-  `CodingSession` on both sides) requires regenerating the tau-side expected
-  outputs via `tools/crosscheck/driver.py` against the pinned `TAU_REV` — the one
-  sanctioned regeneration path. That regeneration + the resume-swap harness is
-  the next task on this branch.
 - **The full `test_coding_session.py` port.** ~40 of its 90 cases exercise
   dispatch-2 surface (set_model/switch-provider/scoped models, skills, prompt
   templates, commands, export, reload). Those are deferred with their subsystems;
