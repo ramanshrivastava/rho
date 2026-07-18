@@ -904,6 +904,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_state_rejects_only_present_mismatched_state() {
+        // Matching state passes (the normal CSRF-protected callback).
+        assert!(validate_state(Some("state-1"), "state-1").is_ok());
+        // A present but mismatched state is rejected (the CSRF guard fires).
+        let err = validate_state(Some("attacker"), "state-1").unwrap_err();
+        assert_eq!(err.0, "OAuth state mismatch");
+        // An absent state is accepted — this faithfully matches tau's
+        // `_validate_state` (`state is not None and state != expected`), which
+        // some providers rely on; do not tighten without a tau change.
+        assert!(validate_state(None, "state-1").is_ok());
+    }
+
+    #[test]
     fn parse_authorization_input_accepts_url_query_and_raw_code() {
         assert_eq!(
             parse_authorization_input("http://localhost:1455/auth/callback?code=abc&state=state-1")
