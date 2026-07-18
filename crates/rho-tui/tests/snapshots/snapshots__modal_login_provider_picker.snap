@@ -1,0 +1,18 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+
+           ┌ Login ────────────────────────────────────────┐
+           │search:                                        │
+           │                                               │
+           │› Anthropic (Claude Pro/Max) — anthropic       │
+           │  OpenAI Codex (ChatGPT) — openai-codex        │
+           │  GitHub Copilot — github-copilot              │
+           │                                               │
+           │                                               │
+           │Enter selects · Escape closes                  │
+           └───────────────────────────────────────────────┘

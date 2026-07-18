@@ -363,10 +363,11 @@ async fn post_openai_codex_token(
         ))
         .await?;
     if response.is_error() {
+        // Status only — never surface the response body (it can echo the
+        // submitted token), matching the Anthropic path's deliberate redaction.
         return Err(OAuthError(format!(
-            "OpenAI Codex token {action} failed ({}): {}",
-            response.status,
-            response.text()
+            "OpenAI Codex token {action} failed ({})",
+            response.status
         )));
     }
     match response.json_value() {
@@ -384,9 +385,9 @@ fn required_token_field(
 ) -> Result<String, OAuthError> {
     match raw.get(field).and_then(Value::as_str) {
         Some(value) if !value.is_empty() => Ok(value.to_string()),
+        // Field name only — the raw map holds access/refresh tokens; never dump it.
         _ => Err(OAuthError(format!(
-            "OpenAI Codex token {action} response missing {field}: {}",
-            json_dumps_sorted(&Value::Object(raw.clone()))
+            "OpenAI Codex token {action} response missing {field}"
         ))),
     }
 }
@@ -416,14 +417,13 @@ fn token_expiry(
             Ok(now_ms.saturating_add(millis))
         }
         Some(Value::Null) | None => access_token_expiry(access_token).ok_or_else(|| {
+            // No raw-map dump: it holds the access/refresh tokens.
             OAuthError(format!(
-                "OpenAI Codex token {action} response missing expiry: {}",
-                json_dumps_sorted(&Value::Object(raw.clone()))
+                "OpenAI Codex token {action} response missing expiry"
             ))
         }),
         Some(_) => Err(OAuthError(format!(
-            "OpenAI Codex token {action} response has invalid expires_in: {}",
-            json_dumps_sorted(&Value::Object(raw.clone()))
+            "OpenAI Codex token {action} response has invalid expires_in"
         ))),
     }
 }
@@ -575,88 +575,6 @@ fn token_hex(byte_count: usize) -> Result<String, OAuthError> {
         let _ = write!(out, "{byte:02x}");
     }
     Ok(out)
-}
-
-/// Serialize a JSON value like Python `json.dumps(value, sort_keys=True)`:
-/// sorted object keys, `ensure_ascii` escaping, `", "` / `": "` separators. Used
-/// only to embed the raw token response in error messages (parity with tau).
-fn json_dumps_sorted(value: &Value) -> String {
-    let mut out = String::new();
-    write_json_sorted(value, &mut out);
-    out
-}
-
-fn write_json_sorted(value: &Value, out: &mut String) {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(true) => out.push_str("true"),
-        Value::Bool(false) => out.push_str("false"),
-        Value::Number(number) => {
-            if number.is_f64() {
-                out.push_str(&crate::pystr::python_float_repr(
-                    number.as_f64().unwrap_or(0.0),
-                ));
-            } else {
-                out.push_str(&number.to_string());
-            }
-        }
-        Value::String(text) => write_json_string(text, out),
-        Value::Array(items) => {
-            out.push('[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
-                }
-                write_json_sorted(item, out);
-            }
-            out.push(']');
-        }
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            out.push('{');
-            for (index, key) in keys.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
-                }
-                write_json_string(key, out);
-                out.push_str(": ");
-                write_json_sorted(&map[*key], out);
-            }
-            out.push('}');
-        }
-    }
-}
-
-fn write_json_string(text: &str, out: &mut String) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if (u32::from(c)) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", u32::from(c));
-            }
-            c if c.is_ascii() => out.push(c),
-            c => {
-                let cp = u32::from(c);
-                if cp <= 0xFFFF {
-                    let _ = write!(out, "\\u{cp:04x}");
-                } else {
-                    let value = cp - 0x10000;
-                    let high = 0xD800 + (value >> 10);
-                    let low = 0xDC00 + (value & 0x3FF);
-                    let _ = write!(out, "\\u{high:04x}\\u{low:04x}");
-                }
-            }
-        }
-    }
-    out.push('"');
 }
 
 // ---------------------------------------------------------------------------
@@ -983,6 +901,59 @@ mod tests {
         assert_eq!(get("state").as_deref(), Some(flow.state.as_str()));
         assert!(get("code_challenge").is_some());
         assert!(!flow.verifier.is_empty());
+    }
+
+    #[test]
+    fn token_field_errors_never_leak_secrets() {
+        // A token response that is missing a required field but *does* carry the
+        // access/refresh tokens: the error must name the missing field only,
+        // never serialize the map (which would surface the tokens in the
+        // transcript). Matches the Anthropic path's status-only redaction.
+        let mut raw = serde_json::Map::new();
+        raw.insert(
+            "access_token".to_string(),
+            Value::String("SECRET-ACCESS".into()),
+        );
+        raw.insert(
+            "refresh_token".to_string(),
+            Value::String("SECRET-REFRESH".into()),
+        );
+
+        let err = required_token_field(&raw, "token_type", "exchange").unwrap_err();
+        assert!(
+            !err.0.contains("SECRET-ACCESS"),
+            "leaked access token: {}",
+            err.0
+        );
+        assert!(
+            !err.0.contains("SECRET-REFRESH"),
+            "leaked refresh token: {}",
+            err.0
+        );
+        assert!(err.0.contains("missing token_type"));
+
+        // The expiry-parse error path (no `expires_in`, non-JWT access token)
+        // must likewise not echo the token map.
+        let err = token_expiry(&raw, "not-a-jwt", "exchange", 0).unwrap_err();
+        assert!(
+            !err.0.contains("SECRET-ACCESS"),
+            "leaked token in expiry error: {}",
+            err.0
+        );
+        assert!(err.0.contains("missing expiry"));
+    }
+
+    #[test]
+    fn validate_state_rejects_only_present_mismatched_state() {
+        // Matching state passes (the normal CSRF-protected callback).
+        assert!(validate_state(Some("state-1"), "state-1").is_ok());
+        // A present but mismatched state is rejected (the CSRF guard fires).
+        let err = validate_state(Some("attacker"), "state-1").unwrap_err();
+        assert_eq!(err.0, "OAuth state mismatch");
+        // An absent state is accepted — this faithfully matches tau's
+        // `_validate_state` (`state is not None and state != expected`), which
+        // some providers rely on; do not tighten without a tau change.
+        assert!(validate_state(None, "state-1").is_ok());
     }
 
     #[test]

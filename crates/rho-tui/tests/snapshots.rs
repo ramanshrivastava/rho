@@ -29,8 +29,11 @@ use rho_coding::session_manager::CodingSessionRecord;
 use rho_tui::TuiEventAdapter;
 use rho_tui::autocomplete::{CompletionItem, CompletionState};
 use rho_tui::modals::{
-    BranchSummaryModal, CommandOutputModal, Modal, ModelPickerKind, ModelPickerModal, NoticeModal,
-    SessionPickerModal, ThemePickerModal, TreePickerModal,
+    ApiKeyLoginModal, BranchSummaryModal, CommandOutputModal, CustomProviderLoginModal,
+    ExtensionConfirmModal, ExtensionInputModal, ExtensionSelectModal, LoginMethod,
+    LoginMethodPickerModal, LoginProviderItem, LoginProviderPickerModal, Modal, ModelPickerKind,
+    ModelPickerModal, NoticeModal, OAuthLoginModal, ProviderPickerPurpose, SessionPickerModal,
+    ThemePickerModal, TreePickerModal,
 };
 use rho_tui::state::TuiState;
 use rho_tui::theme::{TuiKeybindings, TuiThemeName, get_tui_theme};
@@ -407,5 +410,95 @@ fn snapshot_notice_m7() {
     snapshot_modal(
         "modal_notice_m7",
         Modal::Notice(NoticeModal::m7("Login / logout")),
+    );
+}
+
+#[test]
+fn snapshot_login_method_picker() {
+    snapshot_modal(
+        "modal_login_method_picker",
+        Modal::LoginMethodPicker(LoginMethodPickerModal::new()),
+    );
+}
+
+#[test]
+fn snapshot_login_provider_picker() {
+    let providers = vec![
+        LoginProviderItem::new("anthropic", "Anthropic (Claude Pro/Max)"),
+        LoginProviderItem::new("openai-codex", "OpenAI Codex (ChatGPT)"),
+        LoginProviderItem::new("github-copilot", "GitHub Copilot"),
+    ];
+    snapshot_modal(
+        "modal_login_provider_picker",
+        Modal::LoginProviderPicker(LoginProviderPickerModal::new(
+            providers,
+            ProviderPickerPurpose::Login {
+                method: LoginMethod::Subscription,
+            },
+            "Login",
+        )),
+    );
+}
+
+#[test]
+fn snapshot_api_key_login() {
+    snapshot_modal(
+        "modal_api_key_login",
+        Modal::ApiKeyLogin(ApiKeyLoginModal::new("OpenAI")),
+    );
+}
+
+#[test]
+fn snapshot_oauth_login() {
+    let mut modal = OAuthLoginModal::new("Anthropic (Claude Pro/Max)");
+    modal.set_auth(
+        "https://claude.ai/oauth/authorize?client_id=demo".to_string(),
+        Some("Complete login in your browser.".to_string()),
+    );
+    snapshot_modal("modal_oauth_login", Modal::OAuthLogin(modal));
+}
+
+#[test]
+fn snapshot_oauth_login_device_code() {
+    let mut modal = OAuthLoginModal::new("GitHub Copilot");
+    modal.set_device_code("https://github.com/login/device".to_string(), "ABCD-1234");
+    snapshot_modal("modal_oauth_login_device", Modal::OAuthLogin(modal));
+}
+
+#[test]
+fn snapshot_custom_provider_login() {
+    snapshot_modal(
+        "modal_custom_provider_login",
+        Modal::CustomProviderLogin(CustomProviderLoginModal::new()),
+    );
+}
+
+#[test]
+fn snapshot_extension_select() {
+    snapshot_modal(
+        "modal_extension_select",
+        Modal::ExtensionSelect(ExtensionSelectModal::new(
+            "Pick a branch",
+            vec!["main".to_string(), "develop".to_string()],
+        )),
+    );
+}
+
+#[test]
+fn snapshot_extension_confirm() {
+    snapshot_modal(
+        "modal_extension_confirm",
+        Modal::ExtensionConfirm(ExtensionConfirmModal::new(
+            "Proceed?",
+            "This will overwrite the file.",
+        )),
+    );
+}
+
+#[test]
+fn snapshot_extension_input() {
+    snapshot_modal(
+        "modal_extension_input",
+        Modal::ExtensionInput(ExtensionInputModal::new("Enter name", "e.g. feature-x")),
     );
 }

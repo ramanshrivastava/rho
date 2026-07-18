@@ -1,0 +1,191 @@
+// The `rho:extension` WIT world — the contract between the rho host
+// (`rho-ext-host`, a wasmtime component runtime) and a compiled extension guest.
+//
+// This is the Rust/WASM analogue of tau's `tau_coding.extensions.api` module.
+// tau's extension *semantics* are the parity target; the ABI below is rho's own.
+//
+// ABI notes (deliberate, load-bearing):
+//   * Free-form JSON (tool arguments, custom-message details, transcript,
+//     tool-result payloads) crosses the boundary as canonical JSON **text**.
+//     WIT has no JSON type, and a text ABI keeps the boundary simple and stable
+//     — the same pragmatic spirit as tau's markup-string renderer deviation.
+//   * Message renderers return **markup strings**, never widgets (tau's
+//     deliberate deviation from Pi's widget-returning components; it is exactly
+//     what makes a WASM boundary feasible).
+//   * The guest declares which hooks it subscribes to by calling `subscribe`
+//     during `init` (mirroring tau's `tau.on(event, handler)`), so the host
+//     dispatches a hook only to extensions that subscribed — a faithful port of
+//     tau's `_handlers_for`, not a call-everything-then-no-op scan.
+
+package rho:extension@0.1.0;
+
+/// Shared payload records crossing the host/guest boundary.
+interface types {
+  /// A tool the guest registers during `init` (maps onto rho's `AgentTool`).
+  record tool-def {
+    name: string,
+    label: string,
+    description: string,
+    /// JSON-schema object (the tool's parameters) as canonical JSON text.
+    parameters-json: string,
+    /// Optional system-prompt snippet contributed by the tool.
+    prompt-snippet: option<string>,
+  }
+
+  /// A slash command the guest registers during `init`.
+  record command-def {
+    name: string,
+    description: string,
+    usage: option<string>,
+    aliases: list<string>,
+  }
+
+  /// `tool_call` hook event, before a tool executes (tau `ToolCallHookEvent`).
+  record tool-call-event {
+    tool-name: string,
+    /// Tool arguments as canonical JSON text.
+    arguments-json: string,
+  }
+
+  /// `tool_call` hook result (tau `ToolCallHookResult`). `block` wins over an
+  /// argument rewrite and short-circuits remaining handlers.
+  record tool-call-outcome {
+    block: bool,
+    reason: option<string>,
+    /// Replacement arguments as JSON text; `none` leaves them unchanged.
+    arguments-json: option<string>,
+  }
+
+  /// `tool_result` hook event, after a tool executes (tau `ToolResultHookEvent`).
+  record tool-result-event {
+    tool-name: string,
+    arguments-json: string,
+    /// The tool result's text content.
+    result-text: string,
+    /// The tool result's structured details as JSON text, if any.
+    result-details-json: option<string>,
+  }
+
+  /// `tool_result` hook result; set a field to override (tau `ToolResultHookResult`).
+  record tool-result-outcome {
+    content: option<string>,
+    details-json: option<string>,
+  }
+
+  /// `input` hook event: raw user prompt text before expansion (tau `InputEvent`).
+  record input-event {
+    text: string,
+    /// "interactive" | "extension".
+    source: string,
+    /// "steer" | "follow_up", or absent on the idle prompt path.
+    streaming-behavior: option<string>,
+  }
+
+  /// `input` hook result (tau `InputHookResult`). `action` is one of
+  /// "continue" | "transform" | "handled".
+  record input-outcome {
+    action: string,
+    text: option<string>,
+    message: option<string>,
+  }
+
+  /// A lifecycle event payload: `reason` is one of
+  /// "startup" | "reload" | "new" | "resume" | "branch" | "quit".
+  record lifecycle-event {
+    reason: string,
+  }
+}
+
+/// Host functions the guest imports: registration during `init`, and session
+/// reads / UI dialogs / actions during hook dispatch. All are async on the host
+/// side (`func_wrap_async`) so the host can await session and UI work.
+interface host {
+  use types.{tool-def, command-def};
+
+  // -- registration (honored only during the `init` phase) -----------------
+
+  /// Register a tool. First registration per name wins (tau parity).
+  register-tool: func(tool: tool-def);
+  /// Register a slash command. First registration per name wins.
+  register-command: func(cmd: command-def);
+  /// Add a standalone system-prompt guideline line.
+  add-prompt-guideline: func(guideline: string);
+  /// Register a custom-message renderer for `custom-type`. First wins.
+  register-message-renderer: func(custom-type: string);
+  /// Declare a subscription to a hook/agent event (tau's `tau.on(event, ...)`).
+  /// Known events: session_start, session_shutdown, input, tool_call,
+  /// tool_result, turn_start, turn_end, plus the agent-event names and the
+  /// `agent_event` wildcard.
+  subscribe: func(event: string);
+
+  // -- read-only session context (tau `ExtensionContext`) ------------------
+
+  get-cwd: func() -> string;
+  get-model: func() -> string;
+  get-provider-name: func() -> string;
+  get-session-id: func() -> option<string>;
+  get-system-prompt: func() -> string;
+  is-running: func() -> bool;
+  /// The active-branch transcript as JSON text (deep-copied host-side).
+  get-transcript-json: func() -> string;
+
+  // -- UI (tau `ExtensionUi`; Pi no-op defaults without a frontend) --------
+
+  /// "info" | "warning" | "error".
+  notify: func(message: string, level: string);
+  ui-select: func(title: string, options: list<string>) -> option<string>;
+  ui-confirm: func(title: string, message: string) -> bool;
+  ui-input: func(title: string, placeholder: string) -> option<string>;
+
+  // -- actions -------------------------------------------------------------
+
+  /// Queue a user message for the active or next run. `deliver-as` is
+  /// "steer" | "follow_up".
+  send-user-message: func(content: string, deliver-as: string);
+}
+
+/// The world a rho extension guest implements.
+world extension {
+  import host;
+
+  use types.{
+    input-event, input-outcome,
+    tool-call-event, tool-call-outcome,
+    tool-result-event, tool-result-outcome,
+    lifecycle-event,
+  };
+
+  /// Run once during the init phase. The guest registers tools / commands /
+  /// renderers / guidelines and declares hook subscriptions here (via `host`
+  /// imports). Registration is honored ONLY during this call.
+  export init: func();
+
+  // -- lifecycle + agent hooks (dispatched only to subscribers) ------------
+
+  export on-session-start: func(ev: lifecycle-event);
+  export on-session-shutdown: func(ev: lifecycle-event);
+
+  /// Generic canonical agent-event fan-out (tau's `emit_event`). Covers
+  /// turn_start / turn_end (Pi-shaped, with turn-index + timestamp folded into
+  /// the JSON) plus message_* / tool_execution_* / compaction_* / … and the
+  /// `agent_event` wildcard. `payload-json` is the full event as JSON text,
+  /// tagged with its `type`.
+  export on-agent-event: func(event-type: string, payload-json: string);
+
+  /// `input` hook: return an outcome to transform/handle, or `none` to continue.
+  export on-input: func(ev: input-event) -> option<input-outcome>;
+  /// `tool_call` hook: return an outcome to block/rewrite, or `none` to allow.
+  export on-tool-call: func(ev: tool-call-event) -> option<tool-call-outcome>;
+  /// `tool_result` hook: return an outcome to override, or `none` to keep.
+  export on-tool-result: func(ev: tool-result-event) -> option<tool-result-outcome>;
+
+  // -- invocations for guest-registered surfaces ---------------------------
+
+  /// Execute a tool the guest registered. Returns the result as JSON text
+  /// (`{ "text": "...", "details": {...} }`).
+  export call-tool: func(name: string, arguments-json: string) -> string;
+
+  /// Render a custom message via the guest's registered renderer. Returns the
+  /// markup string, or `none` to fall back to the raw content.
+  export render-message: func(custom-type: string, content: string, details-json: option<string>, expanded: bool) -> option<string>;
+}

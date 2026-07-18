@@ -35,6 +35,50 @@ pub struct TreePickerResult {
     pub custom_instructions: Option<String>,
 }
 
+/// Which authentication method the user picked (tau's `LoginMethodPickerScreen`
+/// dismiss values `"subscription"`/`"api-key"`/`"custom"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMethod {
+    /// OAuth subscription login.
+    Subscription,
+    /// Built-in-provider API-key login.
+    ApiKey,
+    /// Custom OpenAI-compatible provider.
+    Custom,
+}
+
+impl LoginMethod {
+    /// The tau wire string for this method.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::ApiKey => "api-key",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+/// Provider details collected by the custom-provider login flow (tau
+/// `CustomProviderLoginResult`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomProviderDraft {
+    /// Stable provider id.
+    pub provider_name: String,
+    /// Human-facing display name.
+    pub display_name: String,
+    /// Base URL (trailing slash trimmed by the consumer).
+    pub base_url: String,
+    /// Environment variable holding the API key.
+    pub api_key_env: String,
+    /// Declared model ids, in order.
+    pub models: Vec<String>,
+    /// Default model id.
+    pub default_model: String,
+    /// The API key to store.
+    pub api_key: String,
+}
+
 /// What a modal reports back after handling a key (tau's `dismiss(value)`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModalOutcome {
@@ -54,6 +98,32 @@ pub enum ModalOutcome {
     Branch(TreePickerResult),
     /// The tree picker requested the custom-summary sub-screen for `entry_id`.
     OpenBranchSummary(String),
+    /// A login method was chosen (login-method picker).
+    LoginMethod(LoginMethod),
+    /// A provider was chosen for login (provider picker), with the method that
+    /// led here so the app can pick the OAuth vs API-key screen.
+    LoginProvider {
+        /// The chosen provider name.
+        name: String,
+        /// The method that led to this picker (`None` for a direct `/login foo`).
+        method: Option<LoginMethod>,
+    },
+    /// A provider was chosen for logout (provider picker in logout mode).
+    Logout(String),
+    /// Navigate back one screen in the login flow (tau `_LoginFlowAction.BACK`).
+    LoginBack,
+    /// An API key was entered (api-key login modal).
+    ApiKey(String),
+    /// The user submitted a manual OAuth code / prompt response (OAuth modal).
+    OAuthManualCode(String),
+    /// A custom provider was fully described (custom-provider login modal).
+    CustomProvider(CustomProviderDraft),
+    /// An extension `ui.select` resolved (`None` on cancel).
+    ExtensionSelect(Option<String>),
+    /// An extension `ui.confirm` resolved.
+    ExtensionConfirm(bool),
+    /// An extension `ui.input` resolved (`None` on cancel).
+    ExtensionInput(Option<String>),
 }
 
 /// The active modal overlay.
@@ -70,8 +140,24 @@ pub enum Modal {
     BranchSummaryInstructions(BranchSummaryModal),
     /// A scrollable read-only command-output view.
     CommandOutput(CommandOutputModal),
-    /// A deferred/informational notice (login + extension flows land in M7).
+    /// A deferred/informational notice.
     Notice(NoticeModal),
+    /// Pick a login method (subscription / api-key / custom).
+    LoginMethodPicker(LoginMethodPickerModal),
+    /// Pick a provider to log in to or out of (searchable).
+    LoginProviderPicker(LoginProviderPickerModal),
+    /// Enter a provider API key.
+    ApiKeyLogin(ApiKeyLoginModal),
+    /// Drive an interactive OAuth login (browser / device flow).
+    OAuthLogin(OAuthLoginModal),
+    /// Describe a custom OpenAI-compatible provider.
+    CustomProviderLogin(CustomProviderLoginModal),
+    /// An extension `ui.select` picker.
+    ExtensionSelect(ExtensionSelectModal),
+    /// An extension `ui.confirm` dialog.
+    ExtensionConfirm(ExtensionConfirmModal),
+    /// An extension `ui.input` text prompt.
+    ExtensionInput(ExtensionInputModal),
 }
 
 impl Modal {
@@ -85,6 +171,14 @@ impl Modal {
             Modal::BranchSummaryInstructions(m) => m.handle_key(key),
             Modal::CommandOutput(m) => m.handle_key(key),
             Modal::Notice(m) => m.handle_key(key),
+            Modal::LoginMethodPicker(m) => m.handle_key(key),
+            Modal::LoginProviderPicker(m) => m.handle_key(key),
+            Modal::ApiKeyLogin(m) => m.handle_key(key),
+            Modal::OAuthLogin(m) => m.handle_key(key),
+            Modal::CustomProviderLogin(m) => m.handle_key(key),
+            Modal::ExtensionSelect(m) => m.handle_key(key),
+            Modal::ExtensionConfirm(m) => m.handle_key(key),
+            Modal::ExtensionInput(m) => m.handle_key(key),
         }
     }
 
@@ -98,6 +192,14 @@ impl Modal {
             Modal::BranchSummaryInstructions(m) => m.render(frame, area, theme),
             Modal::CommandOutput(m) => m.render(frame, area, theme),
             Modal::Notice(m) => m.render(frame, area, theme),
+            Modal::LoginMethodPicker(m) => m.render(frame, area, theme),
+            Modal::LoginProviderPicker(m) => m.render(frame, area, theme),
+            Modal::ApiKeyLogin(m) => m.render(frame, area, theme),
+            Modal::OAuthLogin(m) => m.render(frame, area, theme),
+            Modal::CustomProviderLogin(m) => m.render(frame, area, theme),
+            Modal::ExtensionSelect(m) => m.render(frame, area, theme),
+            Modal::ExtensionConfirm(m) => m.render(frame, area, theme),
+            Modal::ExtensionInput(m) => m.render(frame, area, theme),
         }
     }
 }
@@ -847,6 +949,896 @@ impl NoticeModal {
     }
 }
 
+// --- shared single-line text field -----------------------------------------
+
+/// A minimal single-line text field (tau's `Input`), optionally masked.
+#[derive(Debug, Default, Clone)]
+struct TextField {
+    value: String,
+    password: bool,
+}
+
+impl TextField {
+    fn masked(password: bool) -> Self {
+        Self {
+            value: String::new(),
+            password,
+        }
+    }
+
+    /// Feed a key; returns `true` if it mutated the field.
+    fn input(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.value.push(c);
+                true
+            }
+            KeyCode::Backspace => {
+                self.value.pop();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn display(&self) -> String {
+        if self.password {
+            "•".repeat(self.value.chars().count())
+        } else {
+            self.value.clone()
+        }
+    }
+}
+
+// --- login method picker ----------------------------------------------------
+
+/// The three login methods, in tau's list order.
+const LOGIN_METHODS: [(LoginMethod, &str); 3] = [
+    (LoginMethod::Subscription, "Subscription — OAuth account"),
+    (LoginMethod::ApiKey, "API key — built-in provider"),
+    (LoginMethod::Custom, "Custom provider — OpenAI-compatible"),
+];
+
+/// Pick how to authenticate (tau `LoginMethodPickerScreen`). Arrow keys wrap.
+pub struct LoginMethodPickerModal {
+    index: usize,
+}
+
+impl Default for LoginMethodPickerModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LoginMethodPickerModal {
+    /// Build the picker with the first (subscription) method selected.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { index: 0 }
+    }
+
+    fn wrap(&mut self, forward: bool) {
+        let len = LOGIN_METHODS.len();
+        self.index = if forward {
+            (self.index + 1) % len
+        } else {
+            (self.index + len - 1) % len
+        };
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Esc => ModalOutcome::Cancelled,
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Up => {
+                self.wrap(false);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Down => {
+                self.wrap(true);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Enter => ModalOutcome::LoginMethod(LOGIN_METHODS[self.index].0),
+            _ => ModalOutcome::Consumed,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(60, 40, area);
+        let mut rows: Vec<Line<'static>> = vec![
+            Line::from(Span::styled(
+                "Choose how to authenticate.".to_string(),
+                parse_style(&theme.completion_description),
+            )),
+            Line::default(),
+        ];
+        for (i, (_, label)) in LOGIN_METHODS.iter().enumerate() {
+            rows.push(list_row((*label).to_string(), i == self.index, theme));
+        }
+        render_list_modal(
+            frame,
+            area,
+            "Login",
+            &rows,
+            "Enter selects · Escape/Ctrl+D closes",
+            theme,
+        );
+    }
+}
+
+// --- login provider picker --------------------------------------------------
+
+/// A provider offered in the login/logout picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginProviderItem {
+    /// Stable provider id.
+    pub name: String,
+    /// Human-facing display name.
+    pub display_name: String,
+}
+
+impl LoginProviderItem {
+    /// Build an item.
+    #[must_use]
+    pub fn new(name: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            display_name: display_name.into(),
+        }
+    }
+
+    fn label(&self) -> String {
+        format!("{} — {}", self.display_name, self.name)
+    }
+}
+
+/// What the provider picker is being used for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderPickerPurpose {
+    /// Choosing a provider to log in to (Escape navigates back).
+    Login {
+        /// The method that led here (carried into the outcome).
+        method: LoginMethod,
+    },
+    /// Choosing a provider to log out of (Escape closes).
+    Logout,
+}
+
+/// Searchable provider picker (tau `LoginProviderPickerScreen`).
+pub struct LoginProviderPickerModal {
+    providers: Vec<LoginProviderItem>,
+    purpose: ProviderPickerPurpose,
+    title: String,
+    search: String,
+    index: usize,
+}
+
+impl LoginProviderPickerModal {
+    /// Build a provider picker.
+    #[must_use]
+    pub fn new(
+        providers: Vec<LoginProviderItem>,
+        purpose: ProviderPickerPurpose,
+        title: impl Into<String>,
+    ) -> Self {
+        Self {
+            providers,
+            purpose,
+            title: title.into(),
+            search: String::new(),
+            index: 0,
+        }
+    }
+
+    fn visible(&self) -> Vec<&LoginProviderItem> {
+        let query = self.search.trim().to_lowercase();
+        self.providers
+            .iter()
+            .filter(|item| {
+                query.is_empty()
+                    || item.name.to_lowercase().contains(&query)
+                    || item.display_name.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    fn cancel_outcome(&self) -> ModalOutcome {
+        match self.purpose {
+            ProviderPickerPurpose::Login { .. } => ModalOutcome::LoginBack,
+            ProviderPickerPurpose::Logout => ModalOutcome::Cancelled,
+        }
+    }
+
+    fn select_outcome(&self, name: String) -> ModalOutcome {
+        match self.purpose {
+            ProviderPickerPurpose::Login { method } => ModalOutcome::LoginProvider {
+                name,
+                method: Some(method),
+            },
+            ProviderPickerPurpose::Logout => ModalOutcome::Logout(name),
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Esc => self.cancel_outcome(),
+            KeyCode::Up => {
+                self.index = move_cursor(self.index, self.visible().len(), -1);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Down => {
+                self.index = move_cursor(self.index, self.visible().len(), 1);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Enter => match self.visible().get(self.index) {
+                Some(item) => {
+                    let name = item.name.clone();
+                    self.select_outcome(name)
+                }
+                None => ModalOutcome::Consumed,
+            },
+            KeyCode::Backspace => {
+                self.search.pop();
+                self.index = 0;
+                ModalOutcome::Consumed
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search.push(c);
+                self.index = 0;
+                ModalOutcome::Consumed
+            }
+            _ => ModalOutcome::Consumed,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(70, 60, area);
+        let visible = self.visible();
+        let mut rows: Vec<Line<'static>> = vec![
+            Line::from(Span::styled(
+                format!("search: {}", self.search),
+                parse_style(&theme.muted_text),
+            )),
+            Line::default(),
+        ];
+        if visible.is_empty() {
+            rows.push(Line::from(Span::styled(
+                "  No matching providers".to_string(),
+                parse_style(&theme.completion_description),
+            )));
+        } else {
+            for (i, item) in visible.iter().enumerate() {
+                rows.push(list_row(item.label(), i == self.index, theme));
+            }
+        }
+        let help = if visible.is_empty() {
+            "No matching providers · Escape closes"
+        } else {
+            "Enter selects · Escape closes"
+        };
+        render_list_modal(frame, area, &self.title, &rows, help, theme);
+    }
+}
+
+// --- API-key login ----------------------------------------------------------
+
+/// Prompt for a provider API key (tau `LoginScreen`).
+pub struct ApiKeyLoginModal {
+    display_name: String,
+    field: TextField,
+}
+
+impl ApiKeyLoginModal {
+    /// Build for a provider display name.
+    #[must_use]
+    pub fn new(display_name: impl Into<String>) -> Self {
+        Self {
+            display_name: display_name.into(),
+            field: TextField::masked(true),
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Esc => ModalOutcome::LoginBack,
+            KeyCode::Enter => {
+                let value = self.field.value.trim().to_string();
+                if value.is_empty() {
+                    ModalOutcome::Consumed
+                } else {
+                    ModalOutcome::ApiKey(value)
+                }
+            }
+            _ => {
+                self.field.input(key);
+                ModalOutcome::Consumed
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(60, 30, area);
+        let rows = vec![
+            Line::from(Span::styled(
+                "Paste this provider's API key.".to_string(),
+                parse_style(&theme.completion_description),
+            )),
+            Line::default(),
+            Line::from(vec![
+                Span::styled("API key: ".to_string(), parse_style(&theme.muted_text)),
+                Span::styled(self.field.display(), parse_style(&theme.prompt_text)),
+            ]),
+        ];
+        render_list_modal(
+            frame,
+            area,
+            &format!("Login: {}", self.display_name),
+            &rows,
+            "Enter saves · Escape goes back · Ctrl+D closes",
+            theme,
+        );
+    }
+}
+
+// --- OAuth login ------------------------------------------------------------
+
+/// Drive an interactive OAuth login (tau `OAuthLoginScreen`). The background
+/// login task updates this modal through the setters; the user's manual-code
+/// entry flows back out via [`ModalOutcome::OAuthManualCode`].
+pub struct OAuthLoginModal {
+    display_name: String,
+    help: String,
+    detail: Option<String>,
+    field: TextField,
+    prompt_allows_empty: bool,
+    /// The `(id, label)` options of a provider selection prompt; empty unless the
+    /// modal is in selection mode.
+    select_options: Vec<(String, String)>,
+    /// The highlighted option while in selection mode.
+    select_index: usize,
+}
+
+impl OAuthLoginModal {
+    /// Build for a provider display name.
+    #[must_use]
+    pub fn new(display_name: impl Into<String>) -> Self {
+        Self {
+            display_name: display_name.into(),
+            help: "Follow the provider instructions to complete login.".to_string(),
+            detail: None,
+            field: TextField::masked(false),
+            prompt_allows_empty: false,
+            select_options: Vec::new(),
+            select_index: 0,
+        }
+    }
+
+    /// Show a browser authorization URL and optional instructions.
+    pub fn set_auth(&mut self, url: String, instructions: Option<String>) {
+        self.detail = Some(url);
+        if let Some(instructions) = instructions {
+            self.help = instructions;
+        }
+    }
+
+    /// Show a device-code verification URL + user code.
+    pub fn set_device_code(&mut self, verification_uri: String, user_code: &str) {
+        self.detail = Some(verification_uri);
+        self.help = format!("Open the URL and enter code: {user_code}");
+    }
+
+    /// Update the help/progress line.
+    pub fn set_help(&mut self, message: String) {
+        self.help = message;
+    }
+
+    /// Show a provider prompt message (and whether an empty response is allowed).
+    pub fn set_prompt(&mut self, message: String, allow_empty: bool) {
+        self.help = message;
+        self.prompt_allows_empty = allow_empty;
+    }
+
+    /// Enter selection mode: show `options` (`(id, label)`) for the user to choose
+    /// the account/organization to authenticate. The chosen id flows back out via
+    /// [`ModalOutcome::OAuthManualCode`], reusing the code channel.
+    pub fn set_select(&mut self, message: String, options: Vec<(String, String)>) {
+        self.help = message;
+        self.select_options = options;
+        self.select_index = 0;
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        // Selection mode: arrow keys move the highlight, Enter returns the chosen id.
+        if !self.select_options.is_empty() {
+            return self.handle_select_key(key);
+        }
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Esc => ModalOutcome::LoginBack,
+            KeyCode::Enter => {
+                let value = self.field.value.trim().to_string();
+                if value.is_empty() && !self.prompt_allows_empty {
+                    return ModalOutcome::Consumed;
+                }
+                self.field.value.clear();
+                let allowed_empty = self.prompt_allows_empty;
+                self.prompt_allows_empty = false;
+                if value.is_empty() && !allowed_empty {
+                    ModalOutcome::Consumed
+                } else {
+                    ModalOutcome::OAuthManualCode(value)
+                }
+            }
+            _ => {
+                self.field.input(key);
+                ModalOutcome::Consumed
+            }
+        }
+    }
+
+    fn handle_select_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Esc => ModalOutcome::LoginBack,
+            KeyCode::Up => {
+                if self.select_index == 0 {
+                    self.select_index = self.select_options.len() - 1;
+                } else {
+                    self.select_index -= 1;
+                }
+                ModalOutcome::Consumed
+            }
+            KeyCode::Down => {
+                self.select_index = (self.select_index + 1) % self.select_options.len();
+                ModalOutcome::Consumed
+            }
+            KeyCode::Enter => {
+                let id = self.select_options[self.select_index].0.clone();
+                // Leave selection mode; the id travels the code channel like a
+                // manual-code entry so the awaiting login flow resumes.
+                self.select_options.clear();
+                self.select_index = 0;
+                ModalOutcome::OAuthManualCode(id)
+            }
+            _ => ModalOutcome::Consumed,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(70, 40, area);
+        let mut rows = vec![Line::from(Span::styled(
+            self.help.clone(),
+            parse_style(&theme.completion_description),
+        ))];
+        if let Some(detail) = &self.detail {
+            rows.push(Line::default());
+            rows.push(Line::from(Span::styled(
+                detail.clone(),
+                parse_style(&theme.accent),
+            )));
+        }
+        rows.push(Line::default());
+        if self.select_options.is_empty() {
+            rows.push(Line::from(vec![
+                Span::styled("code: ".to_string(), parse_style(&theme.muted_text)),
+                Span::styled(self.field.display(), parse_style(&theme.prompt_text)),
+            ]));
+            render_list_modal(
+                frame,
+                area,
+                &format!("Login: {}", self.display_name),
+                &rows,
+                "Enter submits · Escape goes back · Ctrl+D closes",
+                theme,
+            );
+        } else {
+            for (index, (_, label)) in self.select_options.iter().enumerate() {
+                let (marker, style) = if index == self.select_index {
+                    ("> ", parse_style(&theme.accent))
+                } else {
+                    ("  ", parse_style(&theme.prompt_text))
+                };
+                rows.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
+            }
+            render_list_modal(
+                frame,
+                area,
+                &format!("Login: {}", self.display_name),
+                &rows,
+                "↑/↓ selects · Enter confirms · Escape goes back · Ctrl+D closes",
+                theme,
+            );
+        }
+    }
+}
+
+// --- custom provider login --------------------------------------------------
+
+/// The ordered fields of the custom-provider form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomField {
+    ProviderName,
+    DisplayName,
+    BaseUrl,
+    Models,
+    DefaultModel,
+    ApiKeyEnv,
+    ApiKey,
+}
+
+const CUSTOM_FIELDS: [(CustomField, &str); 7] = [
+    (CustomField::ProviderName, "Provider id"),
+    (CustomField::DisplayName, "Display name"),
+    (CustomField::BaseUrl, "Base URL"),
+    (CustomField::Models, "Models (comma-separated)"),
+    (CustomField::DefaultModel, "Default model (blank = first)"),
+    (CustomField::ApiKeyEnv, "API key env (blank = derived)"),
+    (CustomField::ApiKey, "API key"),
+];
+
+/// Collect a custom OpenAI-compatible provider (tau `CustomProviderLoginScreen`).
+pub struct CustomProviderLoginModal {
+    fields: Vec<TextField>,
+    index: usize,
+    error: Option<String>,
+}
+
+impl Default for CustomProviderLoginModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CustomProviderLoginModal {
+    /// Build an empty form.
+    #[must_use]
+    pub fn new() -> Self {
+        let fields = CUSTOM_FIELDS
+            .iter()
+            .map(|(field, _)| TextField::masked(*field == CustomField::ApiKey))
+            .collect();
+        Self {
+            fields,
+            index: 0,
+            error: None,
+        }
+    }
+
+    fn value(&self, field: CustomField) -> String {
+        let pos = CUSTOM_FIELDS
+            .iter()
+            .position(|(f, _)| *f == field)
+            .unwrap_or(0);
+        self.fields[pos].value.trim().to_string()
+    }
+
+    fn build(&self) -> Result<CustomProviderDraft, String> {
+        let provider_name = self.value(CustomField::ProviderName);
+        if provider_name.is_empty() {
+            return Err("Provider id is required.".to_string());
+        }
+        let base_url = self.value(CustomField::BaseUrl);
+        if base_url.is_empty() {
+            return Err("Base URL is required.".to_string());
+        }
+        let api_key = self.value(CustomField::ApiKey);
+        if api_key.is_empty() {
+            return Err("API key is required.".to_string());
+        }
+        let models: Vec<String> = self
+            .value(CustomField::Models)
+            .split(',')
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect();
+        if models.is_empty() {
+            return Err("At least one model is required.".to_string());
+        }
+        let default_model = {
+            let explicit = self.value(CustomField::DefaultModel);
+            if explicit.is_empty() {
+                models[0].clone()
+            } else if models.contains(&explicit) {
+                explicit
+            } else {
+                return Err("Default model must be one of the listed models.".to_string());
+            }
+        };
+        let display_name = {
+            let explicit = self.value(CustomField::DisplayName);
+            if explicit.is_empty() {
+                provider_name.clone()
+            } else {
+                explicit
+            }
+        };
+        let api_key_env = {
+            let explicit = self.value(CustomField::ApiKeyEnv);
+            if explicit.is_empty() {
+                format!(
+                    "{}_API_KEY",
+                    provider_name.to_uppercase().replace(['-', ' '], "_")
+                )
+            } else {
+                explicit
+            }
+        };
+        Ok(CustomProviderDraft {
+            provider_name,
+            display_name,
+            base_url,
+            api_key_env,
+            models,
+            default_model,
+            api_key,
+        })
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Esc => ModalOutcome::LoginBack,
+            KeyCode::Up => {
+                self.index = self.index.saturating_sub(1);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.index = (self.index + 1).min(self.fields.len() - 1);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Enter => {
+                // Enter on any field but the last advances; on the last it submits.
+                if self.index + 1 < self.fields.len() {
+                    self.index += 1;
+                    ModalOutcome::Consumed
+                } else {
+                    match self.build() {
+                        Ok(draft) => ModalOutcome::CustomProvider(draft),
+                        Err(message) => {
+                            self.error = Some(message);
+                            ModalOutcome::Consumed
+                        }
+                    }
+                }
+            }
+            _ => {
+                self.fields[self.index].input(key);
+                ModalOutcome::Consumed
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(70, 70, area);
+        let mut rows: Vec<Line<'static>> = vec![Line::from(Span::styled(
+            "Describe a custom OpenAI-compatible provider.".to_string(),
+            parse_style(&theme.completion_description),
+        ))];
+        rows.push(Line::default());
+        for (i, (_, label)) in CUSTOM_FIELDS.iter().enumerate() {
+            let selected = i == self.index;
+            let (prefix, style) = if selected {
+                ("› ", parse_style(&theme.completion_selected))
+            } else {
+                ("  ", parse_style(&theme.prompt_text))
+            };
+            rows.push(Line::from(vec![
+                Span::styled(prefix.to_string(), style),
+                Span::styled(format!("{label}: "), parse_style(&theme.muted_text)),
+                Span::styled(self.fields[i].display(), style),
+            ]));
+        }
+        if let Some(error) = &self.error {
+            rows.push(Line::default());
+            rows.push(Line::from(Span::styled(
+                error.clone(),
+                parse_style(&theme.completion_description),
+            )));
+        }
+        render_list_modal(
+            frame,
+            area,
+            "Custom provider",
+            &rows,
+            "Enter advances / submits · ↑↓ move · Escape back · Ctrl+D closes",
+            theme,
+        );
+    }
+}
+
+// --- extension UI modals ----------------------------------------------------
+
+/// An extension `context.ui.select` picker (tau `ExtensionUi.select`).
+pub struct ExtensionSelectModal {
+    title: String,
+    options: Vec<String>,
+    index: usize,
+}
+
+impl ExtensionSelectModal {
+    /// Build from a title and option labels.
+    #[must_use]
+    pub fn new(title: impl Into<String>, options: Vec<String>) -> Self {
+        Self {
+            title: title.into(),
+            options,
+            index: 0,
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Esc => ModalOutcome::ExtensionSelect(None),
+            KeyCode::Up => {
+                self.index = move_cursor(self.index, self.options.len(), -1);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Down => {
+                self.index = move_cursor(self.index, self.options.len(), 1);
+                ModalOutcome::Consumed
+            }
+            KeyCode::Enter => match self.options.get(self.index) {
+                Some(option) => ModalOutcome::ExtensionSelect(Some(option.clone())),
+                None => ModalOutcome::ExtensionSelect(None),
+            },
+            _ => ModalOutcome::Consumed,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(60, 50, area);
+        let rows: Vec<Line<'static>> = if self.options.is_empty() {
+            vec![Line::from(Span::styled(
+                "  No options".to_string(),
+                parse_style(&theme.completion_description),
+            ))]
+        } else {
+            self.options
+                .iter()
+                .enumerate()
+                .map(|(i, option)| list_row(option.clone(), i == self.index, theme))
+                .collect()
+        };
+        render_list_modal(
+            frame,
+            area,
+            &self.title,
+            &rows,
+            "Enter selects · Escape cancels",
+            theme,
+        );
+    }
+}
+
+/// An extension `context.ui.confirm` dialog (tau `ExtensionUi.confirm`).
+pub struct ExtensionConfirmModal {
+    title: String,
+    message: String,
+    yes: bool,
+}
+
+impl ExtensionConfirmModal {
+    /// Build from a title and message; defaults to "No".
+    #[must_use]
+    pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+            yes: false,
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('n' | 'N') => ModalOutcome::ExtensionConfirm(false),
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                self.yes = !self.yes;
+                ModalOutcome::Consumed
+            }
+            KeyCode::Char('y' | 'Y') => ModalOutcome::ExtensionConfirm(true),
+            KeyCode::Enter => ModalOutcome::ExtensionConfirm(self.yes),
+            _ => ModalOutcome::Consumed,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(60, 30, area);
+        let choice = if self.yes {
+            "  [ Yes ]   No  "
+        } else {
+            "   Yes   [ No ]  "
+        };
+        let rows = vec![
+            Line::from(Span::styled(
+                self.message.clone(),
+                parse_style(&theme.prompt_text),
+            )),
+            Line::default(),
+            Line::from(Span::styled(
+                choice.to_string(),
+                parse_style(&theme.completion_selected),
+            )),
+        ];
+        render_list_modal(
+            frame,
+            area,
+            &self.title,
+            &rows,
+            "Y/N or ←→ then Enter · Escape cancels",
+            theme,
+        );
+    }
+}
+
+/// An extension `context.ui.input` text prompt (tau `ExtensionUi.input`).
+pub struct ExtensionInputModal {
+    title: String,
+    placeholder: String,
+    field: TextField,
+}
+
+impl ExtensionInputModal {
+    /// Build from a title and placeholder.
+    #[must_use]
+    pub fn new(title: impl Into<String>, placeholder: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            placeholder: placeholder.into(),
+            field: TextField::masked(false),
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Esc => ModalOutcome::ExtensionInput(None),
+            KeyCode::Enter => ModalOutcome::ExtensionInput(Some(self.field.value.clone())),
+            _ => {
+                self.field.input(key);
+                ModalOutcome::Consumed
+            }
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
+        let area = centered_rect(60, 30, area);
+        let shown = if self.field.value.is_empty() {
+            Span::styled(self.placeholder.clone(), parse_style(&theme.muted_text))
+        } else {
+            Span::styled(self.field.display(), parse_style(&theme.prompt_text))
+        };
+        let rows = vec![
+            Line::default(),
+            Line::from(vec![
+                Span::styled("> ".to_string(), parse_style(&theme.muted_text)),
+                shown,
+            ]),
+        ];
+        render_list_modal(
+            frame,
+            area,
+            &self.title,
+            &rows,
+            "Enter submits · Escape cancels",
+            theme,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1059,5 +2051,286 @@ mod tests {
         let mut modal = NoticeModal::m7("Login");
         assert!(modal.message.contains("M7"));
         assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::Cancelled);
+    }
+
+    // --- login modal tests --------------------------------------------------
+
+    fn typed(modal: &mut impl FnMut(KeyEvent) -> ModalOutcome, text: &str) {
+        for c in text.chars() {
+            modal(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn login_method_picker_wraps_and_selects() {
+        let mut modal = LoginMethodPickerModal::new();
+        // Down twice lands on Custom; Up from the top wraps to Custom too.
+        modal.handle_key(key(KeyCode::Down));
+        modal.handle_key(key(KeyCode::Down));
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::LoginMethod(LoginMethod::Custom)
+        );
+        let mut modal = LoginMethodPickerModal::new();
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Up)),
+            ModalOutcome::Consumed // wrapped to the last entry
+        );
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::LoginMethod(LoginMethod::Custom)
+        );
+        // Escape and Ctrl+D both close.
+        assert_eq!(
+            LoginMethodPickerModal::new().handle_key(key(KeyCode::Esc)),
+            ModalOutcome::Cancelled
+        );
+        assert_eq!(
+            LoginMethodPickerModal::new().handle_key(ctrl(KeyCode::Char('d'))),
+            ModalOutcome::Cancelled
+        );
+    }
+
+    #[test]
+    fn login_provider_picker_filters_and_reports_method() {
+        let providers = vec![
+            LoginProviderItem::new("anthropic", "Anthropic"),
+            LoginProviderItem::new("openai-codex", "OpenAI Codex"),
+        ];
+        let mut modal = LoginProviderPickerModal::new(
+            providers,
+            ProviderPickerPurpose::Login {
+                method: LoginMethod::Subscription,
+            },
+            "Login",
+        );
+        // Search narrows to the openai entry.
+        typed(&mut |k| modal.handle_key(k), "codex");
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::LoginProvider {
+                name: "openai-codex".to_string(),
+                method: Some(LoginMethod::Subscription),
+            }
+        );
+        // Escape navigates back in login mode.
+        let mut modal = LoginProviderPickerModal::new(
+            vec![LoginProviderItem::new("anthropic", "Anthropic")],
+            ProviderPickerPurpose::Login {
+                method: LoginMethod::ApiKey,
+            },
+            "Login",
+        );
+        assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::LoginBack);
+    }
+
+    #[test]
+    fn logout_provider_picker_reports_logout_and_closes() {
+        let mut modal = LoginProviderPickerModal::new(
+            vec![LoginProviderItem::new("openai", "OpenAI")],
+            ProviderPickerPurpose::Logout,
+            "Logout",
+        );
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Logout("openai".to_string())
+        );
+        // Escape closes (no back) in logout mode.
+        let mut modal = LoginProviderPickerModal::new(
+            vec![LoginProviderItem::new("openai", "OpenAI")],
+            ProviderPickerPurpose::Logout,
+            "Logout",
+        );
+        assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::Cancelled);
+    }
+
+    #[test]
+    fn api_key_login_collects_key() {
+        let mut modal = ApiKeyLoginModal::new("OpenAI");
+        // Empty submit is ignored.
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Consumed
+        );
+        typed(&mut |k| modal.handle_key(k), "sk-123");
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::ApiKey("sk-123".to_string())
+        );
+        assert_eq!(
+            ApiKeyLoginModal::new("OpenAI").handle_key(key(KeyCode::Esc)),
+            ModalOutcome::LoginBack
+        );
+    }
+
+    #[test]
+    fn oauth_login_submits_manual_code_and_navigates() {
+        let mut modal = OAuthLoginModal::new("Anthropic");
+        typed(&mut |k| modal.handle_key(k), "abc123");
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::OAuthManualCode("abc123".to_string())
+        );
+        // After submit the field is cleared, so a bare Enter is ignored.
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Consumed
+        );
+        assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::LoginBack);
+        assert_eq!(
+            OAuthLoginModal::new("Anthropic").handle_key(ctrl(KeyCode::Char('d'))),
+            ModalOutcome::Cancelled
+        );
+    }
+
+    #[test]
+    fn oauth_login_prompt_allows_empty_response() {
+        let mut modal = OAuthLoginModal::new("GitHub Copilot");
+        modal.set_prompt("Enterprise domain?".to_string(), true);
+        // Empty Enter is accepted because the prompt allows it.
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::OAuthManualCode(String::new())
+        );
+    }
+
+    #[test]
+    fn oauth_login_select_returns_highlighted_option_id() {
+        let mut modal = OAuthLoginModal::new("Anthropic");
+        modal.set_select(
+            "Choose an organization".to_string(),
+            vec![
+                ("org-a".to_string(), "Org A".to_string()),
+                ("org-b".to_string(), "Org B".to_string()),
+                ("org-c".to_string(), "Org C".to_string()),
+            ],
+        );
+        // Move down twice (to Org C), wrap up once (back to Org B).
+        assert_eq!(modal.handle_key(key(KeyCode::Down)), ModalOutcome::Consumed);
+        assert_eq!(modal.handle_key(key(KeyCode::Down)), ModalOutcome::Consumed);
+        assert_eq!(modal.handle_key(key(KeyCode::Up)), ModalOutcome::Consumed);
+        // Enter returns the highlighted option's id (not its label).
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::OAuthManualCode("org-b".to_string())
+        );
+        // Selection mode ends; a stray Enter is now treated as the text prompt.
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Consumed
+        );
+    }
+
+    #[test]
+    fn oauth_login_select_escape_navigates_back() {
+        let mut modal = OAuthLoginModal::new("Anthropic");
+        modal.set_select(
+            "Choose".to_string(),
+            vec![
+                ("a".to_string(), "A".to_string()),
+                ("b".to_string(), "B".to_string()),
+            ],
+        );
+        assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::LoginBack);
+    }
+
+    #[test]
+    fn custom_provider_builds_draft_with_defaults() {
+        let mut modal = CustomProviderLoginModal::new();
+        // Fill provider id, skip display, base url, models, skip default/env, key.
+        typed(&mut |k| modal.handle_key(k), "acme");
+        modal.handle_key(key(KeyCode::Down)); // display name (blank)
+        modal.handle_key(key(KeyCode::Down)); // base url
+        typed(&mut |k| modal.handle_key(k), "https://api.acme.ai/v1");
+        modal.handle_key(key(KeyCode::Down)); // models
+        typed(&mut |k| modal.handle_key(k), "acme-1, acme-2");
+        modal.handle_key(key(KeyCode::Down)); // default model (blank -> first)
+        modal.handle_key(key(KeyCode::Down)); // api key env (blank -> derived)
+        modal.handle_key(key(KeyCode::Down)); // api key
+        typed(&mut |k| modal.handle_key(k), "sk-acme");
+        match modal.handle_key(key(KeyCode::Enter)) {
+            ModalOutcome::CustomProvider(draft) => {
+                assert_eq!(draft.provider_name, "acme");
+                assert_eq!(draft.display_name, "acme");
+                assert_eq!(draft.base_url, "https://api.acme.ai/v1");
+                assert_eq!(
+                    draft.models,
+                    vec!["acme-1".to_string(), "acme-2".to_string()]
+                );
+                assert_eq!(draft.default_model, "acme-1");
+                assert_eq!(draft.api_key_env, "ACME_API_KEY");
+                assert_eq!(draft.api_key, "sk-acme");
+            }
+            other => panic!("expected custom provider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_provider_requires_fields() {
+        let mut modal = CustomProviderLoginModal::new();
+        // Jump to the last field and submit with everything blank.
+        for _ in 0..CUSTOM_FIELDS.len() {
+            modal.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Consumed
+        );
+        assert!(modal.error.is_some());
+    }
+
+    // --- extension modal tests ----------------------------------------------
+
+    #[test]
+    fn extension_select_navigates_and_cancels() {
+        let mut modal = ExtensionSelectModal::new("Pick", vec!["a".to_string(), "b".to_string()]);
+        modal.handle_key(key(KeyCode::Down));
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::ExtensionSelect(Some("b".to_string()))
+        );
+        assert_eq!(
+            ExtensionSelectModal::new("Pick", vec!["a".to_string()]).handle_key(key(KeyCode::Esc)),
+            ModalOutcome::ExtensionSelect(None)
+        );
+    }
+
+    #[test]
+    fn extension_confirm_yes_no_and_toggle() {
+        let mut modal = ExtensionConfirmModal::new("Sure?", "body");
+        // Default is No; Enter reports false.
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::ExtensionConfirm(false)
+        );
+        // Toggle to Yes then Enter.
+        modal.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::ExtensionConfirm(true)
+        );
+        // Direct Y/N shortcuts.
+        assert_eq!(
+            ExtensionConfirmModal::new("t", "b").handle_key(key(KeyCode::Char('y'))),
+            ModalOutcome::ExtensionConfirm(true)
+        );
+        assert_eq!(
+            ExtensionConfirmModal::new("t", "b").handle_key(key(KeyCode::Esc)),
+            ModalOutcome::ExtensionConfirm(false)
+        );
+    }
+
+    #[test]
+    fn extension_input_collects_and_cancels() {
+        let mut modal = ExtensionInputModal::new("Name", "hint");
+        typed(&mut |k| modal.handle_key(k), "hello");
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::ExtensionInput(Some("hello".to_string()))
+        );
+        assert_eq!(
+            ExtensionInputModal::new("Name", "hint").handle_key(key(KeyCode::Esc)),
+            ModalOutcome::ExtensionInput(None)
+        );
     }
 }

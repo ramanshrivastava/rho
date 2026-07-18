@@ -85,6 +85,9 @@ pub struct SessionPrintModeConfig {
     /// `~/.rho` index; tests inject a temp-dir manager. Ignored when
     /// `session_path` is set.
     pub session_manager: Option<SessionManager>,
+    /// Explicit extension component paths (the `-x/--extension` flag). Loaded on
+    /// top of directory discovery. tau's extensions run in print mode too.
+    pub extension_paths: Vec<PathBuf>,
 }
 
 impl SessionPrintModeConfig {
@@ -110,7 +113,15 @@ impl SessionPrintModeConfig {
             runtime_provider_config: None,
             session_path: None,
             session_manager: None,
+            extension_paths: Vec::new(),
         }
+    }
+
+    /// Set explicit extension component paths (`-x/--extension`).
+    #[must_use]
+    pub fn with_extension_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.extension_paths = paths;
+        self
     }
 
     /// Set the output mode.
@@ -174,6 +185,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
     session_config.runtime_provider_config = config.runtime_provider_config;
     session_config.session_id = session_id;
     session_config.session_manager = session_manager;
+    session_config.extension_paths = config.extension_paths;
 
     let mut session = match CodingSession::load(session_config).await {
         Ok(session) => session,
@@ -186,7 +198,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
     // `!cmd` / `!!cmd` run a terminal command instead of prompting the agent
     // (tau's `run_print_mode` routes these before the agent turn).
     if let Some(request) = crate::session::parse_terminal_command(&config.prompt) {
-        return match session
+        let ok = match session
             .run_terminal_command(&request.command, request.add_to_context)
             .await
         {
@@ -199,6 +211,8 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
                 false
             }
         };
+        emit_extension_shutdown(&session).await;
+        return ok;
     }
 
     // Slash commands are handled before the agent turn (tau `run_print_mode`):
@@ -218,6 +232,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
                 println!("{message}");
             }
         }
+        emit_extension_shutdown(&session).await;
         return true;
     }
 
@@ -237,8 +252,20 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
         eprintln!("Error: {err}");
         persist_failed = true;
     }
+    emit_extension_shutdown(&session).await;
     let ok = renderer.finish();
     ok && !persist_failed
+}
+
+/// Fire `session_shutdown` for extensions on print-mode exit (tau's quit
+/// lifecycle). A cheap no-op when no extensions are loaded.
+async fn emit_extension_shutdown(session: &CodingSession) {
+    if session.extension_runtime().has_extensions() {
+        session
+            .extension_runtime()
+            .emit_session_shutdown("quit")
+            .await;
+    }
 }
 
 /// Format an input-bar terminal command result (tau

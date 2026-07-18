@@ -1,10 +1,36 @@
-//! `rho-ext-host` — the WebAssembly extension host.
+//! `rho-ext-host` — the extension host abstraction and its wasmtime backing.
 //!
-//! This crate will embed a [`wasmtime`](https://docs.rs/wasmtime) runtime to load,
-//! sandbox, and drive rho extensions (the Rust analogue of tau's
-//! `tau_coding.extensions` runtime), exposing the guest-facing surface defined by
-//! [`rho_ext_api`] to compiled extension modules.
+//! This crate is the Rust analogue of tau's `tau_coding.extensions` runtime, but
+//! split along the seam the codex-rs study argued for (see
+//! `dev-notes/m7-extension-design.md`): the tau-parity *orchestration*
+//! (hook chaining, first-wins registration, generation staleness, diagnostics)
+//! lives in `rho-coding`, on top of the [`ExtensionHost`] trait defined here.
+//! The trait has two implementations:
 //!
-//! Milestone M0 ships this crate as an intentionally empty stub. The `wasmtime`
-//! dependency is deliberately **not** added yet — it lands with the real host in
-//! M7 to keep the M0 workspace fast to build.
+//! * [`NoopExtensionHost`] — always available, zero WASM machinery. Default rho
+//!   builds link only this, so `cargo build` never compiles wasmtime.
+//! * [`wasm::WasmExtensionHost`] — the real component runtime, behind the
+//!   `wasmtime` feature (off by default). Guests are compiled `wasm32-wasip2`
+//!   components implementing the `rho:extension` WIT world (`wit/`).
+//!
+//! Because `rho-coding` depends only on the trait, the wasmtime dependency stays
+//! optional and a future process/MCP transport could slot in beside WASM without
+//! touching the session — the transport-neutral seam from the design note.
+
+pub mod discovery;
+pub mod host;
+pub mod payload;
+
+#[cfg(feature = "wasmtime")]
+pub mod wasm;
+
+pub use discovery::{DiscoveryPaths, discover_extensions, extension_dirs};
+pub use host::{
+    ExtensionHost, ExtensionSpec, HostBridge, HostDiagnostic, HostError, LoadOutcome,
+    LoadedExtension, NoopExtensionHost,
+};
+pub use payload::{
+    AgentHookEvent, CommandDef, InputAction, InputEvent, InputOutcome, LifecycleEvent,
+    ToolCallEvent, ToolCallOutcome, ToolCallResult, ToolDef, ToolResultEvent, ToolResultOutcome,
+    TurnEndEvent, TurnStartEvent,
+};

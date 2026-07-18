@@ -22,6 +22,7 @@ pub mod context_window;
 pub mod credentials;
 pub mod diagnostics;
 pub mod events;
+pub mod extensions;
 mod fmt_util;
 pub mod login_required;
 pub mod oauth;

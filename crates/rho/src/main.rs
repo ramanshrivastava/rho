@@ -88,8 +88,9 @@ struct Cli {
     #[arg(long = "fake")]
     fake: bool,
 
-    /// Load a WASM extension (repeatable). Parsed now; the extension runtime
-    /// lands in M7, so specifying one prints a notice and is otherwise ignored.
+    /// Load a WASM extension component, a file or a directory (repeatable).
+    /// Requires a `--features wasmtime` build; otherwise the specs are inert and
+    /// a note is printed.
     #[arg(long = "extension", short = 'x', value_name = "SPEC")]
     extension: Vec<String>,
 
@@ -206,13 +207,7 @@ async fn run_tui_entry(cli: Cli) -> Result<bool, String> {
     if cli.resume.is_some() && cli.new_session {
         return Err("--resume and --new-session cannot be combined.".to_string());
     }
-    if !cli.extension.is_empty() {
-        eprintln!(
-            "Note: --extension/-x is parsed but the WASM extension runtime lands in M7; \
-ignoring {} extension spec(s) for this session.",
-            cli.extension.len()
-        );
-    }
+    warn_if_extensions_unavailable(&cli);
 
     let (session, startup_message) = build_interactive_session(&cli).await?;
     let paths = rho_coding::paths::RhoPaths::default();
@@ -289,10 +284,33 @@ async fn build_interactive_session(
     config.runtime_provider_config = startup.runtime_provider;
     config.session_id = session_id;
     config.session_manager = Some(manager);
+    config.extension_paths = extension_paths_from_cli(cli);
     let session = CodingSession::load(config)
         .await
         .map_err(|err| err.to_string())?;
     Ok((session, startup.startup_message))
+}
+
+/// The explicit extension component paths from `-x/--extension`.
+fn extension_paths_from_cli(cli: &Cli) -> Vec<PathBuf> {
+    cli.extension.iter().map(PathBuf::from).collect()
+}
+
+/// Warn once when `-x` extensions were requested but this binary was built
+/// without the `wasmtime` feature, so the components will be inert. With the
+/// feature on this is a no-op (the runtime loads them). Per-extension load
+/// failures still surface through the session's diagnostics either way.
+fn warn_if_extensions_unavailable(cli: &Cli) {
+    #[cfg(not(feature = "wasmtime"))]
+    if !cli.extension.is_empty() {
+        eprintln!(
+            "Note: {} extension spec(s) requested, but this rho was built without the \
+`wasmtime` feature; extensions are inert. Rebuild with `--features wasmtime` to load them.",
+            cli.extension.len()
+        );
+    }
+    #[cfg(feature = "wasmtime")]
+    let _ = cli;
 }
 
 /// The live provider and session metadata to launch the interactive TUI with.
@@ -544,13 +562,17 @@ async fn run_print(cli: Cli, prompt: String) -> Result<bool, String> {
         (provider, selection.model, provider_name)
     };
 
+    warn_if_extensions_unavailable(&cli);
     let mut config = SessionPrintModeConfig::new(prompt, model, cwd, provider)
         .with_output(cli.output_format.into())
-        .with_session_path(cli.session.clone());
+        .with_session_path(cli.session.clone())
+        .with_extension_paths(extension_paths_from_cli(&cli));
     config.provider_name = provider_name;
     config.provider_settings = settings;
     config.runtime_provider_config = runtime_provider;
-    Ok(run_session_print_mode(config).await)
+    // `Box::pin` keeps this future off the stack: the print-mode config grew
+    // past clippy's `large_futures` threshold once it carried extension paths.
+    Ok(Box::pin(run_session_print_mode(config)).await)
 }
 
 /// Render indexed sessions for the CLI (tau `render_session_list`).

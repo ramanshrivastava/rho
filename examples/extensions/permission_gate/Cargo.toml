@@ -1,0 +1,21 @@
+# Detached from the tau workspace; builds only for `wasm32-wasip2`.
+[package]
+name = "permission_gate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rho-ext-api = { path = "../../../crates/rho-ext-api" }
+# `fancy-regex` (unlike `regex`) supports the lookahead in tau's `rm -rf`
+# pattern, so the exact tau pattern strings port verbatim.
+fancy-regex = "0.14"
+
+[profile.release]
+opt-level = "s"
+strip = true

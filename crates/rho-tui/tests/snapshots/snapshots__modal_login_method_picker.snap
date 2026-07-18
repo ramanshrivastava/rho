@@ -1,0 +1,17 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+
+
+              ┌ Login ─────────────────────────────────┐
+              │Choose how to authenticate.             │
+              │                                        │
+              │› Subscription — OAuth account          │
+              │  API key — built-in provider           │
+              │  Custom provider — OpenAI-compatible   │
+              │Enter selects · Escape/Ctrl+D closes    │
+              └────────────────────────────────────────┘
