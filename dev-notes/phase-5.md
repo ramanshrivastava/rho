@@ -167,7 +167,31 @@ flagged `[HUMAN]` (immediate-mode render output can't be fully asserted headless
 - **Live end-to-end drive** (fake + real provider) — _[HUMAN]_ (raw-mode TTY can't run
   headless; `rho --fake` launch + non-tty error paths verified programmatically).
 
-## Review round (bots)
+## Review round (bots) — PR #9
+
+First pass: CI green (clippy `-D warnings`, rustfmt, test on ubuntu + macos) and
+**21 inline findings** from Codex (4) + CodeRabbit (17). All were legitimate — almost
+all in the newly-written `app.rs`, plus 4 in the salvaged `transcript.rs` renderer
+(consistent with the untrusted-salvage framing). **20 fixed in `6dd76e1`, 1 rebutted:**
+
+- **Fixed (correctness/robustness):** event-loop + turn-loop busy-loop on stream
+  close (break/propagate); transcript bottom-follow scroll; resume seeds via
+  `load_messages` (was dropping tool/thinking/summary shapes); `!`/`!!` routed to
+  `run_terminal_command`; per-turn `HarnessControl` (dropped the stale cached field);
+  `take_run_error` surfaced post-turn; completion-popup height counts rendered rows;
+  session-mutation `Result`s surfaced (notice on failure, mutate only on success);
+  `matches_binding` BackTab ≠ plain Tab (+ regression test); scoped-model editor opens
+  on the full list; git-branch 500 ms timeout reinstated; two-column exact-fit
+  (no spurious ellipsis); read-range widened to i128; malformed `tui.json` warns;
+  transcript live-update text, `$ ` spacing, patch-marker newline, cell-width code
+  truncation.
+- **Rebutted (parity):** unbounded file-reference traversal / directory-symlink loop
+  — tau's `_iter_file_reference_paths` (autocomplete.py:187–205) is the identical
+  unbounded stack-DFS with symlink-following `is_dir()` and post-traversal cap, so rho
+  matches it exactly; byte-compat with tau is the arbiter, and skipping symlinks would
+  diverge from tau's output.
+
+_Original template retained below._
 
 _To be filled at PR: each Codex + CodeRabbit thread with FIX-with-SHA or
 REBUT-with-tau-evidence. Byte-compat with tau is the arbiter._
