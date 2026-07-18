@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_utc": "2026-07-18 14:07:39Z",
+    "generated_utc": "2026-07-18 14:11:26Z",
     "machine": "Mac16,7",
     "cpu": "Apple M4 Pro",
     "ncpu": "14",
@@ -13,7 +13,7 @@
     "pi_version": "0.80.10",
     "pi_rev": "3da591ab74ab9ab407e72ed882600b2c851fae21",
     "tau_rev": "81de4f8896a94ed6861bd77b0c486c33eebd3f8d",
-    "rho_rev": "653e02a",
+    "rho_rev": "5496b35",
     "rho_branch": "fix/pi-bench",
     "anthropic_key_present": false
   },
