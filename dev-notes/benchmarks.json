@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_utc": "2026-07-18 13:15:21Z",
+    "generated_utc": "2026-07-18 13:26:52Z",
     "machine": "Mac16,7",
     "cpu": "Apple M4 Pro",
     "ncpu": "14",
@@ -10,7 +10,7 @@
     "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
     "uv": "uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)",
     "tau_rev": "81de4f8896a94ed6861bd77b0c486c33eebd3f8d",
-    "rho_rev": "9ce444d",
+    "rho_rev": "89c934b",
     "rho_branch": "m6-bench",
     "anthropic_key_present": false
   },
@@ -272,6 +272,24 @@
       "stddev_ms": 847.1218127234389,
       "min_ms": 2422.76096144,
       "max_ms": 5919.08416944
+    },
+    {
+      "family": "cold_start",
+      "impl": "rho",
+      "variant": "version-direct",
+      "mean_ms": 5.969508955000008,
+      "stddev_ms": 7.926840033832321,
+      "min_ms": 0.0,
+      "max_ms": 32.59497654000001
+    },
+    {
+      "family": "cold_start",
+      "impl": "tau",
+      "variant": "version-direct",
+      "mean_ms": 2489.8363238399997,
+      "stddev_ms": 470.1395236158128,
+      "min_ms": 1913.3213095400001,
+      "max_ms": 4064.96139254
     },
     {
       "family": "memory_rss",

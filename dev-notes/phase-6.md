@@ -54,9 +54,10 @@ choices worth remembering:
   policy: `fixtures/` is read-only and never hand-edited), so the bench inflates
   them in-process with `flate2` rather than requiring a pre-step or writing into
   the read-only fixture dir. The tau timer mirrors this with `gzip.decompress`.
-- **Bounded sweeps.** `sample_size(10)` + short warm-up/measurement on the replay
-  group keeps a full 9-dataset run to a couple of minutes; Criterion still
-  reports mean ± σ. The SSE group uses default sampling (cheap).
+- **Bounded sweeps.** `sample_size(10)` (the Criterion floor) + short
+  warm-up/measurement on the replay group keeps the full eight-dataset run to a
+  couple of minutes; Criterion still reports mean ± σ. The SSE group uses default
+  sampling (cheap) and excludes input construction via `iter_batched`.
 - **Report ingestion.** Criterion writes `target/criterion/<group>/<id>/new/{benchmark,estimates}.json`.
   `benchmark.json` carries `group_id` / `function_id` / `value_str` /
   `throughput.Elements`; `estimates.json` carries `mean.point_estimate` (ns) and

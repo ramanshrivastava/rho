@@ -7,8 +7,8 @@
 - **Machine**: Mac16,7 — Apple M4 Pro (14 cores), 48 GiB RAM, Darwin 26.5.1
 - **Toolchain**: rustc 1.97.1 (8bab26f4f 2026-07-14); cargo 1.97.1 (c980f4866 2026-06-30); uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)
 - **tau**: pinned at rev `81de4f8896a9` (fixtures/TAU_REV), run via `uv run --project <tau>`
-- **rho**: `9ce444d` on branch `m6-bench`, `--release` builds throughout
-- **Generated**: 2026-07-18 13:15:21Z
+- **rho**: `89c934b` on branch `m6-bench`, `--release` builds throughout
+- **Generated**: 2026-07-18 13:26:52Z
 - **Measurement engines**: rho micro-benches use Criterion (self-tuned sample counts, reports mean ± σ); tau timers use `time.perf_counter` with warmup + measured iterations; cold-start uses hyperfine; RSS uses `/usr/bin/time -l`.
 - **Determinism**: session/canonicalization inputs are the pinned `fixtures/` (extracted by tau's own serializer); the mock provider replays a fixed SSE body; the FakeProvider is fully scripted. No network, no clock, no RNG in families (b)–(d).
 - **Quiesced measurement**: every final number was taken in a **serial, quiesced** window — no other builds or heavy processes running, and the orchestrator (`run_all.sh`) runs each family one at a time so benchmarks never contend for CPU with each other. Any family that overlapped transient background load during collection was re-measured in a subsequent quiet window, so no reported figure is contaminated by contention.
@@ -20,11 +20,12 @@
 
 | Variant | rho (spawn→exit) | tau (spawn→exit) | tau/rho |
 |---|---|---|---|
-| `--version` (pure startup) | 7.6 ± 2.5 ms | 2895.1 ± 847.1 ms | 382.7× |
+| `--version` (via `uv run`, tau's usual entry) | 7.6 ± 2.5 ms | 2895.1 ± 847.1 ms | 382.7× |
+| `--version` (direct `.venv/bin/tau`, no uv) | 6.0 ± 7.9 ms | 2489.8 ± 470.1 ms | 417.1× |
 | print, 0 ms latency | 41.1 ± 11.0 ms | 3605.6 ± 1032.0 ms | 87.8× |
 | print, 20 ms/chunk streaming | 434.2 ± 9.9 ms | 3583.4 ± 1117.0 ms | 8.3× |
 
-**Interpreter startup vs compiled binary is the whole story here.** The `--version` row is the cleanest read: it is almost entirely process startup. rho is a statically-linked binary that execs and prints; tau pays Python interpreter boot + `uv run` environment resolution + module imports (pydantic, httpx, typer, rich, textual) before it does any work. That fixed tax is why rho's cold start is dramatically lower.
+**Interpreter startup vs compiled binary is the whole story here.** The `--version` rows are the cleanest read: almost entirely process startup. rho is a statically-linked binary that execs and prints; tau pays Python interpreter boot + module imports (pydantic, httpx, typer, rich, textual) before it does any work. And it is **not** merely `uv run`'s launcher overhead: invoking the console script directly (`.venv/bin/tau --version`, no uv) still takes **2.49 s** (417.1× slower than rho) — the cost is Python interpreter boot plus tau's import graph, which uv adds only a modest fraction on top of.
 **But note the 20 ms/chunk row.** Once the provider streams with even a small per-chunk latency, a fixed ~hundreds-of-ms cost lands on *both* implementations equally, and the spawn-time gap starts to disappear into it. With a real LLM (first token in hundreds of ms, full response in seconds) the startup difference is a rounding error on end-to-end latency — see the caveats.
 
 ## (b) Session replay throughput

@@ -150,7 +150,7 @@ def build_records() -> tuple[list[dict], dict]:
         })
 
     # Family (a): cold start — hyperfine JSON (mean/stddev in seconds)
-    for label in ("0ms", "20ms-chunk", "version"):
+    for label in ("0ms", "20ms-chunk", "version", "version-direct"):
         hf = load_json(RESULTS / f"cold_start_{label}.json")
         if not hf:
             continue
@@ -253,21 +253,35 @@ def render_md(records: list[dict], meta: dict) -> str:
     if ca_rho or ca_tau:
         a("| Variant | rho (spawn→exit) | tau (spawn→exit) | tau/rho |")
         a("|---|---|---|---|")
-        labels = {"version": "`--version` (pure startup)",
+        labels = {"version": "`--version` (via `uv run`, tau's usual entry)",
+                  "version-direct": "`--version` (direct `.venv/bin/tau`, no uv)",
                   "0ms": "print, 0 ms latency", "20ms-chunk": "print, 20 ms/chunk streaming"}
-        for v in ("version", "0ms", "20ms-chunk"):
+        for v in ("version", "version-direct", "0ms", "20ms-chunk"):
             r, t = ca_rho.get(v), ca_tau.get(v)
+            if not r and not t:
+                continue
             rr = f"{r['mean_ms']:.1f} ± {r['stddev_ms']:.1f} ms" if r else "—"
             tt = f"{t['mean_ms']:.1f} ± {t['stddev_ms']:.1f} ms" if t else "—"
             a(f"| {labels[v]} | {rr} | {tt} | "
               f"{speedup(t['mean_ms'] if t else 0, r['mean_ms'] if r else 0)} |")
         a("")
+        # Skeptic-proof the headline: is the gap just uv's launcher? Compare the two
+        # --version rows if both were collected.
+        vd_r, vd_t = ca_rho.get("version-direct"), ca_tau.get("version-direct")
+        if vd_t:
+            direct = (f" And it is **not** merely `uv run`'s launcher overhead: invoking "
+                      f"the console script directly (`.venv/bin/tau --version`, no uv) "
+                      f"still takes **{vd_t['mean_ms'] / 1000:.2f} s** "
+                      f"({speedup(vd_t['mean_ms'], vd_r['mean_ms'] if vd_r else 0)} slower "
+                      "than rho) — the cost is Python interpreter boot plus tau's import "
+                      "graph, which uv adds only a modest fraction on top of.")
+        else:
+            direct = ""
         a("**Interpreter startup vs compiled binary is the whole story here.** The "
-          "`--version` row is the cleanest read: it is almost entirely process "
-          "startup. rho is a statically-linked binary that execs and prints; tau "
-          "pays Python interpreter boot + `uv run` environment resolution + module "
-          "imports (pydantic, httpx, typer, rich, textual) before it does any work. "
-          "That fixed tax is why rho's cold start is dramatically lower.")
+          "`--version` rows are the cleanest read: almost entirely process startup. "
+          "rho is a statically-linked binary that execs and prints; tau pays Python "
+          "interpreter boot + module imports (pydantic, httpx, typer, rich, textual) "
+          f"before it does any work.{direct}")
         a("**But note the 20 ms/chunk row.** Once the provider streams with even a "
           "small per-chunk latency, a fixed ~hundreds-of-ms cost lands on *both* "
           "implementations equally, and the spawn-time gap starts to disappear into "
