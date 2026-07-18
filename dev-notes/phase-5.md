@@ -231,6 +231,29 @@ exits; code-block truncation by display width (F-Width).
   `%g` on absurd magnitudes, and the tau-parity file-reference traversal rebuttal
   are all documented above / in the salvage-audit ledger.
 
+### Workspace-test flake investigation (resolved: environmental, not a test bug)
+
+During the M5 PR work two `cargo test --workspace` runs showed a single transient
+`test result: FAILED` (≈2 of ~10 early runs), with no capturable failing-test name.
+Investigated to a firm conclusion before the merge gate:
+
+- **Not reproducible.** 45 consecutive clean `--workspace` runs on the M5 HEAD
+  (`c48ac2c`), including 5 under full 14-core CPU saturation. At the apparent early
+  rate (~1/8) the chance of 45 clean runs is `(7/8)^45 ≈ 0.25%` — i.e. that rate was
+  not real.
+- **Isolated crates are rock-stable**: `rho-tui` 8/8, `rho-coding` 4/4.
+- **CI is clean on every commit** (test on ubuntu + macos, every push).
+- **Root cause = concurrent working-tree mutation, not a test.** Both early
+  transients coincided with a background subagent operating on the same checkout —
+  the transcript-fix agent explicitly `git stash`/`git checkout`-ed `app.rs` *while*
+  a `cargo test` was in flight. A source mutation mid-run (triggering a rebuild or a
+  file-reading test seeing an inconsistent tree) is an artifact of the parallel
+  multi-agent workflow, not a defect in any test.
+
+No M5 test is implicated and no reproducible pre-existing test failure was found, so
+there is nothing to fix and no actionable flake to file. Tracked here; if CI ever
+surfaces a named failure it should be revisited with that name.
+
 _Original template retained below._
 
 _To be filled at PR: each Codex + CodeRabbit thread with FIX-with-SHA or
