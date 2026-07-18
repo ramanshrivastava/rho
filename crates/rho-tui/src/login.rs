@@ -34,9 +34,12 @@ use rho_coding::oauth_http::ReqwestOAuthClient;
 use rho_coding::oauth_types::{
     OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthLoginCallbacks, OAuthPrompt, OAuthSelectPrompt,
 };
-use rho_coding::provider_catalog::{ProviderCatalogEntry, builtin_provider_entry};
+use rho_coding::paths::RhoPaths;
+use rho_coding::provider_catalog::{
+    BUILTIN_PROVIDER_CATALOG, ProviderCatalogEntry, builtin_provider_entry,
+};
 use rho_coding::provider_config::{
-    OpenAICompatibleProviderConfig, provider_config_from_catalog_entry,
+    OpenAICompatibleProviderConfig, load_provider_settings, provider_config_from_catalog_entry,
     upsert_openai_compatible_provider, upsert_saved_provider,
 };
 
@@ -90,6 +93,15 @@ pub enum OAuthUpdate {
         /// Whether an empty response is acceptable.
         allow_empty: bool,
     },
+    /// A provider selection prompt (the modal presents the options for the user to
+    /// choose the account/organization to authenticate).
+    Select {
+        /// Prompt message.
+        message: String,
+        /// Selectable `(id, label)` options; the chosen id flows back on the code
+        /// channel like a manual-code entry.
+        options: Vec<(String, String)>,
+    },
 }
 
 /// Current wall-clock time in milliseconds since the Unix epoch.
@@ -110,6 +122,8 @@ fn build_callbacks(
     let progress_tx = updates.clone();
     let prompt_tx = updates.clone();
     let prompt_codes = codes.clone();
+    let select_tx = updates.clone();
+    let select_codes = codes.clone();
     let manual_codes = codes;
 
     OAuthLoginCallbacks {
@@ -142,7 +156,33 @@ fn build_callbacks(
             .boxed()
         }),
         on_select: Box::new(move |prompt: OAuthSelectPrompt| {
-            async move { Ok(prompt.options.first().map(|option| option.id.clone())) }.boxed()
+            let tx = select_tx.clone();
+            let codes = select_codes.clone();
+            async move {
+                // A single option needs no user choice (mirrors auto-select when the
+                // provider offers exactly one account/organization).
+                if prompt.options.len() <= 1 {
+                    return Ok(prompt.options.first().map(|option| option.id.clone()));
+                }
+                let options: Vec<(String, String)> = prompt
+                    .options
+                    .iter()
+                    .map(|option| (option.id.clone(), option.label.clone()))
+                    .collect();
+                let valid_ids: Vec<String> = options.iter().map(|(id, _)| id.clone()).collect();
+                let _ = tx.send(OAuthUpdate::Select {
+                    message: prompt.message,
+                    options,
+                });
+                // The modal sends back the chosen option id on the code channel.
+                let mut guard = codes.lock().await;
+                match guard.recv().await {
+                    Some(value) if valid_ids.contains(&value) => Ok(Some(value)),
+                    // A blank / unrecognized response means the user cancelled.
+                    Some(_) | None => Err(OAuthError("Login cancelled".to_string())),
+                }
+            }
+            .boxed()
         }),
         on_progress: Some(Box::new(move |message: &str| {
             let _ = progress_tx.send(OAuthUpdate::Progress(message.to_string()));
@@ -199,6 +239,7 @@ pub fn persist_oauth_login(
     store: &FileCredentialStore,
     entry: &ProviderCatalogEntry,
     credential: &OAuthCredential,
+    paths: Option<&RhoPaths>,
 ) -> Result<String, String> {
     let Some(credential_name) = entry.credential_name.as_deref() else {
         return Err(format!(
@@ -209,7 +250,12 @@ pub fn persist_oauth_login(
     store
         .set_oauth(credential_name, credential.clone())
         .map_err(|err| err.0)?;
-    upsert_builtin_provider(store, &entry.name)?;
+    // Roll back the just-written credential if persisting the provider config
+    // fails, so we never leave a saved credential without its provider entry.
+    if let Err(err) = upsert_builtin_provider(store, &entry.name, paths) {
+        let _ = store.delete(credential_name);
+        return Err(err);
+    }
     Ok(entry.display_name.clone())
 }
 
@@ -219,6 +265,7 @@ pub fn persist_api_key_login(
     store: &FileCredentialStore,
     entry: &ProviderCatalogEntry,
     api_key: &str,
+    paths: Option<&RhoPaths>,
 ) -> Result<String, String> {
     let Some(credential_name) = entry.credential_name.as_deref() else {
         return Err(format!(
@@ -227,13 +274,21 @@ pub fn persist_api_key_login(
         ));
     };
     store.set(credential_name, api_key).map_err(|err| err.0)?;
-    upsert_builtin_provider(store, &entry.name)?;
+    // Roll back the just-written key if persisting the provider config fails.
+    if let Err(err) = upsert_builtin_provider(store, &entry.name, paths) {
+        let _ = store.delete(credential_name);
+        return Err(err);
+    }
     Ok(entry.display_name.clone())
 }
 
-fn upsert_builtin_provider(store: &FileCredentialStore, name: &str) -> Result<(), String> {
+fn upsert_builtin_provider(
+    store: &FileCredentialStore,
+    name: &str,
+    paths: Option<&RhoPaths>,
+) -> Result<(), String> {
     let provider = provider_config_from_catalog_entry(name).map_err(|err| err.to_string())?;
-    upsert_saved_provider(provider, false, None, None, Some(store))
+    upsert_saved_provider(provider, false, paths, None, Some(store))
         .map_err(|err| err.to_string())?;
     Ok(())
 }
@@ -245,6 +300,7 @@ fn upsert_builtin_provider(store: &FileCredentialStore, name: &str) -> Result<()
 pub fn persist_custom_provider(
     store: &FileCredentialStore,
     draft: &CustomProviderDraft,
+    paths: Option<&RhoPaths>,
 ) -> Result<String, String> {
     let base_url = draft.base_url.trim_end_matches('/').to_string();
     let mut provider = OpenAICompatibleProviderConfig::new(draft.provider_name.clone());
@@ -274,37 +330,130 @@ pub fn persist_custom_provider(
         thinking_parameter: None,
         auth_methods: vec!["api_key".to_string()],
     };
-    save_user_catalog_entries(&[catalog_entry], None).map_err(|err| err.to_string())?;
+    // Compute the updated provider settings from the current on-disk state BEFORE
+    // any write, so an invalid config fails without persisting anything.
+    let settings = load_provider_settings(paths, Some(store)).map_err(|err| err.to_string())?;
+    let updated = upsert_openai_compatible_provider(&settings, provider, false)
+        .map_err(|err| err.to_string())?;
+
+    // Write the catalog entry (model metadata) first. A catalog entry without a
+    // matching credential + provider entry is inert and is overwritten on retry,
+    // so it needs no rollback.
+    save_user_catalog_entries(&[catalog_entry], paths).map_err(|err| err.to_string())?;
+    // Then the credential and provider settings — the pair that makes the provider
+    // usable and discoverable by `/logout`. Roll back the credential if the
+    // settings write fails so the two never drift.
     store
         .set(&draft.provider_name, &draft.api_key)
         .map_err(|err| err.0)?;
-    let settings = rho_coding::provider_config::load_provider_settings(None, Some(store))
-        .map_err(|err| err.to_string())?;
-    let updated = upsert_openai_compatible_provider(&settings, provider, false)
-        .map_err(|err| err.to_string())?;
-    rho_coding::provider_config::save_provider_settings(&updated, None)
-        .map_err(|err| err.to_string())?;
+    if let Err(err) = rho_coding::provider_config::save_provider_settings(&updated, paths) {
+        let _ = store.delete(&draft.provider_name);
+        return Err(err.to_string());
+    }
     Ok(draft.provider_name.clone())
+}
+
+/// A provider that currently has a stored credential, offered by the logout
+/// picker (tau `_stored_credential_providers`, extended to saved custom
+/// providers so credentials written by custom login can also be removed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCredentialProvider {
+    /// Stable provider id.
+    pub name: String,
+    /// User-facing display name.
+    pub display_name: String,
+}
+
+/// Whether the store holds a credential (API key or OAuth) under `credential_name`.
+fn credential_store_has_entry(
+    store: &FileCredentialStore,
+    credential_name: &str,
+) -> Result<bool, String> {
+    Ok(store.get(credential_name).map_err(|err| err.0)?.is_some()
+        || store
+            .get_oauth(credential_name)
+            .map_err(|err| err.0)?
+            .is_some())
+}
+
+/// Resolve the credential name for a provider: built-in providers from the
+/// catalog, otherwise saved (custom) providers from `providers.json`. Returns
+/// `Err` only for a provider that is neither.
+fn resolve_credential_name(
+    store: &FileCredentialStore,
+    provider_name: &str,
+    paths: Option<&RhoPaths>,
+) -> Result<Option<String>, String> {
+    if let Some(entry) = builtin_provider_entry(provider_name) {
+        return Ok(entry.credential_name.clone());
+    }
+    let settings = load_provider_settings(paths, Some(store)).map_err(|err| err.to_string())?;
+    match settings
+        .providers
+        .iter()
+        .find(|provider| provider.name() == provider_name)
+    {
+        Some(provider) => Ok(provider.credential_name().map(str::to_string)),
+        None => Err(format!("Unknown provider: {provider_name}")),
+    }
+}
+
+/// The providers with stored credentials (tau `_stored_credential_providers`),
+/// including saved custom providers so custom logins are removable.
+pub fn stored_credential_providers(
+    store: &FileCredentialStore,
+    paths: Option<&RhoPaths>,
+) -> Vec<StoredCredentialProvider> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // Built-in providers keyed by their catalog display name.
+    for entry in BUILTIN_PROVIDER_CATALOG.iter() {
+        if let Some(name) = entry.credential_name.as_deref() {
+            if credential_store_has_entry(store, name).unwrap_or(false) {
+                seen.insert(entry.name.clone());
+                out.push(StoredCredentialProvider {
+                    name: entry.name.clone(),
+                    display_name: entry.display_name.clone(),
+                });
+            }
+        }
+    }
+    // Saved custom providers from providers.json (their credential name equals the
+    // provider id). Built-ins already listed above are skipped via `seen`.
+    if let Ok(settings) = load_provider_settings(paths, Some(store)) {
+        for provider in &settings.providers {
+            if seen.contains(provider.name()) {
+                continue;
+            }
+            if let Some(name) = provider.credential_name() {
+                if credential_store_has_entry(store, name).unwrap_or(false) {
+                    seen.insert(provider.name().to_string());
+                    out.push(StoredCredentialProvider {
+                        name: provider.name().to_string(),
+                        display_name: provider.name().to_string(),
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Remove a provider's stored credentials (tau `_logout`). Returns whether a
 /// credential was actually present (so the caller can mirror tau's messaging).
-pub fn logout_provider(store: &FileCredentialStore, provider_name: &str) -> Result<bool, String> {
-    let Some(entry) = builtin_provider_entry(provider_name) else {
-        return Err(format!("Unknown provider: {provider_name}"));
-    };
-    let Some(credential_name) = entry.credential_name.as_deref() else {
+/// Handles built-in and saved custom providers alike.
+pub fn logout_provider(
+    store: &FileCredentialStore,
+    provider_name: &str,
+    paths: Option<&RhoPaths>,
+) -> Result<bool, String> {
+    let Some(credential_name) = resolve_credential_name(store, provider_name, paths)? else {
         return Ok(false);
     };
-    let has_entry = store.get(credential_name).map_err(|err| err.0)?.is_some()
-        || store
-            .get_oauth(credential_name)
-            .map_err(|err| err.0)?
-            .is_some();
-    if !has_entry {
+    if !credential_store_has_entry(store, &credential_name)? {
         return Ok(false);
     }
-    store.delete(credential_name).map_err(|err| err.0)?;
+    store.delete(&credential_name).map_err(|err| err.0)?;
     Ok(true)
 }
 
@@ -313,10 +462,13 @@ mod tests {
     use super::*;
     use rho_coding::credentials::OAuthCredential;
 
-    fn temp_store() -> (tempfile::TempDir, FileCredentialStore) {
+    /// A temp credential store plus an isolated [`RhoPaths`] so provider-settings
+    /// and catalog writes stay off the user's real `~/.rho` during tests.
+    fn temp_store() -> (tempfile::TempDir, FileCredentialStore, RhoPaths) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = FileCredentialStore::new(dir.path().join("credentials.json"));
-        (dir, store)
+        let paths = RhoPaths::new(dir.path().join("home"), dir.path().join("agents"));
+        (dir, store, paths)
     }
 
     #[test]
@@ -338,10 +490,11 @@ mod tests {
 
     #[test]
     fn persist_oauth_login_stores_credential() {
-        let (_dir, store) = temp_store();
+        let (_dir, store, paths) = temp_store();
         let entry = builtin_provider_entry("anthropic").expect("anthropic entry");
         let credential = OAuthCredential::new("access-token", "refresh-token", now_ms() + 60_000);
-        let display = persist_oauth_login(&store, &entry, &credential).expect("persist");
+        let display =
+            persist_oauth_login(&store, &entry, &credential, Some(&paths)).expect("persist");
         assert_eq!(display, entry.display_name);
         let stored = store
             .get_oauth(entry.credential_name.as_deref().unwrap())
@@ -353,9 +506,10 @@ mod tests {
 
     #[test]
     fn persist_api_key_login_stores_key() {
-        let (_dir, store) = temp_store();
+        let (_dir, store, paths) = temp_store();
         let entry = builtin_provider_entry("openai").expect("openai entry");
-        let display = persist_api_key_login(&store, &entry, "sk-test-key").expect("persist");
+        let display =
+            persist_api_key_login(&store, &entry, "sk-test-key", Some(&paths)).expect("persist");
         assert_eq!(display, entry.display_name);
         let stored = store
             .get(entry.credential_name.as_deref().unwrap())
@@ -366,18 +520,85 @@ mod tests {
 
     #[test]
     fn logout_reports_presence() {
-        let (_dir, store) = temp_store();
+        let (_dir, store, paths) = temp_store();
         let entry = builtin_provider_entry("openai").expect("openai entry");
         // Nothing stored yet.
-        assert!(!logout_provider(&store, "openai").expect("logout"));
+        assert!(!logout_provider(&store, "openai", Some(&paths)).expect("logout"));
         // Store a key, then logout removes it and reports true.
-        persist_api_key_login(&store, &entry, "sk-test-key").expect("persist");
-        assert!(logout_provider(&store, "openai").expect("logout"));
+        persist_api_key_login(&store, &entry, "sk-test-key", Some(&paths)).expect("persist");
+        assert!(logout_provider(&store, "openai", Some(&paths)).expect("logout"));
         assert!(
             store
                 .get(entry.credential_name.as_deref().unwrap())
                 .expect("read")
                 .is_none()
         );
+    }
+
+    fn custom_draft(name: &str) -> CustomProviderDraft {
+        CustomProviderDraft {
+            provider_name: name.to_string(),
+            display_name: format!("{name} (custom)"),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key_env: "EXAMPLE_API_KEY".to_string(),
+            models: vec!["example-model".to_string()],
+            default_model: "example-model".to_string(),
+            api_key: "sk-custom-key".to_string(),
+        }
+    }
+
+    #[test]
+    fn custom_provider_credentials_are_removable_via_logout() {
+        let (_dir, store, paths) = temp_store();
+        let draft = custom_draft("my-custom");
+        let name = persist_custom_provider(&store, &draft, Some(&paths)).expect("persist custom");
+        assert_eq!(name, "my-custom");
+        // The credential lives under the provider id and is discoverable via the
+        // saved provider settings (not the built-in catalog).
+        assert!(builtin_provider_entry("my-custom").is_none());
+        let listed = stored_credential_providers(&store, Some(&paths));
+        assert!(listed.iter().any(|p| p.name == "my-custom"));
+        // Logout resolves the custom provider's credential name and removes it.
+        assert!(logout_provider(&store, "my-custom", Some(&paths)).expect("logout"));
+        assert!(store.get("my-custom").expect("read").is_none());
+        assert!(!logout_provider(&store, "my-custom", Some(&paths)).expect("logout again"));
+    }
+
+    #[test]
+    fn logout_unknown_provider_errors() {
+        let (_dir, store, paths) = temp_store();
+        let err = logout_provider(&store, "does-not-exist", Some(&paths)).expect_err("unknown");
+        assert!(err.contains("Unknown provider"));
+    }
+
+    #[test]
+    fn persist_api_key_rolls_back_credential_on_provider_failure() {
+        let (_dir, store, paths) = temp_store();
+        // `provider_config_from_catalog_entry` rejects a non-built-in name, so the
+        // provider upsert fails and the credential write must be rolled back.
+        let entry = ProviderCatalogEntry {
+            name: "not-a-builtin".to_string(),
+            display_name: "Not A Builtin".to_string(),
+            kind: "openai-compatible".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key_env: "X".to_string(),
+            credential_name: Some("not-a-builtin".to_string()),
+            models: vec!["m".to_string()],
+            default_model: "m".to_string(),
+            docs_url: "https://api.example.com/v1".to_string(),
+            api: None,
+            context_windows: None,
+            headers: IndexMap::new(),
+            compat: JsonMap::new(),
+            model_metadata: IndexMap::new(),
+            thinking_levels: None,
+            thinking_models: Vec::new(),
+            thinking_default: None,
+            thinking_parameter: None,
+            auth_methods: vec!["api_key".to_string()],
+        };
+        assert!(persist_api_key_login(&store, &entry, "sk-test-key", Some(&paths)).is_err());
+        // The credential must not survive the failed provider upsert.
+        assert!(store.get("not-a-builtin").expect("read").is_none());
     }
 }

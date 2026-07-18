@@ -17,8 +17,14 @@
 //! and forwards each method to the identically-named async method below; the TUI
 //! side is wired via [`crate::app::App::set_extension_ui_channel`].
 
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::oneshot;
+
+/// Bound on in-flight extension UI requests. A noisy extension that outpaces the
+/// TUI has its fire-and-forget notifications dropped once this many are queued
+/// (rather than growing host memory without limit); blocking dialog requests
+/// instead await capacity.
+const EXT_UI_CHANNEL_CAPACITY: usize = 32;
 
 /// A UI request emitted by the extension host, carrying a one-shot responder the
 /// TUI fulfils once the user answers (or cancels).
@@ -63,20 +69,23 @@ pub enum UiRequest {
 /// A cloneable, `HostBridge`-shaped async facade the extension runtime calls.
 #[derive(Debug, Clone)]
 pub struct ExtensionUiHandle {
-    sender: UnboundedSender<UiRequest>,
+    sender: Sender<UiRequest>,
 }
 
 impl ExtensionUiHandle {
-    /// Show a notification (mirrors `HostBridge::notify`).
+    /// Show a notification (mirrors `HostBridge::notify`). Fire-and-forget: if the
+    /// queue is full the notification is dropped rather than blocking the caller or
+    /// growing host memory.
     pub fn notify(&self, message: &str, level: &str) {
-        let _ = self.sender.send(UiRequest::Notify {
+        let _ = self.sender.try_send(UiRequest::Notify {
             message: message.to_string(),
             level: level.to_string(),
         });
     }
 
     /// Show a picker; `None` on cancel or if the TUI is gone (mirrors
-    /// `HostBridge::ui_select`).
+    /// `HostBridge::ui_select`). Awaits channel capacity so a dialog is never
+    /// silently dropped.
     pub async fn select(&self, title: &str, options: &[String]) -> Option<String> {
         let (responder, rx) = oneshot::channel();
         if self
@@ -86,6 +95,7 @@ impl ExtensionUiHandle {
                 options: options.to_vec(),
                 responder,
             })
+            .await
             .is_err()
         {
             return None;
@@ -94,7 +104,8 @@ impl ExtensionUiHandle {
     }
 
     /// Show a confirmation; `false` on cancel or if the TUI is gone (mirrors
-    /// `HostBridge::ui_confirm`).
+    /// `HostBridge::ui_confirm`). Awaits channel capacity so a dialog is never
+    /// silently dropped.
     pub async fn confirm(&self, title: &str, message: &str) -> bool {
         let (responder, rx) = oneshot::channel();
         if self
@@ -104,6 +115,7 @@ impl ExtensionUiHandle {
                 message: message.to_string(),
                 responder,
             })
+            .await
             .is_err()
         {
             return false;
@@ -112,7 +124,8 @@ impl ExtensionUiHandle {
     }
 
     /// Show a text prompt; `None` on cancel or if the TUI is gone (mirrors
-    /// `HostBridge::ui_input`).
+    /// `HostBridge::ui_input`). Awaits channel capacity so a dialog is never
+    /// silently dropped.
     pub async fn input(&self, title: &str, placeholder: &str) -> Option<String> {
         let (responder, rx) = oneshot::channel();
         if self
@@ -122,6 +135,7 @@ impl ExtensionUiHandle {
                 placeholder: placeholder.to_string(),
                 responder,
             })
+            .await
             .is_err()
         {
             return None;
@@ -133,7 +147,7 @@ impl ExtensionUiHandle {
 /// The TUI-side receiver of [`UiRequest`]s, owned by the [`crate::app::App`].
 #[derive(Debug)]
 pub struct ExtensionUiChannel {
-    receiver: UnboundedReceiver<UiRequest>,
+    receiver: Receiver<UiRequest>,
 }
 
 impl ExtensionUiChannel {
@@ -147,7 +161,7 @@ impl ExtensionUiChannel {
 /// handle to the extension runtime and the channel to the TUI.
 #[must_use]
 pub fn extension_ui_pair() -> (ExtensionUiHandle, ExtensionUiChannel) {
-    let (sender, receiver) = unbounded_channel();
+    let (sender, receiver) = channel(EXT_UI_CHANNEL_CAPACITY);
     (
         ExtensionUiHandle { sender },
         ExtensionUiChannel { receiver },
@@ -184,6 +198,20 @@ mod tests {
         let (handle, channel) = extension_ui_pair();
         drop(channel);
         assert!(!handle.confirm("Title", "Sure?").await);
+    }
+
+    #[tokio::test]
+    async fn notify_drops_silently_when_queue_full() {
+        // Fill the bounded queue to capacity, then confirm further notifications are
+        // dropped (not blocked, not unbounded) — the receiver is never drained.
+        let (handle, _channel) = extension_ui_pair();
+        for i in 0..EXT_UI_CHANNEL_CAPACITY {
+            handle.notify(&format!("msg-{i}"), "info");
+        }
+        // Extra notifications past capacity return immediately without panicking or
+        // blocking; they are simply dropped.
+        handle.notify("overflow", "info");
+        handle.notify("overflow", "info");
     }
 
     #[tokio::test]
