@@ -37,6 +37,20 @@ uv run --project "$TAU_CHECKOUT" python tools/bench/tau_session_replay.py \
 uv run --project "$TAU_CHECKOUT" python tools/bench/tau_canonicalize.py \
   --out "$RESULTS_DIR/tau_canonicalize.json"
 
+echo "== [2b/5] family (b): pi timer (Node, installed binary internals) =="
+# Resolve the installed pi's bundled dist from the real cli.js entry so the
+# harness imports the shipped session code, never a rebuild. Family (c) has no
+# pi counterpart (documented in benchmarks.md: pi snapshots by reference inline,
+# with no standalone canonicalization stage to isolate).
+PI_ENTRY="$(readlink -f "$(command -v pi)" 2>/dev/null || realpath "$(command -v pi)" 2>/dev/null || true)"
+if [[ -n "$PI_ENTRY" ]]; then
+  PI_PKG="$(cd "$(dirname "$PI_ENTRY")/.." && pwd)"
+  PI_CA_DIST="$PI_PKG/dist" node tools/bench/pi_session_replay.mjs \
+    --scale "$BENCH_SCALE" --out "$RESULTS_DIR/pi_session_replay.json"
+else
+  echo "   pi not found on PATH — skipping pi session-replay timer"
+fi
+
 echo "== [3/5] family (a): cold-start (hyperfine) =="
 if [[ "${SKIP_COLD:-0}" == "1" ]]; then
   echo "   skipped (SKIP_COLD=1)"
