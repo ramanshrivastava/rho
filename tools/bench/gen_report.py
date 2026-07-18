@@ -285,12 +285,23 @@ def render_md(records: list[dict], meta: dict) -> str:
               f"{fmt_rate(t['entries_per_sec']) if t else '—'} | "
               f"{speedup(t['mean_ms'] if t else 0, r['mean_ms'])} |")
         a("")
-        a("rho parses with `serde_json` into plain structs; tau parses with a "
-          "pydantic `TypeAdapter` (per-entry validation + model construction), then "
-          "replays with per-entry Python object churn. Replay itself is cheap on "
-          "both sides — **parse dominates**, and that is where the compiled, "
-          "zero-validation-overhead path pulls ahead by roughly two orders of "
-          "magnitude on the large trees.\n")
+        a("**Parse dominates on both sides** (replay of a linear log is trivially "
+          "O(n)); the gap is entirely in decode. tau pays a pydantic `TypeAdapter` "
+          "per entry (validation + model construction). rho pays its own tax: "
+          "`SessionEntry` is an `#[serde(untagged)]` union, so serde buffers each "
+          "line and trial-decodes it against every variant — deliberately, for "
+          "byte-compat — which is far from free. The net is a solid **several-fold** "
+          "rho win (see the ratio column), not the ~100× seen in the "
+          "allocation-light micro-benches: this is the family where rho's "
+          "compatibility constraints cost it the most, and it's the honest one to "
+          "show.")
+        a("> **`compaction-heavy-100k` is intentionally excluded** (both timers). "
+          "Compaction replay is O(n²) in *both* implementations — each compaction "
+          "entry rescans the retained transcript, a shared byte-compatible "
+          "algorithm, not a rho regression (measured tau 10k replay ≈ 7 s, actually "
+          "slower than rho's ≈ 2.6 s). At 100k that single cell costs minutes per "
+          "iteration in either language and adds nothing beyond the 1k→10k trend "
+          "already visible above. Flagged, not silently capped.\n")
     else:
         a("_Not collected in this run._\n")
 

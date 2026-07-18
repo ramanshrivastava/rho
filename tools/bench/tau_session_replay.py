@@ -29,6 +29,10 @@ FAMILIES = ["linear", "deep-branch", "compaction-heavy"]
 # large trees get few iterations — enough for a stable mean without a 10-minute
 # sweep. rho's Criterion side self-tunes sample counts the same way.
 SIZE_ITERS = {"1k": (3, 30), "10k": (2, 10), "100k": (1, 3)}
+# Excluded, matching the rho bench: compaction replay is O(n²) in BOTH tau and
+# rho (measured tau 10k replay ≈ 7 s), so the 100k cell takes minutes per
+# iteration and adds no signal beyond the 1k→10k trend. Intentional, not silent.
+SKIP = {("compaction-heavy", "100k")}
 
 
 def read_dataset(name: str) -> list[str]:
@@ -56,6 +60,8 @@ def main() -> None:
     records: list[dict] = []
     for family in FAMILIES:
         for size, (warmup, iterations) in SIZE_ITERS.items():
+            if (family, size) in SKIP:
+                continue
             warmup = max(1, round(warmup * args.scale))
             iterations = max(1, round(iterations * args.scale))
             name = f"{family}-{size}"

@@ -48,38 +48,53 @@ fn read_dataset(name: &str) -> String {
     out
 }
 
-fn bench_session_replay(c: &mut Criterion) {
-    // family × size; 100k trees are the gzipped ones.
+/// Datasets to bench. `compaction-heavy-100k` is deliberately excluded: compaction
+/// replay is O(n²) in BOTH rho and tau (each compaction entry rescans the retained
+/// messages — a shared, byte-compatible algorithm, not a rho regression; measured
+/// tau 10k replay ≈ 7 s, actually slower than rho). At 100k that cell takes minutes
+/// per iteration in either implementation and adds no signal beyond the 1k→10k
+/// trend the other rows already show. The exclusion is intentional and logged, not
+/// a silent cap.
+fn datasets() -> Vec<String> {
     let families = ["linear", "deep-branch", "compaction-heavy"];
     let sizes = ["1k", "10k", "100k"];
+    let mut out = Vec::new();
+    for family in families {
+        for size in sizes {
+            if family == "compaction-heavy" && size == "100k" {
+                continue;
+            }
+            out.push(format!("{family}-{size}"));
+        }
+    }
+    out
+}
 
+fn bench_session_replay(c: &mut Criterion) {
     let mut group = c.benchmark_group("session_replay");
-    // Large trees are slow; keep sample counts modest so a full sweep finishes
-    // in a couple of minutes. Criterion still reports mean + stddev.
-    group.sample_size(20);
+    // Large trees are slow; keep sample counts at the Criterion floor so a full
+    // sweep finishes in a couple of minutes. Criterion still reports mean + σ.
+    group.sample_size(10);
     group.warm_up_time(Duration::from_secs(1));
     group.measurement_time(Duration::from_secs(3));
 
-    for family in families {
-        for size in sizes {
-            let name = format!("{family}-{size}");
-            let content = read_dataset(&name);
-            let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
-            let n_entries = lines.len() as u64;
+    for name in datasets() {
+        let content = read_dataset(&name);
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        let n_entries = lines.len() as u64;
 
-            group.throughput(Throughput::Elements(n_entries));
-            group.bench_function(&name, |b| {
-                b.iter(|| {
-                    // Parse every line, then replay the log — exactly what a
-                    // `SessionStorage::read_all` + `SessionState::from_entries`
-                    // load does, and what the tau timer measures.
-                    let entries = entries_from_json_lines(black_box(&lines))
-                        .expect("synthetic fixtures parse");
-                    let state = SessionState::from_entries(black_box(&entries));
-                    black_box(state);
-                });
+        group.throughput(Throughput::Elements(n_entries));
+        group.bench_function(&name, |b| {
+            b.iter(|| {
+                // Parse every line, then replay the log — exactly what a
+                // `SessionStorage::read_all` + `SessionState::from_entries` load
+                // does, and what the tau timer measures.
+                let entries =
+                    entries_from_json_lines(black_box(&lines)).expect("synthetic fixtures parse");
+                let state = SessionState::from_entries(black_box(&entries));
+                black_box(state);
             });
-        }
+        });
     }
     group.finish();
 }
