@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -34,7 +34,7 @@ use futures::{FutureExt, StreamExt};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 use tui_textarea::TextArea;
 
@@ -120,6 +120,8 @@ const PLACEHOLDER_PROMPTS: [&str; 4] = [
 ];
 /// Frames each placeholder suggestion holds before rotating (~6 s at 150 ms).
 const PLACEHOLDER_STEP_FRAMES: usize = 40;
+/// Transcript lines a single mouse-wheel notch scrolls (Claude Code feel).
+const WHEEL_SCROLL_LINES: u16 = 3;
 
 /// The responder awaiting the result of the open extension UI modal.
 enum PendingUiResponder {
@@ -251,8 +253,16 @@ impl App {
         if !self.motion.animated() {
             return;
         }
-        self.textarea
-            .set_cursor_style(motion::cursor_throb_style(self.motion, self.activity_frame));
+        // On an EMPTY composer (and thus the welcome splash) the throbbing oxide
+        // BLOCK cursor would glare over the placeholder with no text behind it —
+        // reading as a stray floating block. Use the soft resting underline there;
+        // keep the ember-throb block only once the user is actually typing.
+        let cursor_style = if self.prompt_text().is_empty() {
+            motion::cursor_rest_style(self.motion)
+        } else {
+            motion::cursor_throb_style(self.motion, self.activity_frame)
+        };
+        self.textarea.set_cursor_style(cursor_style);
         let idx = (self.activity_frame / PLACEHOLDER_STEP_FRAMES) % PLACEHOLDER_PROMPTS.len();
         self.textarea.set_placeholder_text(PLACEHOLDER_PROMPTS[idx]);
     }
@@ -318,18 +328,24 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
         render_sidebar(frame, sidebar_area, ctx.sidebar, ctx.theme);
     }
 
-    // Main pane vertical: transcript (flex) / queued / prompt-row / status / popup.
+    // Main pane vertical: transcript (flex) / queued / status / prompt-row / popup.
+    // The working-state signature sits ABOVE the composer (the Claude Code layout;
+    // tau's `#above-prompt-slot`), so the eye reads `Tempering… · 2m 14s · esc to
+    // interrupt` and then the composer's `ρ ▍` line directly below it.
     let queued_lines = ctx.state.queued_steering.len() + ctx.state.queued_follow_up.len();
     let queued_h = u16::try_from(queued_lines.min(8)).unwrap_or(8);
-    let prompt_h = u16::try_from(ctx.textarea.lines().len().clamp(1, 8)).unwrap_or(8);
+    // The composer is a bordered box (top + bottom border add two rows) so the
+    // cursor reads as *inside* the input, never as a stray floating cell.
+    let prompt_text_h = u16::try_from(ctx.textarea.lines().len().clamp(1, 8)).unwrap_or(8);
+    let prompt_h = prompt_text_h.saturating_add(2);
     let completion_h = completion_popup_height(ctx.completion, ctx.theme);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
             Constraint::Length(queued_h),
-            Constraint::Length(prompt_h),
             Constraint::Length(1),
+            Constraint::Length(prompt_h),
             Constraint::Length(completion_h),
         ])
         .split(main_area);
@@ -353,16 +369,15 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
             ctx.theme,
         );
     }
-    render_prompt_row(frame, rows[2], ctx);
-    // While a turn runs, the status row hosts the working-state signature (the
-    // shimmering forge-verb + elapsed timer + interrupt hint); when idle it shows
-    // the compact session info. The throbbing ρ sits directly above, in the
-    // composer prefix, so the eye reads `ρ / Tempering… · 2m 14s · esc to
-    // interrupt` top-to-bottom.
+    // The status row sits ABOVE the composer. While a turn runs it hosts the
+    // working-state signature (the shimmering forge-verb + elapsed timer +
+    // interrupt hint); when idle it shows the compact session info. The composer's
+    // throbbing ρ prefix sits directly below, so the eye reads `Tempering… · 2m
+    // 14s · esc to interrupt` and then the `ρ ▍` input line top-to-bottom.
     if ctx.state.running {
         render_working_status(
             frame,
-            rows[3],
+            rows[2],
             motion::working_verb(ctx.state.turn_index),
             ctx.state.working_elapsed_secs(),
             ctx.activity_frame,
@@ -371,8 +386,9 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
             ctx.theme,
         );
     } else {
-        render_compact_session_info(frame, rows[3], ctx.status, ctx.theme);
+        render_compact_session_info(frame, rows[2], ctx.status, ctx.theme);
     }
+    render_prompt_row(frame, rows[3], ctx);
     if completion_h > 0 {
         render_completion_popup(frame, rows[4], ctx.completion, ctx.theme);
     }
@@ -400,12 +416,26 @@ fn completion_popup_height(completion: &CompletionState, theme: &TuiTheme) -> u1
     u16::try_from(rows.clamp(1, 12)).unwrap_or(12)
 }
 
-/// Render the prompt-prefix cell + the editable text area.
+/// Render the composer: a bordered box (tau's `:focus` prompt border) wrapping
+/// the prompt-prefix cell + the editable text area. The border makes the cursor
+/// read as *inside* the input rather than as a stray floating cell on the splash.
 fn render_prompt_row(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
+    // Oxide/accent border (tau's focused `$tau-prompt-border`); the composer is
+    // always the focused region in rho, so the box always wears the accent frame.
+    let border_style = crate::widgets::parse_style(&ctx.theme.prompt_border);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(2), Constraint::Min(1)])
-        .split(area);
+        .split(inner);
     render_prompt_prefix(
         frame,
         cols[0],
@@ -414,6 +444,43 @@ fn render_prompt_row(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         ctx.motion,
     );
     frame.render_widget(ctx.textarea, cols[1]);
+}
+
+/// Route a mouse wheel event to transcript scrollback: wheel-up opts out of
+/// follow and scrolls back through history; wheel-down scrolls toward (and
+/// re-arms follow at) the tail. Other mouse events are ignored.
+fn scroll_transcript_on_mouse(state: &TuiState, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => state.scroll_transcript_up(WHEEL_SCROLL_LINES),
+        MouseEventKind::ScrollDown => state.scroll_transcript_down(WHEEL_SCROLL_LINES),
+        _ => {}
+    }
+}
+
+/// Route a scrollback key to the transcript. Returns whether the key was handled
+/// (so the caller stops before feeding it to the editor). PageUp/PageDown page
+/// through history; Shift+Home jumps to the top, Shift+End (or any downward jump)
+/// re-arms follow at the tail.
+fn scroll_transcript_on_key(state: &TuiState, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::PageUp => {
+            state.scroll_transcript_page_up();
+            true
+        }
+        KeyCode::PageDown => {
+            state.scroll_transcript_page_down();
+            true
+        }
+        KeyCode::End if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            state.follow_transcript_tail();
+            true
+        }
+        KeyCode::Home if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            state.scroll_transcript_up(u16::MAX);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The interrupt-hint key label for the working-state line: `esc` for the
@@ -426,9 +493,10 @@ fn interrupt_key_label(kb: &TuiKeybindings) -> String {
     }
 }
 
-/// Render the transcript, following the bottom when it overflows the viewport so
-/// the newest turns and streaming output stay visible (tau auto-scrolls to the
-/// tail on new content).
+/// Render the transcript, following the tail while pinned (so streaming output
+/// and new turns stay visible, tau's auto-scroll) but honoring the user's
+/// scrollback offset once they scroll up — the primary Claude-Code-parity fix
+/// (history was previously unrecoverable: every frame re-pinned to the bottom).
 #[allow(clippy::too_many_arguments)]
 fn render_transcript_scrolled(
     frame: &mut Frame,
@@ -449,7 +517,10 @@ fn render_transcript_scrolled(
     let mut cache = cache.borrow_mut();
     let lines = cache.lines(state, theme, area.width);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let offset = total.saturating_sub(area.height);
+    // Resolve the scroll offset from the follow-output state: the tail while
+    // following, else the stored top line clamped to this frame's geometry (which
+    // also re-arms follow if the user scrolled back to the bottom).
+    let offset = state.resolve_transcript_scroll(total, area.height);
     let bg = crate::widgets::parse_color(&theme.transcript_background)
         .map_or_else(Style::default, |color| Style::default().bg(color));
     frame.render_widget(
@@ -632,7 +703,10 @@ impl App {
                             }
                             self.handle_key_idle(key, terminal, &mut events, &mut ext_ui).await?;
                         }
-                        Some(Ok(_)) => {} // resize / mouse / paste — redraw next iteration.
+                        Some(Ok(Event::Mouse(mouse))) => {
+                            scroll_transcript_on_mouse(&self.state, mouse);
+                        }
+                        Some(Ok(_)) => {} // resize / paste — redraw next iteration.
                         Some(Err(err)) => return Err(err),
                         // Terminal input closed: exit cleanly instead of spinning on a
                         // now-always-ready `None`.
@@ -714,6 +788,13 @@ impl App {
         }
         if matches_binding(&key, &kb.copy_message) {
             self.clear_prompt();
+            return Ok(());
+        }
+        // Transcript scrollback (PageUp/PageDown, and Shift+Home/End to jump). The
+        // editor never needs these (the composer is at most a handful of lines), so
+        // routing them to the transcript matches Claude Code without stealing text
+        // navigation.
+        if scroll_transcript_on_key(&self.state, key) {
             return Ok(());
         }
         // Otherwise feed the editor and recompute completions.
@@ -974,6 +1055,10 @@ impl App {
         }
         self.prompt_history.push(text.clone());
         self.clear_prompt();
+        // A user-driven submission jumps back to the tail (tau's `follow_output`),
+        // so the new message + response are visible even if the user had scrolled
+        // up to read history.
+        self.state.follow_transcript_tail();
 
         // Terminal command (`!cmd` / `!!cmd`): run it locally instead of prompting
         // the model (tau routes these before the agent turn; print mode too).
@@ -1515,6 +1600,9 @@ impl App {
                                     break;
                                 }
                             }
+                            Some(Ok(Event::Mouse(mouse))) => {
+                                scroll_transcript_on_mouse(state, mouse);
+                            }
                             Some(Ok(_)) => {}
                             // Input closed / errored mid-turn: cancel the run and
                             // stop draining events so we don't spin on a ready `None`.
@@ -1641,6 +1729,11 @@ fn handle_running_key(
     }
     if matches_binding(&key, &kb.toggle_thinking) {
         state.show_thinking = !state.show_thinking;
+        return RunningKeyOutcome::Continue;
+    }
+    // Transcript scrollback stays live during a turn so the user can read history
+    // while the agent streams (following re-arms when they scroll back down).
+    if scroll_transcript_on_key(state, key) {
         return RunningKeyOutcome::Continue;
     }
     // Otherwise let the user keep composing the next steering message.
@@ -1826,9 +1919,186 @@ fn matches_binding(key: &KeyEvent, spec: &str) -> bool {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    // --- full-frame layout snapshots (drive the real `render`) ---------------
+
+    fn test_status() -> StatusInfo {
+        StatusInfo {
+            cwd: std::path::PathBuf::from("/work/project"),
+            provider_name: "anthropic".to_string(),
+            model: "claude".to_string(),
+            thinking_display: "medium".to_string(),
+            context_token_estimate: 12_400,
+            context_window_tokens: 128_000,
+            auto_compact_token_threshold: None,
+            git_branch: "main".to_string(),
+        }
+    }
+
+    fn test_sidebar() -> SidebarInfo {
+        SidebarInfo {
+            provider_name: "anthropic".to_string(),
+            model: "claude".to_string(),
+            thinking_display: "medium".to_string(),
+            tools_count: 3,
+            skills_count: 0,
+            context_labels: Vec::new(),
+            tool_names: vec!["read".to_string()],
+            skill_names: Vec::new(),
+            prompt_names: Vec::new(),
+        }
+    }
+
+    /// Render a full frame through the real `render` and return the text grid
+    /// (trailing whitespace trimmed per line), the same extraction the snapshot
+    /// tests use. `MotionCaps::plain()` keeps the frame deterministic.
+    fn render_app_frame(
+        state: &TuiState,
+        composer_text: &str,
+        running: bool,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let theme = TuiSettings::default().resolved_theme();
+        let status = test_status();
+        let sidebar = test_sidebar();
+        let keybindings = TuiSettings::default().keybindings;
+        let mut textarea = TextArea::from(
+            composer_text
+                .split('\n')
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        textarea.set_placeholder_text("Type a message, /command, or !shell");
+        let completion = CompletionState::default();
+        let cache = RefCell::new(crate::widgets::TranscriptCache::default());
+        let ctx = RenderCtx {
+            state,
+            textarea: &textarea,
+            completion: &completion,
+            theme: &theme,
+            status: &status,
+            sidebar: &sidebar,
+            keybindings: &keybindings,
+            modal: None,
+            activity_frame: 0,
+            motion: MotionCaps::plain(),
+            footer_mode: if running {
+                FooterMode::Running
+            } else {
+                FooterMode::Normal
+            },
+            transcript_cache: &cache,
+        };
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| render(f, &ctx)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut rows = Vec::with_capacity(height as usize);
+        for y in 0..height {
+            let mut row = String::with_capacity(width as usize);
+            for x in 0..width {
+                row.push_str(
+                    buffer
+                        .cell((x, y))
+                        .map_or(" ", ratatui::buffer::Cell::symbol),
+                );
+            }
+            rows.push(row.trim_end().to_string());
+        }
+        rows.join("\n")
+    }
+
+    #[test]
+    fn splash_shows_a_bordered_empty_composer() {
+        // A fresh, idle session: the transcript pane hosts the splash, and the
+        // composer at the bottom is a bordered box (rounded corners) — no stray
+        // floating cursor block.
+        let state = TuiState::new();
+        let rendered = render_app_frame(&state, "", false, 60, 20);
+        // The splash identity is present in the transcript pane.
+        assert!(rendered.contains('ρ'), "splash mark present:\n{rendered}");
+        // The composer wears a rounded border box (top + bottom border rows).
+        assert!(
+            rendered.contains('╭') && rendered.contains('╰'),
+            "composer must be a bordered box:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn working_status_renders_above_the_composer() {
+        // Mid-turn: the working-state signature (forge-verb + timer + interrupt
+        // hint) must sit ABOVE the composer border, matching the Claude Code layout.
+        let mut state = TuiState::new();
+        state.add_item(crate::state::ChatItemRole::User, "hello");
+        state.running = true;
+        state.turn_started_at = Some(std::time::Instant::now());
+        let rendered = render_app_frame(&state, "", true, 60, 20);
+        let lines: Vec<&str> = rendered.lines().collect();
+        let status_row = lines
+            .iter()
+            .position(|l| l.contains("to interrupt"))
+            .expect("working status line is present");
+        let top_border_row = lines
+            .iter()
+            .position(|l| l.contains('╭'))
+            .expect("composer top border is present");
+        assert!(
+            status_row < top_border_row,
+            "working status must be above the composer border:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn transcript_scrollback_reveals_history_then_rearms() {
+        // Fill the transcript past the viewport, then drive scrollback and assert
+        // the visible top line changes (history is reachable) and that returning to
+        // the bottom re-arms follow so the tail shows again.
+        let mut state = TuiState::new();
+        for i in 1..=40 {
+            state.add_item(
+                crate::state::ChatItemRole::User,
+                format!("history line {i}"),
+            );
+        }
+        // Following → the tail is visible, the head is not.
+        let tail = render_app_frame(&state, "", false, 50, 16);
+        assert!(tail.contains("history line 40"), "tail visible:\n{tail}");
+        assert!(!tail.contains("history line 1 "), "head scrolled off");
+
+        // A single PageUp opts out of follow and moves the top line up (wheel-up
+        // and PageUp share `scroll_transcript_up`, so this covers both paths).
+        let tail_offset = state.transcript_scroll.get().offset;
+        state.scroll_transcript_page_up();
+        let scroll = state.transcript_scroll.get();
+        assert!(!scroll.following, "PageUp opts out of follow");
+        assert!(scroll.offset < tail_offset, "PageUp moves the top line up");
+        // Scroll all the way to the top: the very first line becomes reachable and
+        // the tail scrolls out of view — history is no longer lost.
+        state.scroll_transcript_up(u16::MAX);
+        let scrolled = render_app_frame(&state, "", false, 50, 16);
+        assert!(
+            scrolled.contains("history line 1\n"),
+            "scrollback must reach the oldest history:\n{scrolled}"
+        );
+        assert!(
+            !scrolled.contains("history line 40"),
+            "the tail must have scrolled out of view:\n{scrolled}"
+        );
+
+        // Jump back to the bottom: follow re-arms and the tail shows again.
+        state.follow_transcript_tail();
+        let back = render_app_frame(&state, "", false, 50, 16);
+        assert!(state.transcript_scroll.get().following, "follow re-armed");
+        assert!(
+            back.contains("history line 40"),
+            "tail visible again:\n{back}"
+        );
     }
 
     #[test]

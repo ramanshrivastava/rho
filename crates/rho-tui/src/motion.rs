@@ -214,6 +214,22 @@ pub fn cursor_throb_style(caps: MotionCaps, frame: usize) -> Style {
         .fg(Color::Rgb(0x14, 0x10, 0x0e))
 }
 
+/// A soft, resting cursor for an EMPTY composer (and the welcome splash): a thin
+/// oxide underline instead of the bright reversed block, so no glowing cell
+/// floats over the placeholder with no text behind it (the "stray block" fix).
+///
+/// Animated: a quiet oxide underline. Static: the terminal's own default cursor
+/// (no styling), which reads as an ordinary caret inside the bordered composer.
+#[must_use]
+pub fn cursor_rest_style(caps: MotionCaps) -> Style {
+    if !caps.animated() {
+        return Style::default();
+    }
+    Style::default()
+        .fg(oxide_ramp(0.5))
+        .add_modifier(Modifier::UNDERLINED)
+}
+
 // --- shimmer (travelling light sweep) ---------------------------------------
 
 /// Render `text` as a shimmering forge-verb: a cosine light-sweep band travels
