@@ -10,7 +10,10 @@
 #   * 0ms      — whole body returned at once (isolates spawn + parse)
 #   * 20ms/chunk — body chunked with per-chunk latency (models streaming; a
 #                  fixed network cost both implementations pay identically)
-#   * version  — `--version` only, the purest interpreter-vs-binary startup gap.
+#   * version  — `--version` via `uv run` (tau's usual entry), the purest
+#                interpreter-vs-binary startup gap.
+#   * version-direct — `--version` straight from `.venv/bin/tau` (no uv), to show
+#                the gap isn't merely uv's launcher.
 #
 # Configs are written into a throwaway dir (RHO_HOME / a temp HOME for tau) so
 # the user's real ~/.rho and ~/.tau are never touched. hyperfine JSON lands in
@@ -98,11 +101,26 @@ run_variant() { # $1=label $2=latency_ms $3=chunk_size
 run_variant "0ms" 0 0
 run_variant "20ms-chunk" 20 16
 
-# --version: pure startup, no provider needed.
-echo ">> cold-start variant: version (--version only)"
+# --version: pure startup, no provider needed. tau is invoked via `uv run` (its
+# usual entry here), so this row includes uv's launcher.
+echo ">> cold-start variant: version (--version via uv run)"
 hyperfine --warmup "$WARMUP" --runs "$RUNS" --shell=default \
   --export-json "$RESULTS_DIR/cold_start_version.json" \
   -n "rho (version)" "$RHO_BIN --version" \
   -n "tau (version)" "env HOME=$TAU_HOME UV_CACHE_DIR=$UV_CACHE uv run --project $TAU_CHECKOUT tau --version"
+
+# version-direct: the tau console script straight out of the venv, bypassing uv,
+# to separate interpreter+import cost from the launcher (skeptic-proofs the
+# headline). Skipped cleanly if the venv isn't present.
+TAU_BIN="$TAU_CHECKOUT/.venv/bin/tau"
+if [[ -x "$TAU_BIN" ]]; then
+  echo ">> cold-start variant: version-direct (.venv/bin/tau, no uv)"
+  hyperfine --warmup "$WARMUP" --runs "$RUNS" --shell=default \
+    --export-json "$RESULTS_DIR/cold_start_version-direct.json" \
+    -n "rho (version-direct)" "$RHO_BIN --version" \
+    -n "tau (version-direct)" "$TAU_BIN --version"
+else
+  echo ">> cold-start variant: version-direct skipped (no $TAU_BIN)"
+fi
 
 echo ">> cold-start done — results in $RESULTS_DIR"

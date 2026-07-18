@@ -6,7 +6,8 @@
 # tools/bench/results/); gen_report.py normalizes them into dev-notes/.
 #
 # Env knobs:
-#   TAU_CHECKOUT   path to the pinned tau checkout (default: sibling oss-gold/tau)
+#   TAU_CHECKOUT   path to the pinned tau checkout (default: $REPO_ROOT/../tau,
+#                  i.e. a `tau` checkout sitting beside the rho repo)
 #   BENCH_SCALE    tau session-replay iteration multiplier (default 1.0)
 #   RUNS/WARMUP    hyperfine cold-start counts (default 15 / 3)
 #   SKIP_COLD=1    skip the hyperfine cold-start family (needs hyperfine + uv)
