@@ -306,11 +306,14 @@ struct StartupProvider {
 /// tau parity (`run_tui_app`): a missing credential must not abort the TUI. The
 /// model is validated by `resolve_provider_selection` before this point, so a
 /// missing credential is the only reason a real provider can't be built — no
-/// error classification is needed. The resolved provider config is kept as the
-/// runtime config even for the placeholder, so a later same-provider `/login` +
-/// model pick rebuilds a real provider via
-/// `CodingSession::refresh_runtime_provider` (a no-op when the runtime config is
-/// absent). A genuine configuration failure on a credentialed provider still
+/// error classification is needed. For the placeholder path the runtime provider
+/// config is cleared to `None` (tau sets `runtime_provider_config = None`): this
+/// keeps `CodingSession::load`'s eager `refresh_runtime_provider` a no-op instead
+/// of having it re-build the real provider — which would hit the very missing-key
+/// error we just sidestepped and abort before the TUI ever renders. A later
+/// `/login` rebuilds the real provider by re-deriving the config from provider
+/// settings (`CodingSession::set_model_provider`), so nothing is lost by clearing
+/// it here. A genuine configuration failure on a credentialed provider still
 /// aborts, matching tau (which lets `ProviderConfigError` propagate).
 fn resolve_startup_provider(
     cli: &Cli,
@@ -384,7 +387,10 @@ fn resolve_startup_provider(
         model: selection.model,
         provider_name: name,
         provider_settings: Some(settings),
-        runtime_provider: Some(selection.provider),
+        // tau parity: clear the runtime config for the placeholder so the eager
+        // `refresh_runtime_provider` in `CodingSession::load` stays a no-op rather
+        // than re-building the credential-less real provider and aborting.
+        runtime_provider: None,
         startup_message: Some(message),
     })
 }

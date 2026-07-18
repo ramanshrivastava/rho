@@ -26,3 +26,6 @@ rho-agent = { path = "../rho-agent" }
 rho-ai = { path = "../rho-ai" }
 rho-coding = { path = "../rho-coding" }
 rho-tui = { path = "../rho-tui" }
+
+[dev-dependencies]
+tempfile = "3"
