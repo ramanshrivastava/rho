@@ -904,6 +904,46 @@ mod tests {
     }
 
     #[test]
+    fn token_field_errors_never_leak_secrets() {
+        // A token response that is missing a required field but *does* carry the
+        // access/refresh tokens: the error must name the missing field only,
+        // never serialize the map (which would surface the tokens in the
+        // transcript). Matches the Anthropic path's status-only redaction.
+        let mut raw = serde_json::Map::new();
+        raw.insert(
+            "access_token".to_string(),
+            Value::String("SECRET-ACCESS".into()),
+        );
+        raw.insert(
+            "refresh_token".to_string(),
+            Value::String("SECRET-REFRESH".into()),
+        );
+
+        let err = required_token_field(&raw, "token_type", "exchange").unwrap_err();
+        assert!(
+            !err.0.contains("SECRET-ACCESS"),
+            "leaked access token: {}",
+            err.0
+        );
+        assert!(
+            !err.0.contains("SECRET-REFRESH"),
+            "leaked refresh token: {}",
+            err.0
+        );
+        assert!(err.0.contains("missing token_type"));
+
+        // The expiry-parse error path (no `expires_in`, non-JWT access token)
+        // must likewise not echo the token map.
+        let err = token_expiry(&raw, "not-a-jwt", "exchange", 0).unwrap_err();
+        assert!(
+            !err.0.contains("SECRET-ACCESS"),
+            "leaked token in expiry error: {}",
+            err.0
+        );
+        assert!(err.0.contains("missing expiry"));
+    }
+
+    #[test]
     fn validate_state_rejects_only_present_mismatched_state() {
         // Matching state passes (the normal CSRF-protected callback).
         assert!(validate_state(Some("state-1"), "state-1").is_ok());
