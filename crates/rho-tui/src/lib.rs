@@ -18,6 +18,7 @@
 
 pub mod adapter;
 pub mod autocomplete;
+pub mod modals;
 mod pystr;
 pub mod state;
 pub mod terminal_title;
