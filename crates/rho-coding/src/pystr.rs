@@ -86,7 +86,7 @@ pub(crate) fn py_rstrip(s: &str) -> String {
 /// selection and escapes; `True`/`False`/`None`; floats carry a `.0` and Python
 /// exponent form.
 #[must_use]
-pub(crate) fn python_repr(value: &JsonValue) -> String {
+pub fn python_repr(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "None".to_string(),
         JsonValue::Bool(true) => "True".to_string(),

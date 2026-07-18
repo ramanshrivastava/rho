@@ -788,6 +788,52 @@ mod tests {
         let kb = &json["keybindings"];
         assert_eq!(kb["command_palette"], Value::String("ctrl+k".into()));
         assert_eq!(kb["toggle_tool_results"], Value::String("ctrl+o".into()));
+        // Guard the keybindings sub-object key ORDER too (tau `to_json` order), so
+        // a regression is caught even if `preserve_order` were ever dropped.
+        let Value::Object(kb_map) = kb else {
+            panic!("keybindings must be an object");
+        };
+        let kb_keys: Vec<&str> = kb_map.keys().map(String::as_str).collect();
+        assert_eq!(kb_keys, KEYBINDING_FIELDS.to_vec());
+    }
+
+    #[test]
+    fn save_and_load_tui_settings_roundtrips_on_disk() {
+        // Exercise the real on-disk path (tau `test_tui_config` parity): a temp
+        // home so we never touch the user's config.
+        let base = std::env::temp_dir().join(format!("rho-tui-cfg-{}", std::process::id()));
+        let home = base.join("home");
+        let paths = RhoPaths::new(home.clone(), base.join("agents"));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // Missing file → defaults (tau `load_tui_settings`).
+        assert_eq!(
+            load_tui_settings(&paths).expect("default"),
+            TuiSettings::default()
+        );
+        assert_eq!(tui_settings_path(&paths), home.join("tui.json"));
+
+        // Save non-default settings and read them back.
+        let settings = TuiSettings {
+            theme: TuiThemeName::TauLight,
+            auto_copy_selection: true,
+            sidebar_position: SidebarPosition::Right,
+            keybindings: TuiKeybindings {
+                quit: "ctrl+q".to_string(),
+                ..TuiKeybindings::default()
+            },
+        };
+        let written = save_tui_settings(&settings, &paths).expect("save");
+        assert!(written.exists());
+        assert_eq!(load_tui_settings(&paths).expect("reload"), settings);
+
+        // The on-disk bytes match tau's `json.dumps(indent=2) + "\n"` exactly.
+        let body = std::fs::read_to_string(&written).expect("read");
+        let expected =
+            serde_json::to_string_pretty(&Value::Object(settings.to_json())).expect("serialize");
+        assert_eq!(body, format!("{expected}\n"));
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

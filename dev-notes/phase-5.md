@@ -92,25 +92,80 @@ turn loop.
 - **tau → rho rebrand divergence.** `terminal_title.rs` marks the title with `ρ` and
   gates on `RHO_TERMINAL_TITLE` (tau uses `τ` / `TAU_TERMINAL_TITLE`), matching rho's
   product identity. Intentional divergence.
-- **5 pre-existing `clippy -D warnings` lints** in salvaged modules
-  (`state.rs:554,750,758`, `terminal_title.rs:48`, `theme.rs:607`) — let-else ×2,
-  identical match arms ×2, boolean simplify ×1, f64 cast ×1. To be resolved at the
-  M5 DoD gate before the PR opens.
+- **Clippy `-D warnings` on salvaged modules** — the salvage's pre-existing lints
+  (plus the new app/modal code) were all resolved at the M5 DoD gate;
+  `clippy --workspace --all-targets -D warnings` is clean.
+
+## Salvage audit (GLM-authored scaffold, audited as untrusted)
+
+The `c8ffd7a` scaffold (`state.rs`, `adapter.rs`, `autocomplete.rs`, `theme.rs`,
+`terminal_title.rs`, `pystr.rs`) was partially authored by a weaker model (GLM 5.2)
+via a different harness. It was re-audited line-by-line against the tau source and
+against rho's M1–M4b idioms. Verdict: **high-fidelity overall** — the parity-critical
+logic was correct — with a handful of edge-case fixes. Recorded honestly as the
+GLM-vs-Opus quality delta:
+
+**Kept as correct (verified faithful):**
+- `adapter.rs` — the whole event seam: assistant-buffer flush, `agent_settled`,
+  error/abort mapping, the `text or buffer` / empty-string-→`"Error"` truthiness, and
+  the `Custom.details` dict-guard all match `adapter.py` exactly. The ported
+  `test_tui_adapter.py` assertions are equal-strength (exact expected strings), not
+  weakened.
+- `state.rs` formatters (`format_tool_call/result_block`, `format_elapsed`,
+  `apply_tool_spinner`, `_preview_text`, `read_line_suffix`) — byte-identical,
+  including all the Python-truthiness / `int()`-truncation / codepoint-slice traps.
+- `autocomplete.rs` — the full dispatch + every helper (sort-key tuples, byte-offset
+  `apply()` with no multibyte panic, shell `!`/`!!` handling) is a faithful 1:1 port;
+  tests are equal-strength.
+- `theme.rs` — all three palettes match `config.py` hex-for-hex across every field
+  and role in declared order; keybindings + `to_json` order exact.
+- `terminal_title.rs` — sanitize/truncate codepoint logic faithful (τ→ρ rebrand aside).
+- `pystr.rs` (rho-tui's copy) — `splitlines` uses the **identical** 10-char CPython
+  boundary set as rho-coding's `pub(crate)` `pystr` (a zero-copy `&str` variant).
+  rho-coding's is unreachable from rho-tui, so a minimal documented copy is the right
+  layering call (same rationale as the accepted split); **not** a divergent impl.
+
+**Rewrote / fixed (GLM defects):**
+- `autocomplete.rs` — the salvage used `trim_start_matches`/`trim_end_matches`
+  (strip *all* repeated copies) at 7 sites where tau uses `removeprefix`/`removesuffix`
+  (strip *one*). Rewrote to `strip_prefix/strip_suffix(...).unwrap_or(...)`. Concrete
+  divergence on `/skill:/skill:x`-style input; locked with a regression test.
+- `state.rs` — the salvage **hand-rolled its own `python_repr`** for the fallback
+  tool-call invocation, diverging from rho-coding's canonical one (missing Python
+  float-exponent form `1e+20` and control-char `\xNN`/`\uNNNN` escaping). Deleted the
+  copy and reused rho-coding's tested `python_repr` (now re-exported `pub`) — one
+  canonical impl, no divergence, per the audit directive.
+- Added the missing on-disk `save_tui_settings`/`load_tui_settings` roundtrip test
+  (`test_tui_config.py` had 4; rho had 0) plus a keybindings sub-object key-order guard.
+
+**Accepted rare-input deviations (documented, not fixed):**
+- `format_g` (bash `timeout` display) diverges from C `%g` only for absurd magnitudes
+  (≥1e6 s ≈ 11 days, or <1e-4 s); ordinary seconds match.
+- `str.lower()` final-sigma (`Σ→σ` vs Rust `Σ→ς`) and `0x1c`–`0x1f`-as-whitespace
+  (`str.isspace` vs Rust `White_Space`) — Unicode/control-char inputs only, pre-sanitized
+  in practice.
+- Skill-path matching uses lexical normalization, not symlink `resolve()` (documented
+  in the code); only bites a symlinked skill path.
 
 ## Parity checklist
 
-To be checked against tau's source for each theme before PR; flag anything needing
-live-terminal verification by the human.
+Checked against tau's source. Items needing **live-terminal** human verification are
+flagged `[HUMAN]` (immediate-mode render output can't be fully asserted headlessly).
 
-- **Layout regions:** transcript / input composer / autocomplete popup / status bar /
-  footer-hints — _[ ]_
-- **Keybindings (all `app.py` BINDINGS):** cancel/steer, follow-up queueing,
-  `/commands`, ctrl-keys (command-palette, session-picker, model/thinking cycle &
-  toggles, copy, quit) — _[ ]_
-- **Colors per theme** (`tau-dark` / `tau-light` / `high-contrast`): parsed from tau's
-  exact hex strings into ratatui `Style` — _[ ]_
-- **Modal flows:** session picker, tree picker, login provider/method, branch-summary
-  instructions, command output, model/thinking pickers, quit-confirm — _[ ]_
+- **Layout regions:** transcript / queued / input composer / status line / autocomplete
+  popup / sidebar / footer-hints — _[x]_ (snapshot-tested; live proportions `[HUMAN]`).
+- **Keybindings (all `app.py` BINDINGS):** Enter submit / Shift+Enter newline, steer +
+  follow-up queueing, cancel, `/commands` palette, session-picker, model/thinking cycle,
+  tool-results/thinking toggles, clear, quit — _[x]_ (dispatch unit-tested via
+  `matches_binding`; live key delivery `[HUMAN]`).
+- **Colors per theme** (`tau-dark` / `tau-light` / `high-contrast`): hex parsed into
+  ratatui `Style` — _[x]_ (hex parity unit-tested; on-screen color `[HUMAN]`).
+- **Modal flows:** session / tree / model / scoped / theme pickers, branch-summary
+  instructions, command output, M7 notice — _[x]_ (navigation + outcomes unit-tested,
+  render snapshot-tested). Login/OAuth/extension modals → M7. No quit-confirm or
+  thinking-picker modal (they do not exist in tau's source — confirmed).
+- **Live end-to-end drive** (fake + real provider) — _[HUMAN]_ (raw-mode TTY can't run
+  headless; `rho --fake` launch + non-tty error paths verified programmatically).
 
 ## Review round (bots)
 

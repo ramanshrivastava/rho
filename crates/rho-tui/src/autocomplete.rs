@@ -220,19 +220,24 @@ fn argument_token_end(text: &str, start: usize) -> usize {
 }
 
 fn matches_skill_command(token: &str, skills: &[Skill]) -> bool {
-    let command_name = token.trim_start_matches("/skill:").to_lowercase();
+    // tau uses `removeprefix` (strip ONE copy), not `lstrip`/`trim_start_matches`
+    // (which strips repeated copies) — see e.g. the `/skill:/skill:x` edge case.
+    let command_name = token
+        .strip_prefix("/skill:")
+        .unwrap_or(token)
+        .to_lowercase();
     skills.iter().any(|s| s.name.to_lowercase() == command_name)
 }
 
 fn matches_prompt_template_command(token: &str, prompt_templates: &[PromptTemplate]) -> bool {
-    let command_name = token.trim_start_matches('/').to_lowercase();
+    let command_name = token.strip_prefix('/').unwrap_or(token).to_lowercase();
     prompt_templates
         .iter()
         .any(|t| t.name.to_lowercase() == command_name)
 }
 
 fn matches_registered_command(token: &str, registry: &CommandRegistry) -> bool {
-    let command_name = token.trim_start_matches('/').to_lowercase();
+    let command_name = token.strip_prefix('/').unwrap_or(token).to_lowercase();
     registry.get(&command_name).is_some()
 }
 
@@ -240,10 +245,11 @@ fn command_completion_sort_key(item: &CompletionItem, prefix: &str) -> (u8, Stri
     if prefix.is_empty() {
         return (0, item.display.clone());
     }
-    let display_name = item
-        .display
-        .trim_start_matches('/')
-        .trim_end_matches(':')
+    // tau: `item.display.removeprefix("/").removesuffix(":")` — single strips.
+    let without_slash = item.display.strip_prefix('/').unwrap_or(&item.display);
+    let display_name = without_slash
+        .strip_suffix(':')
+        .unwrap_or(without_slash)
         .to_lowercase();
     let rank = u8::from(!display_name.starts_with(prefix));
     (rank, item.display.clone())
@@ -304,7 +310,7 @@ fn command_completions(
     registry: &CommandRegistry,
     prompt_templates: &[PromptTemplate],
 ) -> Vec<CompletionItem> {
-    let prefix = token.trim_start_matches('/').to_lowercase();
+    let prefix = token.strip_prefix('/').unwrap_or(token).to_lowercase();
     let mut command_suggestions: Vec<CompletionItem> = Vec::new();
     for command in registry.list_commands() {
         command_suggestions.extend(command_alias_completions(command, &prefix, token_end));
@@ -333,7 +339,10 @@ fn command_completions(
 }
 
 fn skill_completions(token: &str, token_end: usize, skills: &[Skill]) -> Vec<CompletionItem> {
-    let prefix = token.trim_start_matches("/skill:").to_lowercase();
+    let prefix = token
+        .strip_prefix("/skill:")
+        .unwrap_or(token)
+        .to_lowercase();
     let mut ordered: Vec<&Skill> = skills.iter().collect();
     ordered.sort_by(|a, b| a.name.cmp(&b.name));
     ordered
@@ -358,7 +367,11 @@ fn command_argument_completions(
     if token_end >= text.len() {
         return None;
     }
-    let command_name = text[..token_end].trim_start_matches('/').to_lowercase();
+    let first_token = &text[..token_end];
+    let command_name = first_token
+        .strip_prefix('/')
+        .unwrap_or(first_token)
+        .to_lowercase();
     match command_name.as_str() {
         "model" | "scoped-models" => Some(value_completions(
             text,
@@ -658,4 +671,47 @@ fn parse_shell_path_token(token: &str) -> Option<(String, String, String)> {
         name_prefix.to_string(),
         replacement_prefix,
     ))
+}
+
+#[cfg(test)]
+mod removeprefix_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn skill(name: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            path: PathBuf::from("/skills/x.md"),
+            content: String::new(),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn skill_command_strips_exactly_one_prefix() {
+        let skills = [skill("review")];
+        // Single "/skill:" prefix resolves to the skill name.
+        assert!(matches_skill_command("/skill:review", &skills));
+        // tau uses `removeprefix` (strips ONE): "/skill:/skill:review" -> the
+        // leftover "/skill:review" != "review", so NO match. The old
+        // `trim_start_matches` stripped BOTH and wrongly matched.
+        assert!(!matches_skill_command("/skill:/skill:review", &skills));
+    }
+
+    #[test]
+    fn sort_key_strips_one_slash_and_one_colon() {
+        let item = CompletionItem {
+            display: "/skill:".to_string(),
+            replacement: String::new(),
+            start: 0,
+            end: 0,
+            description: None,
+            category: None,
+        };
+        // display -> removeprefix("/") -> "skill:" -> removesuffix(":") -> "skill".
+        assert_eq!(command_completion_sort_key(&item, "sk").0, 0);
+        assert_eq!(command_completion_sort_key(&item, "zz").0, 1);
+        // The tiebreak preserves the original display casing.
+        assert_eq!(command_completion_sort_key(&item, "sk").1, "/skill:");
+    }
 }

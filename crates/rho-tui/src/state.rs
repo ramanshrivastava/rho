@@ -646,7 +646,10 @@ fn fallback_tool_call_invocation(tool_call: &ToolCall) -> String {
     if tool_call.arguments.is_empty() {
         return tool_call.name.clone();
     }
-    let rendered = python_repr_map(&tool_call.arguments);
+    // tau formats `str(tool_call.arguments)` — a Python `dict` repr. Reuse
+    // rho-coding's single canonical `python_repr` (correct float-exponent + escaped
+    // control chars) instead of a divergent local copy.
+    let rendered = rho_coding::python_repr(&JsonValue::Object(tool_call.arguments.clone()));
     let rendered = if pystr::char_len(&rendered) > FALLBACK_INVOCATION_ARGS_CHARS {
         format!(
             "{}…",
@@ -788,71 +791,6 @@ fn format_g(value: f64) -> String {
         }
     }
     text
-}
-
-/// Render a JSON object like Python's `str(dict)` for the fallback invocation.
-///
-/// tau formats `str(tool_call.arguments)` — a Python `dict` repr with single
-/// quotes. Reproduced here so the truncated fallback line reads identically.
-fn python_repr_map(map: &JsonMap) -> String {
-    let mut parts = Vec::with_capacity(map.len());
-    for (key, value) in map {
-        parts.push(format!(
-            "{}: {}",
-            python_repr_str(key),
-            python_repr_value(value)
-        ));
-    }
-    format!("{{{}}}", parts.join(", "))
-}
-
-fn python_repr_value(value: &JsonValue) -> String {
-    match value {
-        JsonValue::Null => "None".to_string(),
-        JsonValue::Bool(b) => {
-            if *b {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            }
-        }
-        JsonValue::Number(n) => n.to_string(),
-        JsonValue::String(s) => python_repr_str(s),
-        JsonValue::Array(items) => {
-            let inner: Vec<String> = items.iter().map(python_repr_value).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        JsonValue::Object(map) => python_repr_map(map),
-    }
-}
-
-fn python_repr_str(s: &str) -> String {
-    // Python prefers single quotes unless the string contains a single quote and
-    // no double quote.
-    let has_single = s.contains('\'');
-    let has_double = s.contains('"');
-    let (quote, escape_quote) = if has_single && !has_double {
-        ('"', '"')
-    } else {
-        ('\'', '\'')
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == escape_quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
 }
 
 /// Expand `~` and lexically normalize a path (tau's
