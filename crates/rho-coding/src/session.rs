@@ -34,7 +34,7 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 
@@ -75,6 +75,9 @@ use crate::events::{
     SessionAgentEndEvent,
 };
 use crate::extensions::ExtensionRuntime;
+use crate::extensions::{
+    SessionContext as ExtSessionContext, SessionContextBridge as ExtSessionContextBridge,
+};
 use crate::paths::RhoPaths;
 use crate::prompt_templates::{
     PromptTemplate, expand_prompt_template_command, load_prompt_templates_with_diagnostics,
@@ -383,6 +386,10 @@ pub struct CodingSession {
     /// run future, and the runtime's registration tables would otherwise bloat
     /// that future past the `large_futures` budget.
     extension_runtime: Box<ExtensionRuntime>,
+    /// The live session-context snapshot the extension host bridge reads. Shared
+    /// (`Arc<Mutex<_>>`) so sync mutators (`set_model`/`set_provider`) can update
+    /// it in place while a bound extension reads the current value.
+    extension_context: Arc<Mutex<ExtSessionContext>>,
 }
 
 impl CodingSession {
@@ -533,11 +540,40 @@ impl CodingSession {
             credential_store,
             owned_providers: Vec::new(),
             extension_runtime: Box::new(extension_runtime),
+            extension_context: Arc::new(Mutex::new(ExtSessionContext::default())),
         };
         session.persist_loaded_interrupted_tool_repairs().await?;
         session.sync_thinking_level_to_active_model();
         session.refresh_runtime_provider()?;
+        // Bind a live session-context bridge so extension `context.*` reads
+        // reflect this session (tau's `extension_runtime.bind(session)`), and
+        // fire `session_start` for lifecycle subscribers. Cheap no-op when no
+        // extensions are loaded.
+        session.refresh_extension_context();
+        if session.extension_runtime.has_extensions() {
+            let bridge = Arc::new(ExtSessionContextBridge::new(
+                session.extension_context.clone(),
+            ));
+            session.extension_runtime.set_bridge(bridge);
+            session.extension_runtime.rebind().await;
+            session
+                .extension_runtime
+                .emit_session_start("startup")
+                .await;
+        }
         Ok(session)
+    }
+
+    /// Refresh the shared session-context snapshot the extension bridge reads
+    /// (cwd / model / provider / session id / system prompt). Called at load and
+    /// after model/provider changes so extension `context.*` reads stay current.
+    fn refresh_extension_context(&self) {
+        let mut ctx = self.extension_context.lock().unwrap();
+        ctx.cwd = self.config.cwd.display().to_string();
+        ctx.model = self.harness.config().model.clone();
+        ctx.provider_name = self.config.provider_name.clone();
+        ctx.session_id = self.config.session_id.clone();
+        ctx.system_prompt = self.harness.config().system.clone();
     }
 
     // ---- properties -------------------------------------------------------
@@ -878,6 +914,31 @@ impl CodingSession {
         async_stream::stream! {
             self.run_error = None;
             let context = self.diagnostic_context();
+
+            // Run `input` hooks on the RAW prompt, before expansion (tau
+            // `prompt`): a `handled` outcome consumes the input (optionally
+            // notifying) and starts no agent run; a `transform` replaces the
+            // text. Guarded so a session with no extensions pays nothing.
+            let mut content = content;
+            if self.extension_runtime.has_extensions() {
+                let behavior = match streaming_behavior {
+                    Some(StreamingBehavior::Steer) => Some("steer".to_string()),
+                    Some(StreamingBehavior::FollowUp) => Some("follow_up".to_string()),
+                    None => None,
+                };
+                let outcome = self
+                    .extension_runtime
+                    .run_input_hooks(&content, "interactive", behavior)
+                    .await;
+                if outcome.handled {
+                    if let Some(message) = outcome.message {
+                        self.extension_runtime.notify(&message, "info").await;
+                    }
+                    return;
+                }
+                content = outcome.text;
+            }
+
             // tau raises the `/skill:` `ResourceError` out of `prompt()`, aborting
             // the turn; rho records it on the session so the print-mode CLI exits
             // non-zero (mirroring the persistence-failure path).
@@ -1182,6 +1243,7 @@ impl CodingSession {
             let _ =
                 manager.touch_session(session_id, Some(model), Some(self.provider_name()), None);
         }
+        self.refresh_extension_context();
         Ok(())
     }
 
@@ -1320,6 +1382,7 @@ impl CodingSession {
             let _ =
                 manager.touch_session(session_id, Some(model), Some(self.provider_name()), None);
         }
+        self.refresh_extension_context();
         Ok(())
     }
 
@@ -1909,9 +1972,13 @@ impl CodingSession {
         let before_extensions = self.extension_runtime.extension_names().len();
         let before_guidelines = self.extension_runtime.prompt_guidelines();
 
-        // Re-discover extensions: tear down the current generation and reload,
-        // mirroring tau's `_reload_extensions`. A `NoopExtensionHost`-backed
+        // Re-discover extensions: fire `session_shutdown` for the outgoing
+        // generation, tear it down, reload, then `session_start` for the new one
+        // (tau's `_reload_extensions` lifecycle). A `NoopExtensionHost`-backed
         // runtime with no extensions reloads to the same empty set.
+        if self.extension_runtime.has_extensions() {
+            self.extension_runtime.emit_session_shutdown("reload").await;
+        }
         self.extension_runtime.reset_for_reload().await;
         if self.config.extensions_enabled || !self.config.extension_paths.is_empty() {
             self.extension_runtime
@@ -1922,6 +1989,12 @@ impl CodingSession {
                     self.config.project_extensions_enabled,
                 )
                 .await;
+        }
+        if self.extension_runtime.has_extensions() {
+            let bridge = Arc::new(ExtSessionContextBridge::new(self.extension_context.clone()));
+            self.extension_runtime.set_bridge(bridge);
+            self.extension_runtime.rebind().await;
+            self.extension_runtime.emit_session_start("reload").await;
         }
         let after_extensions = self.extension_runtime.extension_names().len();
         let after_guidelines = self.extension_runtime.prompt_guidelines();

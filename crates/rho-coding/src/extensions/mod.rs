@@ -102,6 +102,82 @@ impl HostBridge for NoopHostBridge {
     async fn send_user_message(&self, _content: &str, _deliver_as: &str) {}
 }
 
+/// The live, read-only session context a bound session shares with its
+/// extensions (tau's `ExtensionContext` fields). Held behind an
+/// `Arc<Mutex<_>>` so the session can update it in place (on `/model`,
+/// `/login`, reload) and a running extension reads the current value.
+#[derive(Debug, Clone, Default)]
+pub struct SessionContext {
+    /// Session working directory.
+    pub cwd: String,
+    /// Active model name.
+    pub model: String,
+    /// Active provider name.
+    pub provider_name: String,
+    /// Current session id, if indexed.
+    pub session_id: Option<String>,
+    /// Active system prompt.
+    pub system_prompt: String,
+}
+
+/// A [`HostBridge`] backed by a live [`SessionContext`] snapshot. Reads reflect
+/// the current session (`cwd`/`model`/`provider`/`session_id`/`system_prompt`),
+/// so extension `context.*` reads work in both print mode and the TUI.
+///
+/// `transcript_json`/`is_running` and the UI dialogs remain the no-op defaults:
+/// the transcript and run-state live inside the (non-`Arc`) `AgentHarness`, and
+/// wiring live UI dialogs needs the frontend handle threaded through — both are
+/// tracked follow-ups (see `dev-notes/phase-7.md`). The two shipped example
+/// guests read neither, so this fully serves them.
+#[derive(Debug, Clone)]
+pub struct SessionContextBridge {
+    context: Arc<Mutex<SessionContext>>,
+}
+
+impl SessionContextBridge {
+    /// Build a bridge over a shared session context.
+    #[must_use]
+    pub fn new(context: Arc<Mutex<SessionContext>>) -> Self {
+        Self { context }
+    }
+}
+
+#[async_trait::async_trait]
+impl HostBridge for SessionContextBridge {
+    async fn cwd(&self) -> String {
+        self.context.lock().unwrap().cwd.clone()
+    }
+    async fn model(&self) -> String {
+        self.context.lock().unwrap().model.clone()
+    }
+    async fn provider_name(&self) -> String {
+        self.context.lock().unwrap().provider_name.clone()
+    }
+    async fn session_id(&self) -> Option<String> {
+        self.context.lock().unwrap().session_id.clone()
+    }
+    async fn system_prompt(&self) -> String {
+        self.context.lock().unwrap().system_prompt.clone()
+    }
+    async fn is_running(&self) -> bool {
+        false
+    }
+    async fn transcript_json(&self) -> String {
+        "[]".to_string()
+    }
+    async fn notify(&self, _message: &str, _level: &str) {}
+    async fn ui_select(&self, _title: &str, _options: &[String]) -> Option<String> {
+        None
+    }
+    async fn ui_confirm(&self, _title: &str, _message: &str) -> bool {
+        false
+    }
+    async fn ui_input(&self, _title: &str, _placeholder: &str) -> Option<String> {
+        None
+    }
+    async fn send_user_message(&self, _content: &str, _deliver_as: &str) {}
+}
+
 /// One loaded extension's dispatch metadata (name + which events it subscribed
 /// to). Kept in load order so hook dispatch is deterministic (tau's
 /// `_handlers_for` yields in load order).
@@ -819,6 +895,12 @@ impl ExtensionRuntime {
         self.shared
             .run_input_hooks(text, source, streaming_behavior)
             .await
+    }
+
+    /// Show a notification through the installed host bridge (tau `notify`).
+    /// A no-op without an interactive UI bridge.
+    pub async fn notify(&self, message: &str, level: &str) {
+        self.bridge.notify(message, level).await;
     }
 
     /// Dispatch `session_start` to subscribed extensions.

@@ -955,6 +955,111 @@ async fn session_exposes_extension_tools_guidelines_and_commands() {
     assert!(result.handled);
 }
 
+/// Building a session fires `session_start` for a subscribed extension (tau's
+/// `emit_session_start("startup")`).
+#[tokio::test]
+async fn session_start_fires_for_subscribed_extension_on_load() {
+    let fired = Arc::new(Mutex::new(0u32));
+    let counter = fired.clone();
+    let ext = FakeExtension::new("lifecycle").on_session_start(move |_ev| {
+        *counter.lock().unwrap() += 1;
+        Ok(())
+    });
+    let host = FakeExtensionHost::with([ext]);
+    let mut runtime = ExtensionRuntime::with_host(host);
+    runtime.load_discovered(vec![spec("lifecycle")]).await;
+
+    let _session = load_session_with_runtime(runtime, vec![]).await;
+    assert_eq!(
+        *fired.lock().unwrap(),
+        1,
+        "session_start should fire once on load"
+    );
+}
+
+/// An `input` hook returning `handled` consumes the prompt: the agent never runs
+/// (tau's `prompt` short-circuit before dispatch).
+#[tokio::test]
+async fn input_hook_handled_prevents_the_agent_run() {
+    use futures::StreamExt;
+
+    let ext = FakeExtension::new("gate").on_input(|_ev| {
+        Ok(Some(InputOutcome {
+            action: InputAction::Handled,
+            text: None,
+            message: Some("consumed".to_string()),
+        }))
+    });
+    let host = FakeExtensionHost::with([ext]);
+    let mut runtime = ExtensionRuntime::with_host(host);
+    runtime.load_discovered(vec![spec("gate")]).await;
+
+    // A provider that would record a call if the agent ran.
+    let provider = Arc::new(rho_agent::fake::FakeProvider::new(vec![]));
+    let calls_probe = provider.clone();
+    let mut session = load_session_with_provider(runtime, provider).await;
+
+    {
+        let events = session.prompt("hello".to_string(), None);
+        futures::pin_mut!(events);
+        while events.next().await.is_some() {}
+    }
+    assert!(
+        calls_probe.calls().is_empty(),
+        "a handled input hook must prevent the agent run"
+    );
+}
+
+/// The session-context bridge reflects the live session and updates in place.
+#[tokio::test]
+async fn session_context_bridge_reflects_and_updates() {
+    use rho_ext_host::HostBridge;
+
+    let ctx = Arc::new(Mutex::new(super::SessionContext {
+        cwd: "/work".to_string(),
+        model: "m1".to_string(),
+        provider_name: "p1".to_string(),
+        session_id: Some("sid".to_string()),
+        system_prompt: "sys".to_string(),
+    }));
+    let bridge = super::SessionContextBridge::new(ctx.clone());
+    assert_eq!(bridge.cwd().await, "/work");
+    assert_eq!(bridge.model().await, "m1");
+    assert_eq!(bridge.provider_name().await, "p1");
+    assert_eq!(bridge.session_id().await, Some("sid".to_string()));
+
+    ctx.lock().unwrap().model = "m2".to_string();
+    assert_eq!(bridge.model().await, "m2", "reads reflect in-place updates");
+}
+
+/// Build a `CodingSession` carrying `runtime`, with an optional scripted stream.
+async fn load_session_with_runtime(
+    runtime: ExtensionRuntime,
+    streams: Vec<Vec<rho_agent::provider_events::AssistantMessageEvent>>,
+) -> CodingSession {
+    let provider = Arc::new(rho_agent::fake::FakeProvider::new(streams));
+    load_session_with_provider(runtime, provider).await
+}
+
+async fn load_session_with_provider(
+    runtime: ExtensionRuntime,
+    provider: Arc<rho_agent::fake::FakeProvider>,
+) -> CodingSession {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let mut config = CodingSessionConfig::new(provider, "fake", storage, cwd.clone());
+    config.resource_paths = Some(RhoResourcePaths {
+        root: tmp.path().join("home"),
+        cwd: Some(cwd.clone()),
+        agents_root: Some(tmp.path().join("agents")),
+        paths: None,
+    });
+    config.extension_runtime = Some(runtime);
+    CodingSession::load(config).await.unwrap()
+}
+
 /// The live agent-event fan-out: an extension subscribed to the `agent_event`
 /// wildcard observes the canonical events of a real session run (tau's harness
 /// listener, dispatched inline in `CodingSession::prompt`).
