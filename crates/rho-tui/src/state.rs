@@ -614,12 +614,20 @@ impl TuiState {
 
     /// Scroll the transcript up by `lines`, opting out of follow so incoming
     /// content no longer yanks the viewport back to the tail.
+    ///
+    /// Only opts out when scrolling can actually move the viewport: on a short
+    /// transcript (`max_offset == 0`) there is nothing above the fold, so we stay
+    /// in follow — otherwise a wheel-up on a short transcript would strand the
+    /// view at the head and hide later streamed output.
     pub fn scroll_transcript_up(&self, lines: u16) {
         let mut scroll = self.transcript_scroll.get();
         let current = scroll.effective_offset();
-        scroll.offset = current.saturating_sub(lines);
-        scroll.following = false;
-        self.transcript_scroll.set(scroll);
+        let target = current.saturating_sub(lines);
+        if target < current {
+            scroll.offset = target;
+            scroll.following = false;
+            self.transcript_scroll.set(scroll);
+        }
     }
 
     /// Scroll the transcript down by `lines`, re-arming follow if it reaches the
@@ -1112,6 +1120,26 @@ mod scroll_tests {
             "incoming content must not move a scrolled-up view"
         );
         assert!(!state.transcript_scroll.get().following);
+    }
+
+    #[test]
+    fn scroll_up_keeps_following_when_transcript_fits() {
+        // A short transcript (total < viewport → max_offset 0): wheel-up/PageUp has
+        // nothing above the fold, so it must NOT opt out of follow. Otherwise later
+        // streaming growth would strand the view at the head and hide new output.
+        let state = state_with_geometry(4, 10);
+        assert_eq!(state.transcript_scroll.get().max_offset(), 0);
+        state.scroll_transcript_up(3);
+        assert!(
+            state.transcript_scroll.get().following,
+            "a short transcript cannot scroll up, so follow must stay armed"
+        );
+        state.scroll_transcript_page_up();
+        assert!(state.transcript_scroll.get().following);
+        // Later growth beyond the viewport keeps following the tail.
+        let offset = state.resolve_transcript_scroll(40, 10);
+        assert!(state.transcript_scroll.get().following, "still following");
+        assert_eq!(offset, 30, "pinned to the new tail");
     }
 
     #[test]

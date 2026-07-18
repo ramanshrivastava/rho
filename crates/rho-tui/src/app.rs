@@ -1697,6 +1697,9 @@ fn handle_running_key(
                     .collect(),
             );
             *textarea = fresh_textarea();
+            // A mid-turn steering submission jumps back to the tail too, so a user
+            // who had scrolled up still sees their message + the response.
+            state.follow_transcript_tail();
         }
         return RunningKeyOutcome::Continue;
     }
@@ -1716,6 +1719,8 @@ fn handle_running_key(
                     .collect(),
             );
             *textarea = fresh_textarea();
+            // Same for a queued follow-up.
+            state.follow_transcript_tail();
         }
         return RunningKeyOutcome::Continue;
     }
@@ -2098,6 +2103,69 @@ mod tests {
         assert!(
             back.contains("history line 40"),
             "tail visible again:\n{back}"
+        );
+    }
+
+    #[tokio::test]
+    async fn running_turn_submission_rearms_transcript_follow() {
+        // A steering / follow-up message submitted mid-turn (through
+        // `handle_running_key`, not `submit_prompt`) must also jump back to the tail
+        // so a scrolled-up user still sees their message + the response.
+        let tmp = tempfile::tempdir().unwrap();
+        let session = login_required_session(tmp.path()).await;
+        let control = session.control();
+        let kb = TuiSettings::default().keybindings;
+
+        let detached = |state: &TuiState| {
+            state.transcript_scroll.set(crate::state::TranscriptScroll {
+                offset: 0,
+                following: false,
+                viewport_height: 6,
+                total_lines: 60,
+            });
+        };
+
+        let mut state = TuiState::new();
+        for i in 1..=30 {
+            state.add_item(crate::state::ChatItemRole::User, format!("line {i}"));
+        }
+
+        // Enter submits a steering message during the run → follow re-arms.
+        detached(&state);
+        let mut textarea = fresh_textarea();
+        textarea.insert_str("steer this");
+        let outcome = handle_running_key(
+            key(KeyCode::Enter, KeyModifiers::empty()),
+            &kb,
+            &control,
+            &mut textarea,
+            &mut state,
+        );
+        assert!(matches!(outcome, RunningKeyOutcome::Continue));
+        assert!(
+            state.transcript_scroll.get().following,
+            "a mid-turn steering submission must re-arm follow"
+        );
+
+        // The queue-follow-up binding queues a follow-up during the run → follow
+        // re-arms too. (Default `alt+enter` is caught by the plain-Enter steer
+        // branch above, so bind it to a distinct key to reach the follow-up path.)
+        let mut kb_followup = kb.clone();
+        kb_followup.queue_follow_up = "ctrl+g".to_string();
+        detached(&state);
+        let mut textarea = fresh_textarea();
+        textarea.insert_str("and then this");
+        let outcome = handle_running_key(
+            key(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            &kb_followup,
+            &control,
+            &mut textarea,
+            &mut state,
+        );
+        assert!(matches!(outcome, RunningKeyOutcome::Continue));
+        assert!(
+            state.transcript_scroll.get().following,
+            "a mid-turn follow-up submission must re-arm follow"
         );
     }
 
