@@ -920,6 +920,12 @@ impl CodingSession {
             };
             self.invalidate_context_usage_cache();
             while let Some(event) = events.next().await {
+                // Fan each canonical agent event out to subscribed extensions
+                // (tau's harness listener, dispatched inline here). Guarded so a
+                // session with no extensions pays nothing.
+                if self.extension_runtime.has_extensions() {
+                    self.extension_runtime.on_agent_event(&event).await;
+                }
                 if let AgentEvent::MessageEnd(ref e) = event {
                     let Some(count) =
                         self.persist_or_log(persisted_count, &context, "agent_loop").await
@@ -993,6 +999,9 @@ impl CodingSession {
                     if let Ok(mut retry_events) = self.harness.continue_() {
                         self.invalidate_context_usage_cache();
                         while let Some(event) = retry_events.next().await {
+                            if self.extension_runtime.has_extensions() {
+                                self.extension_runtime.on_agent_event(&event).await;
+                            }
                             if let AgentEvent::MessageEnd(ref e) = event {
                                 let Some(count) = self
                                     .persist_or_log(retry_persisted, &context, "agent_loop_retry")
@@ -1055,6 +1064,12 @@ impl CodingSession {
             };
             self.invalidate_context_usage_cache();
             while let Some(event) = events.next().await {
+                // Fan each canonical agent event out to subscribed extensions
+                // (tau's harness listener, dispatched inline here). Guarded so a
+                // session with no extensions pays nothing.
+                if self.extension_runtime.has_extensions() {
+                    self.extension_runtime.on_agent_event(&event).await;
+                }
                 if let AgentEvent::MessageEnd(ref e) = event {
                     let Some(count) =
                         self.persist_or_log(persisted_count, &context, "agent_loop").await

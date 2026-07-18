@@ -955,6 +955,74 @@ async fn session_exposes_extension_tools_guidelines_and_commands() {
     assert!(result.handled);
 }
 
+/// The live agent-event fan-out: an extension subscribed to the `agent_event`
+/// wildcard observes the canonical events of a real session run (tau's harness
+/// listener, dispatched inline in `CodingSession::prompt`).
+#[tokio::test]
+async fn agent_events_reach_subscribed_extension_during_a_session_run() {
+    use futures::StreamExt;
+    use rho_agent::messages::{AssistantContent, AssistantMessage};
+    use rho_agent::provider_events::{
+        AssistantDoneEvent, AssistantMessageEvent, AssistantStartEvent, DoneReason, TextDeltaEvent,
+    };
+
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let observer = FakeExtension::new("observer").on_any_agent_event(move |ev| {
+        sink.lock().unwrap().push(ev.event_type.clone());
+        Ok(())
+    });
+    let host = FakeExtensionHost::with([observer]);
+    let mut runtime = ExtensionRuntime::with_host(host);
+    runtime.load_discovered(vec![spec("observer")]).await;
+
+    // One scripted assistant text turn (Start / TextDelta / Done::Stop).
+    let assistant = AssistantMessage::new(vec![AssistantContent::Text(TextContent::new("hi"))])
+        .with_model("fake");
+    let stream = vec![
+        AssistantMessageEvent::Start(AssistantStartEvent::new(
+            AssistantMessage::new(vec![]).with_model("fake"),
+        )),
+        AssistantMessageEvent::TextDelta(TextDeltaEvent::new(0, "hi", assistant.clone())),
+        AssistantMessageEvent::Done(AssistantDoneEvent::new(DoneReason::Stop, assistant)),
+    ];
+    let provider = Arc::new(rho_agent::fake::FakeProvider::new(vec![stream]));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let mut config = CodingSessionConfig::new(provider, "fake", storage, cwd.clone());
+    config.resource_paths = Some(RhoResourcePaths {
+        root: tmp.path().join("home"),
+        cwd: Some(cwd.clone()),
+        agents_root: Some(tmp.path().join("agents")),
+        paths: None,
+    });
+    config.extension_runtime = Some(runtime);
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    {
+        let events = session.prompt("hello".to_string(), None);
+        futures::pin_mut!(events);
+        while events.next().await.is_some() {}
+    }
+
+    let observed = seen.lock().unwrap().clone();
+    assert!(
+        observed.iter().any(|t| t == "turn_start"),
+        "extension missed turn_start: {observed:?}"
+    );
+    assert!(
+        observed.iter().any(|t| t == "turn_end"),
+        "extension missed turn_end: {observed:?}"
+    );
+    assert!(
+        observed.iter().any(|t| t == "message_end"),
+        "extension missed message_end: {observed:?}"
+    );
+}
+
 #[test]
 fn explicit_directory_path_loads_contained_components() {
     let tmp = tempfile::tempdir().unwrap();
