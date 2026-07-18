@@ -206,7 +206,15 @@ ignoring {} extension spec(s) for this session.",
 
     let session = build_interactive_session(&cli).await?;
     let paths = rho_coding::paths::RhoPaths::default();
-    let settings = rho_tui::load_tui_settings(&paths).unwrap_or_default();
+    // Malformed `tui.json` shouldn't be silently ignored: warn (so the user knows
+    // why their theme/keybindings were dropped) and fall back to defaults.
+    let settings = match rho_tui::load_tui_settings(&paths) {
+        Ok(settings) => settings,
+        Err(err) => {
+            eprintln!("Warning: ignoring invalid TUI settings ({err}); using defaults.");
+            rho_tui::TuiSettings::default()
+        }
+    };
     Box::pin(rho_tui::app::run_tui(session, settings))
         .await
         .map_err(|err| format!("TUI error: {err}"))?;

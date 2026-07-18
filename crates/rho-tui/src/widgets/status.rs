@@ -6,8 +6,10 @@
 //! (thinking)`. There is no cost figure and no elapsed timer — token usage is the
 //! only quantitative field (confirmed against `app.py`'s chrome).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -105,28 +107,59 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Resolve the current git branch for `cwd`, returning `"--"` on any failure
-/// (tau `_git_branch`: `git -C cwd branch --show-current`, 0.5s timeout).
-///
-/// The 0.5s timeout tau applies is approximated by a plain blocking call here;
-/// callers snapshot this once per chrome refresh, never per frame.
+/// The deadline tau applies to the git-branch lookup (`_git_branch`, `timeout=0.5`).
+const GIT_BRANCH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Resolve the current git branch for `cwd`, returning `"--"` on any failure or if
+/// git does not finish within 500 ms (tau `_git_branch`: `git -C cwd branch
+/// --show-current`, `timeout=0.5`). The deadline keeps a stalled git/filesystem
+/// from blocking the synchronous chrome refresh indefinitely; the child is killed
+/// and reaped before returning `"--"`.
 #[must_use]
 pub fn git_branch(cwd: &Path) -> String {
-    let output = Command::new("git")
+    let Ok(mut child) = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(["branch", "--show-current"])
-        .output();
-    match output {
-        Ok(out) => {
-            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if branch.is_empty() {
-                "--".to_string()
-            } else {
-                branch
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return "--".to_string();
+    };
+
+    let deadline = Instant::now() + GIT_BRANCH_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return "--".to_string();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return "--".to_string();
             }
         }
-        Err(_) => "--".to_string(),
+    }
+
+    // The `branch --show-current` output is a single short line, so the pipe never
+    // fills before the child exits (no writer-blocks-on-full-pipe deadlock).
+    let mut output = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut output);
+    }
+    let branch = output.trim();
+    if branch.is_empty() {
+        "--".to_string()
+    } else {
+        branch.to_string()
     }
 }
 
@@ -157,9 +190,13 @@ fn fit_two_columns(left: &str, right: &str, width: usize, style: Style) -> Line<
     }
     let right_w = right.width();
     let left_w = left.width();
-    if right_w >= width {
+    if right_w > width {
         // Right column alone overflows; show as much of it as fits.
         return Line::from(Span::styled(truncate_to_width(right, width), style));
+    }
+    if right_w == width {
+        // Exactly fills the line — show it whole, no left column, no truncation.
+        return Line::from(Span::styled(right.to_string(), style));
     }
     let available_left = width - right_w;
     let (left_str, left_used) = if left_w + 1 > available_left {
@@ -181,13 +218,18 @@ fn fit_two_columns(left: &str, right: &str, width: usize, style: Style) -> Line<
 
 fn truncate_to_width(text: &str, max: usize) -> String {
     use unicode_width::UnicodeWidthChar;
+    use unicode_width::UnicodeWidthStr;
     if max == 0 {
         return String::new();
+    }
+    // If the text already fits, return it verbatim — never spend a cell on an
+    // ellipsis for text that fits exactly (the off-by-one CodeRabbit flagged).
+    if text.width() <= max {
+        return text.to_string();
     }
     let mut out = String::new();
     let mut used = 0usize;
     let ellipsis_w = 1;
-    // Reserve room for an ellipsis if we actually truncate.
     for ch in text.chars() {
         let cw = ch.width().unwrap_or(0);
         if used + cw > max.saturating_sub(ellipsis_w) {

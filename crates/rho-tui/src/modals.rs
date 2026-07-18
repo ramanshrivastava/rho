@@ -361,10 +361,10 @@ impl ModelPickerModal {
         provider_name: String,
         kind: ModelPickerKind,
     ) -> Self {
-        let mode = match kind {
-            ModelPickerKind::Model => ModelPickerMode::All,
-            ModelPickerKind::Scoped => ModelPickerMode::Scoped,
-        };
+        // tau opens BOTH kinds on the "all models" list (`self.mode = "all"`): the
+        // scoped editor must show every model so unscoped ones can be ADDED, not
+        // just removed. Only the model kind can Tab to the scoped-only view.
+        let mode = ModelPickerMode::All;
         let mut modal = Self {
             choices,
             scoped,
@@ -933,6 +933,30 @@ mod tests {
         assert_eq!(modal.mode, ModelPickerMode::Scoped);
         // scoped tab shows only scoped models
         assert_eq!(modal.visible().len(), 1);
+    }
+
+    #[test]
+    fn scoped_editor_shows_all_models_so_they_can_be_added() {
+        // Regression: the scoped-model EDITOR must open on the full model list so
+        // an unscoped model can be added (not just removed), and Tab must NOT
+        // switch it to the scoped-only view.
+        let mut modal = ModelPickerModal::new(
+            vec![choice("a"), choice("b"), choice("c")],
+            vec![choice("b")],
+            "a".into(),
+            "anthropic".into(),
+            ModelPickerKind::Scoped,
+        );
+        assert_eq!(modal.mode, ModelPickerMode::All);
+        assert_eq!(modal.visible().len(), 3);
+        modal.handle_key(key(KeyCode::Tab)); // no-op for the scoped kind
+        assert_eq!(modal.mode, ModelPickerMode::All);
+        // Enter on an unscoped model toggles it INTO the scoped set (stays open).
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::ScopedToggle(choice("a"))
+        );
+        assert!(modal.scoped.contains(&choice("a")));
     }
 
     #[test]

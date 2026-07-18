@@ -638,7 +638,12 @@ fn read_line_suffix(arguments: &JsonMap) -> String {
     let start = offset.map_or(1, |o| o.max(1));
     match limit {
         None => format!(":{start}-"),
-        Some(limit) => format!(":{start}-{}", start + limit.max(1) - 1),
+        // tau computes this with Python's arbitrary-precision ints; widen to i128
+        // so a large-but-valid i64 offset+limit can't wrap or panic on overflow.
+        Some(limit) => {
+            let end = i128::from(start) + i128::from(limit.max(1)) - 1;
+            format!(":{start}-{end}")
+        }
     }
 }
 

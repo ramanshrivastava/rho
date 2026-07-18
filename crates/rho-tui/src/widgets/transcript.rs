@@ -220,6 +220,21 @@ fn build_tool_body_lines(
             ));
         }
     }
+    // `_visible_chat_text`: while a tool is still executing (no final result)
+    // any recorded live progress (`record_tool_update`) is surfaced as a
+    // trailing `… {update}` block, regardless of the expand toggle.
+    if item.tool_result_text.is_none() {
+        if let Some(update) = &item.update_text {
+            lines.push(Line::default());
+            lines.extend(render_role_body(
+                &format!("… {update}"),
+                item.role,
+                theme,
+                body_style,
+                inner_width,
+            ));
+        }
+    }
     lines
 }
 
@@ -298,8 +313,10 @@ fn split_tool_invocation(text: &str) -> (&str, &str, &str) {
             .unwrap_or("");
         return ("→ ", name, remainder);
     }
-    if let Some(rest) = text.strip_prefix("$ ") {
-        return ("$", "", rest);
+    if text.starts_with("$ ") {
+        // tau keeps the space after the `$` marker so the tail reads `$ cmd`,
+        // not `$cmd`: `_split_tool_invocation` returns `("$", "", text[1:])`.
+        return ("$", "", &text[1..]);
     }
     let (name, sep_remainder) = text.split_once(' ').unwrap_or((text, ""));
     let remainder = if sep_remainder.is_empty() {
@@ -350,7 +367,10 @@ fn render_patch_body(
     if patch.trim().is_empty() {
         return None;
     }
-    let before = format!("{}Patch:", &text[..marker_index]);
+    // tau builds `f"{before_patch}{marker.rstrip()}"` where `marker` is
+    // `"\nPatch:\n"`, so the leading newline of the marker is preserved and the
+    // preamble stays separated from the `Patch:` label.
+    let before = format!("{}\nPatch:", &text[..marker_index]);
     let mut lines = plain_lines(&before, body_style, inner_width);
     lines.extend(code_block_lines(
         patch.trim_end_matches('\n'),
@@ -467,19 +487,30 @@ fn code_block_lines(
     let max = inner_width.max(1);
     let mut lines = Vec::new();
     for raw in code.split('\n') {
-        let truncated = if raw.chars().count() <= max {
-            raw.to_string()
-        } else {
-            // Keep cells within the body width.
-            let taken: String = raw.chars().take(max).collect();
-            taken
-        };
-        lines.push(Line::styled(truncated, code_style));
+        lines.push(Line::styled(truncate_to_width(raw, max), code_style));
     }
     if lines.is_empty() {
         lines.push(Line::styled(String::new(), code_style));
     }
     lines
+}
+
+/// Truncate `text` so it occupies at most `max` terminal cells, accumulating
+/// display width (CJK/emoji are two cells wide) rather than character count so
+/// a wide-char line never overflows the body width. Mirrors the hard-wrap loop
+/// in [`wrap_spans`].
+fn truncate_to_width(text: &str, max: usize) -> String {
+    let mut buf = String::new();
+    let mut width = 0;
+    for ch in text.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cw > max {
+            return buf;
+        }
+        buf.push(ch);
+        width += cw;
+    }
+    buf
 }
 
 /// `_has_unclosed_fence`.
@@ -830,7 +861,21 @@ mod tests {
 
     #[test]
     fn split_invocation_dollar() {
-        assert_eq!(split_tool_invocation("$ ls -la"), ("$", "", "ls -la"));
+        // The space after `$` is preserved so the invocation renders `$ ls -la`.
+        assert_eq!(split_tool_invocation("$ ls -la"), ("$", "", " ls -la"));
+    }
+
+    #[test]
+    fn render_invocation_dollar_keeps_space() {
+        let body = s("#d8dee9");
+        let accent = s("#9cffb1");
+        let lines = render_tool_invocation("$ ls -la", body, accent, 60);
+        let rendered: String = lines[0]
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert_eq!(rendered, "$ ls -la");
     }
 
     #[test]
@@ -959,5 +1004,85 @@ mod tests {
         let theme = crate::theme::tau_dark_theme();
         let body = s("#cbd5e1 on #000000");
         assert!(render_patch_body("✓ edit\n\nPatch:\n   ", &theme, body, 60).is_none());
+    }
+
+    #[test]
+    fn patch_body_preserves_newline_before_marker() {
+        let theme = crate::theme::tau_dark_theme();
+        let body = s("#cbd5e1 on #000000");
+        let text = "✓ edit\n\nbefore\nPatch:\n--- a\n+++ b";
+        let lines = render_patch_body(text, &theme, body, 60).expect("patch");
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        // `before` and `Patch:` stay on separate lines — not fused as `beforePatch:`.
+        assert!(rendered.iter().any(|l| l == "before"), "{rendered:?}");
+        assert!(rendered.iter().any(|l| l == "Patch:"), "{rendered:?}");
+        assert!(
+            !rendered.iter().any(|l| l.contains("beforePatch:")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn tool_body_renders_update_text_without_result() {
+        let theme = crate::theme::tau_dark_theme();
+        let body = s("#d8dee9");
+        let mut item = ChatItem::new(ChatItemRole::Tool, "$ ls -la".into());
+        item.update_text = Some("running…".into());
+        // No tool_result_text yet, and results collapsed.
+        let state = TuiState::new();
+        let lines = build_tool_body_lines(&item, &state, &theme, body, 60);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().any(|l| l.contains("… running…")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn tool_body_hides_update_once_result_present() {
+        let theme = crate::theme::tau_dark_theme();
+        let body = s("#d8dee9");
+        let mut item = ChatItem::new(ChatItemRole::Tool, "$ ls -la".into());
+        item.update_text = Some("running…".into());
+        item.tool_result_text = Some("✓ bash\nok".into());
+        let state = TuiState::new();
+        let lines = build_tool_body_lines(&item, &state, &theme, body, 60);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|sp| sp.content.as_ref()).collect())
+            .collect();
+        assert!(
+            !rendered.iter().any(|l| l.contains("… running…")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn code_block_truncates_wide_chars_by_cell_width() {
+        let theme = crate::theme::tau_dark_theme();
+        let body = s("#cbd5e1 on #000000");
+        // Ten CJK chars, each two cells wide; inner_width 10 → 5 chars, 10 cells.
+        let wide = "你好世界你好世界你好";
+        let lines = code_block_lines(wide, &theme, body, 10);
+        assert_eq!(lines.len(), 1);
+        let rendered: String = lines[0]
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(
+            unicode_width::UnicodeWidthStr::width(rendered.as_str()) <= 10,
+            "width was {}",
+            unicode_width::UnicodeWidthStr::width(rendered.as_str())
+        );
+        // Char-count truncation would have kept 10 chars (20 cells); width-based
+        // truncation keeps 5.
+        assert_eq!(rendered.chars().count(), 5);
     }
 }

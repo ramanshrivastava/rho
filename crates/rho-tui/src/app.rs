@@ -32,6 +32,8 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use tui_textarea::TextArea;
 
@@ -50,7 +52,7 @@ use crate::theme::{TuiKeybindings, TuiSettings, TuiTheme};
 use crate::widgets::status::git_branch;
 use crate::widgets::{
     FooterMode, SidebarInfo, StatusInfo, render_compact_session_info, render_completion_popup,
-    render_footer, render_prompt_prefix, render_queued_messages, render_sidebar, render_transcript,
+    render_footer, render_prompt_prefix, render_queued_messages, render_sidebar,
 };
 
 /// A snapshot of session-derived chrome, captured so the render layer never
@@ -66,7 +68,6 @@ pub struct ChromeSnapshot {
 /// The interactive TUI application state (tau `TauTuiApp`).
 pub struct App {
     session: CodingSession,
-    control: HarnessControl,
     registry: CommandRegistry,
     state: TuiState,
     settings: TuiSettings,
@@ -85,7 +86,6 @@ impl App {
     /// Build an app around a loaded session.
     #[must_use]
     pub fn new(mut session: CodingSession, settings: TuiSettings) -> Self {
-        let control = session.control();
         let theme = settings.resolved_theme();
         let cwd = session.cwd().to_path_buf();
         let mut state = TuiState::new();
@@ -97,7 +97,6 @@ impl App {
         textarea.set_placeholder_text("Type a message, /command, or !shell");
         Self {
             registry: create_default_command_registry(),
-            control,
             state,
             settings,
             theme,
@@ -235,11 +234,7 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
     let queued_lines = ctx.state.queued_steering.len() + ctx.state.queued_follow_up.len();
     let queued_h = u16::try_from(queued_lines.min(8)).unwrap_or(8);
     let prompt_h = u16::try_from(ctx.textarea.lines().len().clamp(1, 8)).unwrap_or(8);
-    let completion_h = if ctx.completion.items.is_empty() {
-        0
-    } else {
-        completion_popup_height(ctx.completion)
-    };
+    let completion_h = completion_popup_height(ctx.completion, ctx.theme);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -280,11 +275,14 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
     }
 }
 
-fn completion_popup_height(completion: &CompletionState) -> u16 {
-    // Approximate: one line per item plus category separators, capped at 12.
-    let mut height = completion.items.len();
-    height = height.min(12);
-    u16::try_from(height.max(1)).unwrap_or(1)
+fn completion_popup_height(completion: &CompletionState, theme: &TuiTheme) -> u16 {
+    if completion.items.is_empty() {
+        return 0;
+    }
+    // Count the ACTUAL rendered rows (category headers + blank separators), not
+    // just the item count, so the selected item is never clipped. Capped at 12.
+    let rows = crate::widgets::build_completion_lines(completion, theme).len();
+    u16::try_from(rows.clamp(1, 12)).unwrap_or(12)
 }
 
 /// Render the prompt-prefix cell + the editable text area.
@@ -303,22 +301,23 @@ fn render_prompt_row(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     frame.render_widget(ctx.textarea, cols[1]);
 }
 
-/// Render the transcript, following the bottom when it overflows the viewport.
+/// Render the transcript, following the bottom when it overflows the viewport so
+/// the newest turns and streaming output stay visible (tau auto-scrolls to the
+/// tail on new content).
 fn render_transcript_scrolled(frame: &mut Frame, area: Rect, state: &TuiState, theme: &TuiTheme) {
-    render_transcript(frame, area, state, theme);
+    let lines = crate::widgets::build_transcript_lines(state, theme, area.width);
+    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let offset = total.saturating_sub(area.height);
+    let bg = crate::widgets::parse_color(&theme.transcript_background)
+        .map_or_else(Style::default, |color| Style::default().bg(color));
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)).style(bg), area);
 }
 
 fn seed_transcript(state: &mut TuiState, session: &CodingSession) {
-    // Replay the persisted transcript through the adapter so a resumed session
-    // shows its history (tau rebuilds the transcript from the session on mount).
-    let mut adapter = TuiEventAdapter::new(state);
-    for message in session.messages() {
-        adapter.apply(&rho_coding::events::CodingSessionEvent::Agent(
-            rho_agent::events::AgentEvent::MessageEnd(rho_agent::events::MessageEndEvent::new(
-                message,
-            )),
-        ));
-    }
+    // tau rebuilds the transcript from the session on mount. `load_messages`
+    // renders every message shape (tool calls/results, thinking, branch/compaction
+    // summaries); the event adapter's `MessageEnd` path silently drops those.
+    state.load_messages(&session.messages());
 }
 
 /// Build the chrome snapshot from the live session.
@@ -419,14 +418,18 @@ impl App {
             if self.should_quit {
                 return Ok(());
             }
-            let Some(Ok(event)) = events.next().await else {
-                continue;
-            };
-            if let Event::Key(key) = event {
-                if key.kind == KeyEventKind::Release {
-                    continue;
+            match events.next().await {
+                Some(Ok(Event::Key(key))) => {
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    self.handle_key_idle(key, terminal, &mut events).await?;
                 }
-                self.handle_key_idle(key, terminal, &mut events).await?;
+                Some(Ok(_)) => {} // resize / mouse / paste — redraw next iteration.
+                Some(Err(err)) => return Err(err),
+                // Terminal input closed: exit cleanly instead of spinning on a
+                // now-always-ready `None`.
+                None => return Ok(()),
             }
         }
     }
@@ -543,13 +546,27 @@ impl App {
                 self.theme = self.settings.resolved_theme();
                 self.modal = None;
             }
-            ModalOutcome::Model(choice) => {
-                let _ = self.session.set_model_choice(&choice);
-                self.refresh_chrome();
-                self.modal = None;
-            }
+            ModalOutcome::Model(choice) => match self.session.set_model_choice(&choice) {
+                Ok(()) => {
+                    self.refresh_chrome();
+                    self.modal = None;
+                }
+                Err(err) => {
+                    self.modal = Some(Modal::Notice(crate::modals::NoticeModal::new(
+                        "Model",
+                        err.to_string(),
+                    )));
+                }
+            },
             ModalOutcome::ScopedToggle(choice) => {
-                let _ = self.session.toggle_scoped_model(&choice);
+                // The picker already updated its own membership; surface a failure
+                // to persist so the two don't silently drift.
+                if let Err(err) = self.session.toggle_scoped_model(&choice) {
+                    self.modal = Some(Modal::Notice(crate::modals::NoticeModal::new(
+                        "Scoped models",
+                        err.to_string(),
+                    )));
+                }
             }
             ModalOutcome::Session(_id) => {
                 // Resume-in-place requires rebuilding the session; deferred to the
@@ -567,7 +584,7 @@ impl App {
             }
             ModalOutcome::Branch(result) => {
                 let replace_instructions = result.custom_instructions.is_some();
-                let _ = self
+                match self
                     .session
                     .branch_to_entry(
                         &result.entry_id,
@@ -575,11 +592,23 @@ impl App {
                         result.custom_instructions.as_deref(),
                         replace_instructions,
                     )
-                    .await;
-                self.state = TuiState::new();
-                seed_transcript(&mut self.state, &self.session);
-                self.refresh_chrome();
-                self.modal = None;
+                    .await
+                {
+                    Ok(_) => {
+                        // Only rebuild the transcript once the branch succeeded —
+                        // a failed branch must leave the current session intact.
+                        self.state = TuiState::new();
+                        seed_transcript(&mut self.state, &self.session);
+                        self.refresh_chrome();
+                        self.modal = None;
+                    }
+                    Err(err) => {
+                        self.modal = Some(Modal::Notice(crate::modals::NoticeModal::new(
+                            "Branch",
+                            err.to_string(),
+                        )));
+                    }
+                }
             }
         }
     }
@@ -610,6 +639,31 @@ impl App {
         self.prompt_history.push(text.clone());
         self.clear_prompt();
 
+        // Terminal command (`!cmd` / `!!cmd`): run it locally instead of prompting
+        // the model (tau routes these before the agent turn; print mode too).
+        if let Some(request) = rho_coding::session::parse_terminal_command(&text) {
+            match self
+                .session
+                .run_terminal_command(&request.command, request.add_to_context)
+                .await
+            {
+                Ok(result) => {
+                    let title = format!("$ {}", result.command);
+                    self.modal = Some(Modal::CommandOutput(
+                        crate::modals::CommandOutputModal::new(title, result.output),
+                    ));
+                }
+                Err(err) => {
+                    self.modal = Some(Modal::Notice(crate::modals::NoticeModal::new(
+                        "Terminal command",
+                        err.to_string(),
+                    )));
+                }
+            }
+            self.refresh_chrome();
+            return Ok(());
+        }
+
         // Slash command dispatch (tau `session.handle_command`).
         if trimmed.starts_with('/') && !trimmed.starts_with("//") {
             let result = self.session.handle_command(trimmed);
@@ -622,13 +676,13 @@ impl App {
             // matching tau (an unhandled `/x` is submitted verbatim).
         }
 
-        // Running: queue as a steering message; idle: start a turn.
-        if self.control.is_running() {
-            self.control.steer(&text);
-            self.state.update_queue(
-                queue_texts(&self.control, true),
-                queue_texts(&self.control, false),
-            );
+        // Running: queue as a steering message; idle: start a turn. Take the
+        // control handle from the current harness (never a stale cached one).
+        if self.session.is_running() {
+            let control = self.session.control();
+            control.steer(&text);
+            self.state
+                .update_queue(queue_texts(&control, true), queue_texts(&control, false));
             return Ok(());
         }
         self.run_turn(text, terminal, events).await
@@ -733,7 +787,10 @@ impl App {
         terminal: &mut Terminal<Backend>,
         events: &mut EventStream,
     ) -> io::Result<()> {
-        let control = self.control.clone();
+        // Acquire the control handle from the CURRENT harness: a model/provider
+        // switch or a branch can rebuild the harness, so a handle captured earlier
+        // would target a stale run's cancel token + queues (CR).
+        let control = self.session.control();
         let keybindings = self.settings.keybindings.clone();
         // Scope the disjoint field borrows (and the `session`-borrowing stream)
         // so they all drop before we touch `self` again after the turn.
@@ -786,9 +843,16 @@ impl App {
                         );
                     }
                     maybe_key = events.next() => {
-                        if let Some(Ok(Event::Key(key))) = maybe_key {
-                            if key.kind != KeyEventKind::Release {
+                        match maybe_key {
+                            Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
                                 handle_running_key(key, &keybindings, &control, textarea, state);
+                            }
+                            Some(Ok(_)) => {}
+                            // Input closed / errored mid-turn: cancel the run and
+                            // stop draining events so we don't spin on a ready `None`.
+                            Some(Err(_)) | None => {
+                                control.cancel();
+                                break;
                             }
                         }
                     }
@@ -796,6 +860,13 @@ impl App {
             }
         }
         self.state.tool_spinner = None;
+        // Surface a run error the session recorded (tau shows the failure in the
+        // transcript after the turn settles).
+        if let Some(error) = self.session.take_run_error() {
+            self.state.error = Some(error.clone());
+            self.state
+                .add_item(crate::state::ChatItemRole::Error, format!("Error: {error}"));
+        }
         self.refresh_chrome();
         Ok(())
     }
@@ -907,21 +978,22 @@ fn matches_binding(key: &KeyEvent, spec: &str) -> bool {
     if wants_alt != mods.contains(KeyModifiers::ALT) {
         return false;
     }
-    // Shift is implied for uppercase/`shift+` specs; only enforce when requested.
-    if wants_shift && !mods.contains(KeyModifiers::SHIFT) {
-        return false;
-    }
+    let has_shift = mods.contains(KeyModifiers::SHIFT);
     match key.code {
+        // Letters carry Shift in their case, so don't enforce the Shift modifier.
         KeyCode::Char(c) => {
             base.len() == 1 && c.eq_ignore_ascii_case(&base.chars().next().unwrap())
         }
-        KeyCode::Esc => base == "escape" || base == "esc",
-        KeyCode::Enter => base == "enter",
-        KeyCode::Tab | KeyCode::BackTab => base == "tab",
-        KeyCode::Up => base == "up",
-        KeyCode::Down => base == "down",
-        KeyCode::Left => base == "left",
-        KeyCode::Right => base == "right",
+        // `BackTab` IS Shift+Tab: it must match a `shift+tab` spec and NEVER a plain
+        // `tab` spec (else Shift+Tab would fire `accept_completion`).
+        KeyCode::BackTab => base == "tab" && wants_shift,
+        KeyCode::Tab => base == "tab" && !wants_shift && !has_shift,
+        KeyCode::Esc => (base == "escape" || base == "esc") && wants_shift == has_shift,
+        KeyCode::Enter => base == "enter" && wants_shift == has_shift,
+        KeyCode::Up => base == "up" && wants_shift == has_shift,
+        KeyCode::Down => base == "down" && wants_shift == has_shift,
+        KeyCode::Left => base == "left" && wants_shift == has_shift,
+        KeyCode::Right => base == "right" && wants_shift == has_shift,
         _ => false,
     }
 }
@@ -963,6 +1035,35 @@ mod tests {
     fn binding_matches_shift_tab() {
         assert!(matches_binding(
             &key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            "shift+tab"
+        ));
+        // BackTab arrives with or without the SHIFT modifier depending on the
+        // terminal; either way it is Shift+Tab.
+        assert!(matches_binding(
+            &key(KeyCode::BackTab, KeyModifiers::empty()),
+            "shift+tab"
+        ));
+    }
+
+    #[test]
+    fn shift_tab_never_matches_plain_tab() {
+        // Regression: Shift+Tab (BackTab) must NOT fire the plain `tab` binding
+        // (accept_completion), so it can reach thinking_cycle / completion_previous.
+        assert!(!matches_binding(
+            &key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            "tab"
+        ));
+        assert!(!matches_binding(
+            &key(KeyCode::BackTab, KeyModifiers::empty()),
+            "tab"
+        ));
+        // Plain Tab still matches the plain `tab` binding, and not `shift+tab`.
+        assert!(matches_binding(
+            &key(KeyCode::Tab, KeyModifiers::empty()),
+            "tab"
+        ));
+        assert!(!matches_binding(
+            &key(KeyCode::Tab, KeyModifiers::empty()),
             "shift+tab"
         ));
     }
