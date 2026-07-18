@@ -158,7 +158,7 @@ becomes the full language triangle (JIT-warmed Node vs interpreted Python vs
 compiled Rust). Engineering log for the pi side:
 
 - **Measure the installed binary, pinned to its source rev.** The current pi
-  source is `earendil-works/pi` (rev pinned in `fixtures/PI_REV`, e.g.
+  source is `earendil-works/pi` (rev pinned in `tools/bench/PI_REV`, e.g.
   `3da591ab`), whose package set is v0.80.10 — matching the installed `pi` on
   PATH exactly. (An older `badlogic/pi-mono` checkout also exists locally at
   v0.57.1 under the `@mariozechner` scope; it is 4 months stale and is **not**

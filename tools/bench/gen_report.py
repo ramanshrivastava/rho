@@ -188,8 +188,8 @@ def collect_meta() -> dict:
     tau_rev = (REPO_ROOT / "fixtures" / "TAU_REV").read_text().strip() if (
         REPO_ROOT / "fixtures" / "TAU_REV"
     ).exists() else "unknown"
-    pi_rev = (REPO_ROOT / "fixtures" / "PI_REV").read_text().strip() if (
-        REPO_ROOT / "fixtures" / "PI_REV"
+    pi_rev = (REPO_ROOT / "tools" / "bench" / "PI_REV").read_text().strip() if (
+        REPO_ROOT / "tools" / "bench" / "PI_REV"
     ).exists() else "unknown"
     return {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
@@ -248,7 +248,7 @@ def render_md(records: list[dict], meta: dict) -> str:
     a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; {meta['uv']}; Node {meta.get('node', '?')}")
     a(f"- **pi**: v{meta.get('pi_version', '?')}, the installed `pi` binary (Node via fnm), "
       f"corresponding to `earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` "
-      "(fixtures/PI_REV) — its package set is v" + str(meta.get("pi_version", "?")) +
+      "(tools/bench/PI_REV) — its package set is v" + str(meta.get("pi_version", "?")) +
       ", matching the installed binary exactly. Cold start measures pi both via the fnm PATH "
       "shim (\"what users type\") and via the real node binary + resolved `dist/cli.js` entry "
       "(\"direct\"), mirroring tau's uv-run-vs-venv split. In-process families import the "
@@ -608,7 +608,7 @@ def render_md(records: list[dict], meta: dict) -> str:
       "import the **installed** binary's own bundled internals "
       "(`@earendil-works/pi-{ai,agent-core}`, v" + str(meta.get("pi_version", "?")) +
       f"), never a rebuild, so they measure the shipped code, pinned to "
-      f"`earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` (fixtures/PI_REV). "
+      f"`earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` (tools/bench/PI_REV). "
       "pi runs `PI_OFFLINE=1` during startup timing to disable its version/catalog "
       "network probe. Family (c) has no pi row for the architectural reason stated there.\n")
 
