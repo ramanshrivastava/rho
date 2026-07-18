@@ -329,8 +329,10 @@ fn render_transcript_scrolled(
     theme: &TuiTheme,
     cache: &RefCell<crate::widgets::TranscriptCache>,
 ) {
-    // A fresh session shows the rho welcome splash instead of a blank pane.
-    if crate::widgets::transcript_is_empty(state) {
+    // A fresh, idle session shows the rho welcome splash instead of a blank pane.
+    // Gated on `!running` so it never flashes during the first turn before the
+    // user message / first delta lands in the transcript.
+    if !state.running && crate::widgets::transcript_is_empty(state) {
         crate::widgets::render_splash(frame, area, theme);
         return;
     }
