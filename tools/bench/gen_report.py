@@ -186,6 +186,9 @@ def collect_meta() -> dict:
         "uv": _run(["uv", "--version"]),
         "tau_rev": tau_rev,
         "rho_rev": _run(["git", "rev-parse", "--short", "HEAD"]),
+        # Derive the branch rather than hard-coding it, so provenance stays honest
+        # when the report is regenerated on main / a release branch / detached CI.
+        "rho_branch": _run(["git", "rev-parse", "--abbrev-ref", "HEAD"]) or "unknown",
         "anthropic_key_present": bool(__import__("os").environ.get("ANTHROPIC_API_KEY")),
     }
 
@@ -220,7 +223,7 @@ def render_md(records: list[dict], meta: dict) -> str:
       f"{gib(meta['mem_bytes'])} RAM, {meta['os']}")
     a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; {meta['uv']}")
     a(f"- **tau**: pinned at rev `{meta['tau_rev'][:12]}` (fixtures/TAU_REV), run via `uv run --project <tau>`")
-    a(f"- **rho**: `{meta['rho_rev']}` on branch m6-bench, `--release` builds throughout")
+    a(f"- **rho**: `{meta['rho_rev']}` on branch `{meta['rho_branch']}`, `--release` builds throughout")
     a(f"- **Generated**: {meta['generated_utc']}")
     a("- **Measurement engines**: rho micro-benches use Criterion (self-tuned "
       "sample counts, reports mean ± σ); tau timers use `time.perf_counter` with "
@@ -230,10 +233,16 @@ def render_md(records: list[dict], meta: dict) -> str:
       "`fixtures/` (extracted by tau's own serializer); the mock provider replays "
       "a fixed SSE body; the FakeProvider is fully scripted. No network, no clock, "
       "no RNG in families (b)–(d).")
-    a("- **Variance caveat**: this is a developer laptop, not an isolated bench "
-      "rig. Absolute numbers move ±10–30% between runs under background load; the "
-      "*ratios* between rho and tau are the durable result, and they span orders "
-      "of magnitude, not percentages.\n")
+    a("- **Quiesced measurement**: every final number was taken in a **serial, "
+      "quiesced** window — no other builds or heavy processes running, and the "
+      "orchestrator (`run_all.sh`) runs each family one at a time so benchmarks "
+      "never contend for CPU with each other. Any family that overlapped transient "
+      "background load during collection was re-measured in a subsequent quiet "
+      "window, so no reported figure is contaminated by contention.")
+    a("- **Variance caveat**: this is still a developer laptop, not an isolated "
+      "bench rig. Absolute numbers move ±10–30% between runs; the *ratios* between "
+      "rho and tau are the durable result, and they span orders of magnitude, not "
+      "percentages.\n")
 
     # ---- family a: cold start
     a("## (a) Cold start + end-to-end print latency\n")

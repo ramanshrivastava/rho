@@ -44,7 +44,10 @@ else
 fi
 
 echo "== [4/5] family (d): memory RSS =="
-bash tools/bench/rss.sh 500
+# No args → rss.sh runs its full default sweep (1 500 2000); the report's
+# baseline + crossover rows depend on all three, so `just bench` must not pin it
+# to a single turn count.
+bash tools/bench/rss.sh
 
 echo "== [5/5] report =="
 python3 tools/bench/gen_report.py
