@@ -1424,6 +1424,14 @@ impl App {
             }
             quit_requested
         };
+        self.finish_turn(quit_requested);
+        Ok(())
+    }
+
+    /// Post-turn cleanup: quit if requested, clear the running/spinner state, and
+    /// surface any run error the session recorded (tau shows the failure in the
+    /// transcript after the turn settles).
+    fn finish_turn(&mut self, quit_requested: bool) {
         if quit_requested {
             self.should_quit = true;
         }
@@ -1432,15 +1440,12 @@ impl App {
         // stream ended without a settle event (the adapter clears it on settle /
         // error, but a bare stream close would otherwise leave it stuck true).
         self.state.running = false;
-        // Surface a run error the session recorded (tau shows the failure in the
-        // transcript after the turn settles).
         if let Some(error) = self.session.take_run_error() {
             self.state.error = Some(error.clone());
             self.state
                 .add_item(crate::state::ChatItemRole::Error, format!("Error: {error}"));
         }
         self.refresh_chrome();
-        Ok(())
     }
 }
 

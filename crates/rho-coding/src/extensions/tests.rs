@@ -1113,18 +1113,18 @@ async fn agent_events_reach_subscribed_extension_during_a_session_run() {
         while events.next().await.is_some() {}
     }
 
-    let observed = seen.lock().unwrap().clone();
+    let recorded = seen.lock().unwrap().clone();
     assert!(
-        observed.iter().any(|t| t == "turn_start"),
-        "extension missed turn_start: {observed:?}"
+        recorded.iter().any(|t| t == "turn_start"),
+        "extension missed turn_start: {recorded:?}"
     );
     assert!(
-        observed.iter().any(|t| t == "turn_end"),
-        "extension missed turn_end: {observed:?}"
+        recorded.iter().any(|t| t == "turn_end"),
+        "extension missed turn_end: {recorded:?}"
     );
     assert!(
-        observed.iter().any(|t| t == "message_end"),
-        "extension missed message_end: {observed:?}"
+        recorded.iter().any(|t| t == "message_end"),
+        "extension missed message_end: {recorded:?}"
     );
 }
 
