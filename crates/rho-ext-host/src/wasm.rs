@@ -31,7 +31,16 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use wasmtime::component::{Component, HasSelf, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+
+/// CPU bound per guest call: a hook or tool invocation that burns this much
+/// fuel (a rough proxy for executed Wasm instructions) traps instead of hanging
+/// the host. Generous enough for legitimate work; a `loop {}` guest trips it.
+const FUEL_PER_CALL: u64 = 2_000_000_000;
+
+/// Memory ceiling per extension store: a guest that tries to grow past this
+/// fails the allocation cleanly rather than exhausting host memory.
+const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::host::{
@@ -72,6 +81,9 @@ struct StoreState {
     collector: InitCollector,
     wasi: WasiCtx,
     table: ResourceTable,
+    /// Memory/table/instance ceilings enforced by wasmtime (the resource
+    /// sandbox, complementing the empty-`WasiCtx` capability sandbox).
+    limits: StoreLimits,
 }
 
 impl StoreState {
@@ -84,6 +96,9 @@ impl StoreState {
             // no env, no sockets. A guest FS/net attempt therefore denies.
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
+            limits: StoreLimitsBuilder::new()
+                .memory_size(MAX_MEMORY_BYTES)
+                .build(),
         }
     }
 }
@@ -106,6 +121,22 @@ struct Instance {
 
 struct Inner {
     instances: HashMap<String, Instance>,
+}
+
+impl Inner {
+    /// Look up a loaded instance and reset its fuel budget for the next guest
+    /// call (so each hook/tool invocation gets a fresh CPU allowance rather than
+    /// sharing one cumulative budget across the extension's lifetime).
+    fn instance_mut(&mut self, extension: &str) -> Result<&mut Instance, HostError> {
+        let inst = self
+            .instances
+            .get_mut(extension)
+            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        // Best-effort: `set_fuel` only fails if fuel metering is disabled, which
+        // it never is here.
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
+        Ok(inst)
+    }
 }
 
 /// wasmtime component runtime for rho extensions.
@@ -134,6 +165,9 @@ impl WasmExtensionHost {
         // Async is always enabled with the `async` feature in wasmtime 46
         // (`async_support` is a deprecated no-op); the component model is on.
         config.wasm_component_model(true);
+        // Meter execution so a runaway guest (e.g. `loop {}` in a hook) traps
+        // instead of hanging the host; fuel is reset before every guest call.
+        config.consume_fuel(true);
         let engine =
             Engine::new(&config).map_err(|e| HostError::dispatch("", "engine", e.to_string()))?;
 
@@ -165,6 +199,11 @@ impl WasmExtensionHost {
         let mut state = StoreState::new(bridge);
         state.in_init = true;
         let mut store = Store::new(&self.engine, state);
+        // Enforce the memory ceiling and give `init` its fuel budget.
+        store.limiter(|s| &mut s.limits);
+        store
+            .set_fuel(FUEL_PER_CALL)
+            .map_err(|e| format!("fuel init failed: {e}"))?;
 
         let instance = bindings::Extension::instantiate_async(&mut store, &component, &self.linker)
             .await
@@ -208,15 +247,6 @@ fn parse_json(text: &str) -> Value {
 
 fn to_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
-}
-
-/// The JSON shape a guest's `call-tool` export returns (`{ text, details }`).
-#[derive(serde::Deserialize)]
-struct RawResult {
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    details: Option<Value>,
 }
 
 impl From<wit::ToolDef> for ToolDef {
@@ -393,10 +423,7 @@ impl ExtensionHost for WasmExtensionHost {
         arguments: &Value,
     ) -> Result<ToolCallResult, HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
 
         let result_json = inst
             .bindings
@@ -404,13 +431,23 @@ impl ExtensionHost for WasmExtensionHost {
             .await
             .map_err(dispatch_err(extension, "call_tool"))?;
 
-        let raw: RawResult = serde_json::from_str(&result_json).map_err(|e| {
+        let value: Value = serde_json::from_str(&result_json).map_err(|e| {
             HostError::dispatch(extension, "call_tool", format!("bad tool result JSON: {e}"))
         })?;
-        Ok(ToolCallResult {
-            text: raw.text,
-            details: raw.details,
-        })
+        let text = value
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // Distinguish an absent `details` (→ `None`, omitted downstream) from a
+        // present literal `null` (→ `Some(Value::Null)`, preserved) — a byte-compat
+        // requirement for free-form payloads. `map.get` is key-presence aware where
+        // a plain `Option<Value>` deserialize collapses both to `None`.
+        let details = match &value {
+            Value::Object(map) => map.get("details").cloned(),
+            _ => None,
+        };
+        Ok(ToolCallResult { text, details })
     }
 
     async fn on_input(
@@ -419,10 +456,7 @@ impl ExtensionHost for WasmExtensionHost {
         event: &InputEvent,
     ) -> Result<Option<InputOutcome>, HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
 
         let ev = wit::InputEvent {
             text: event.text.clone(),
@@ -455,10 +489,7 @@ impl ExtensionHost for WasmExtensionHost {
         event: &ToolCallEvent,
     ) -> Result<Option<ToolCallOutcome>, HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
 
         let ev = wit::ToolCallEvent {
             tool_name: event.tool_name.clone(),
@@ -483,10 +514,7 @@ impl ExtensionHost for WasmExtensionHost {
         event: &ToolResultEvent,
     ) -> Result<Option<ToolResultOutcome>, HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
 
         let ev = wit::ToolResultEvent {
             tool_name: event.tool_name.clone(),
@@ -512,10 +540,7 @@ impl ExtensionHost for WasmExtensionHost {
         event: &LifecycleEvent,
     ) -> Result<(), HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
         let ev = wit::LifecycleEvent {
             reason: event.reason.clone(),
         };
@@ -531,10 +556,7 @@ impl ExtensionHost for WasmExtensionHost {
         event: &LifecycleEvent,
     ) -> Result<(), HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
         let ev = wit::LifecycleEvent {
             reason: event.reason.clone(),
         };
@@ -550,10 +572,7 @@ impl ExtensionHost for WasmExtensionHost {
         event: &AgentHookEvent,
     ) -> Result<(), HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
         inst.bindings
             .call_on_agent_event(&mut inst.store, &event.event_type, &to_json(&event.payload))
             .await
@@ -569,10 +588,7 @@ impl ExtensionHost for WasmExtensionHost {
         expanded: bool,
     ) -> Result<Option<String>, HostError> {
         let mut inner = self.inner.lock().await;
-        let inst = inner
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
+        let inst = inner.instance_mut(extension)?;
         let details_json = details.map(to_json);
         inst.bindings
             .call_render_message(

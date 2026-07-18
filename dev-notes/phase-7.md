@@ -38,7 +38,7 @@ locked WASM approach and adopted two non-structural refinements codex validates
 
 The codex lesson shows up as the crate split:
 
-```
+```text
 rho-coding::extensions::ExtensionRuntime   <- tau runtime.py orchestration
         |  (depends only on the trait)
         v
@@ -153,20 +153,36 @@ verified the whole stack.
 | Task #34: interactive `/login` OAuth in the TUI | ✅ pickers + browser/device flows + credential store + provider swap |
 | Unstub extension TUI screens (Select/Confirm/Input) | ✅ modals + `ExtensionUiHandle` (see deferral on live wiring) |
 
+## Wired in the review pass (were deferred)
+
+The Codex + CodeRabbit review turned three documented deferrals into shipped
+wiring:
+
+- **Input hooks + agent-event fan-out + `session_start`/`session_shutdown` now
+  fire in production.** `CodingSession::prompt` runs `input` hooks on the raw
+  prompt before expansion (handled → consume; transform → replace); the agent
+  loop dispatches each canonical event to subscribers inline; `session_start`
+  fires on load, `session_shutdown` on `/reload` and print-mode exit. Print mode
+  gets all of this for free (it drives `session.prompt`).
+- **A live `SessionContextBridge` is bound.** Extension `context.*` reads
+  (`cwd`/`model`/`provider`/`session_id`/`system_prompt`) reflect the current
+  session and update in place on `set_model`/`set_provider`, via a shared
+  `Arc<Mutex<SessionContext>>` (the sync-mutator-friendly design that sidesteps
+  the `CodingSession`-ownership cycle).
+- **wasmtime resource limits.** A malicious guest can no longer hang or OOM the
+  host: per-call fuel metering (a `loop {}` tool traps — `runaway` fixture test)
+  plus a `StoreLimits` memory ceiling, complementing the empty-`WasiCtx`
+  capability sandbox.
+
 ## Deferrals (with rationale)
 
-- **Live session-context reads + interactive UI *during hooks*.** The
-  `ExtensionUiHandle` + Select/Confirm/Input modals exist and are unit-tested,
-  and the `HostBridge` trait is defined, but a guest calling `ctx.ui.*` or
-  `ctx.model` *mid-hook* is not yet wired to the live session. Rationale: the
-  runtime is owned by `CodingSession` (not `Arc`-shared), so a `HostBridge`
-  retained by the host cannot hold a back-reference to its owner without a cycle;
-  a faithful wiring needs a shared session snapshot the session updates. The two
-  shipped example guests use neither, so this does not gate M7. The seam is in
-  place (`set_bridge`); connecting it is a follow-up.
-- **`session_start`/`session_shutdown` emission from the session lifecycle.**
-  `emit_session_start/shutdown` exist and are unit-tested; calling them at the
-  real startup/quit points is deferred with the same ownership rationale.
+- **`transcript`/`is_running` reads + interactive UI dialogs *during hooks*.**
+  `context.*` scalar reads are live (above), but the transcript and run-state
+  live inside the non-`Arc` `AgentHarness`, so `HostBridge::transcript_json`/
+  `is_running` return the empty defaults; and a guest calling `ctx.ui.select/
+  confirm/input` mid-hook is not yet routed to the TUI's `ExtensionUiHandle`
+  (which exists and is unit-tested). Both need the frontend/harness handle
+  threaded through; the two shipped example guests use neither.
 - **Extension slash-command *execution*.** Registration, layering onto the
   default registry, and shadow-builtin rejection are ported and tested; the WIT
   has no `call-command` export and rho's `CommandHandler` is a bare `fn` pointer

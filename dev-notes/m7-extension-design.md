@@ -138,17 +138,21 @@ sharpen the design without changing its shape, and rho will adopt them:
 
 ## 5. Locked decisions carried into implementation (unchanged)
 
-- **wasmtime component model**, `Config::async_support(true)`, `func_wrap_async`
-  for host imports the guest awaits. wasmtime 46.x; guests target
-  `wasm32-wasip2` (component model). Feature-gated so default `cargo build`
-  never compiles wasmtime.
+- **wasmtime component model**, async host imports the guest awaits (via the
+  async `bindgen!` — on wasmtime 46 the `async` cargo feature enables async
+  execution, so the older `Config::async_support(true)` call is a deprecated
+  no-op and is dropped). wasmtime 46.x; guests target `wasm32-wasip2` (component
+  model). Feature-gated so default `cargo build` never compiles wasmtime.
 - **WIT world `rho:extension`.** Guest exports: `init` + hook handlers
-  (`session-start`/`session-shutdown`, `turn-start`/`turn-end`, `input`,
-  `tool-call`, `tool-result`) with tau's Pi-shaped `(event, context)` signature
-  and tau's result types (`input-hook-result`, `tool-call-hook-result`,
-  `tool-result-hook-result`). Host imports: `register-tool`, `register-command`,
-  `add-prompt-guideline`, `register-message-renderer`, `register-key-interceptor`,
-  `notify`, session read APIs.
+  (`on-session-start`/`on-session-shutdown`, a generic `on-agent-event` carrying
+  the Pi-shaped turn/message/tool-execution events, `on-input`, `on-tool-call`,
+  `on-tool-result`) plus `call-tool` and `render-message`, with tau's result
+  types (`input-outcome`, `tool-call-outcome`, `tool-result-outcome`). Host
+  imports: `register-tool`, `register-command`, `add-prompt-guideline`,
+  `register-message-renderer`, `subscribe`, `notify`, session read APIs, UI
+  dialogs, and `send-user-message`. (Key interception is a runtime UI-bridge
+  capability in tau, not an init-time registration, so it is not a host import
+  here — see the phase-7 deferral.)
 - **Registration only during a dedicated `init` phase**; hooks dispatched
   **strictly sequentially per extension** (tau runtime parity).
 - **Capability sandbox**: no WASI ambient FS/net imports granted; tool execution

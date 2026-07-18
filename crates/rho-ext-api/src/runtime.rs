@@ -149,6 +149,12 @@ impl Setup {
         F: Fn(RenderRequest) -> Option<String> + 'static,
     {
         let custom_type = custom_type.into();
+        // First registration per custom_type wins (mirrors the host's contract):
+        // keeping later duplicates would let `render_message` fall through to a
+        // shadowed handler when the first returns `None`.
+        if REGISTRY.with_borrow(|r| r.renderers.iter().any(|(ty, _)| ty == &custom_type)) {
+            return;
+        }
         host::register_message_renderer(&custom_type);
         REGISTRY.with_borrow_mut(|r| r.renderers.push((custom_type, Box::new(handler))));
     }
@@ -268,11 +274,15 @@ impl<T: Extension> Guest for Exporter<T> {
                 .map(|(_, h)| h(args.clone()))
         });
         let result = result.unwrap_or_default();
-        serde_json::json!({
-            "text": result.text,
-            "details": result.details,
-        })
-        .to_string()
+        // Omit `details` entirely when absent (`None`); emit a literal `null`
+        // when present-but-null (`Some(Value::Null)`). Collapsing the two would
+        // lose a byte-compat distinction the host preserves.
+        let mut obj = serde_json::Map::new();
+        obj.insert("text".to_string(), Value::String(result.text));
+        if let Some(details) = result.details {
+            obj.insert("details".to_string(), details);
+        }
+        Value::Object(obj).to_string()
     }
 
     fn render_message(

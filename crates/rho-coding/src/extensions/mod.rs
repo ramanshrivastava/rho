@@ -876,11 +876,15 @@ impl ExtensionRuntime {
     // the shared runtime diagnostics sink so the &self signature (matching tau)
     // holds. Route command-registration failures to the runtime diagnostics.
     fn load_diagnostics_push(&self, diagnostic: ResourceDiagnostic) {
-        self.shared
-            .diagnostics
-            .lock()
-            .expect("diagnostics lock")
-            .push(diagnostic);
+        let mut diagnostics = self.shared.diagnostics.lock().expect("diagnostics lock");
+        // `build_command_registry` re-runs on every `handle_command`; without
+        // this guard an unresolvable command conflict would append the identical
+        // diagnostic on each invocation, growing without bound. Distinct
+        // conflicts still record (they differ in message/name).
+        if diagnostics.contains(&diagnostic) {
+            return;
+        }
+        diagnostics.push(diagnostic);
     }
 
     // -- hook dispatch (delegated to the shared core) ----------------------

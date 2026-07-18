@@ -39,7 +39,7 @@ fn guest_component(name: &str) -> PathBuf {
     // A single Once guards a full build of all guests so we don't invoke cargo
     // concurrently across parallel tests.
     BUILD.call_once(|| {
-        for guest in ["hello_tool", "permission_gate", "sandbox_probe"] {
+        for guest in ["hello_tool", "permission_gate", "sandbox_probe", "runaway"] {
             let manifest = repo_root()
                 .join("examples/extensions")
                 .join(guest)
@@ -131,6 +131,37 @@ impl HostBridge for TestBridge {
 
 fn bridge() -> Arc<dyn HostBridge> {
     Arc::new(TestBridge::default())
+}
+
+/// A runaway guest (`loop {}` in its tool) must trap on the host's per-call fuel
+/// budget rather than hanging, and the host must stay usable afterwards.
+#[tokio::test]
+async fn runaway_guest_traps_on_fuel_exhaustion_and_host_survives() {
+    let host = WasmExtensionHost::new().expect("host");
+    let outcome = host.load(&[spec("runaway")], bridge()).await;
+    assert_eq!(outcome.extensions.len(), 1, "runaway should load");
+
+    // The call must COMPLETE (with a trap error), not hang. A generous timeout
+    // guards the test harness itself — fuel exhaustion should return far sooner.
+    let called = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        host.call_tool("runaway", "spin", &json!({})),
+    )
+    .await
+    .expect("call_tool must return (fuel trap), not hang");
+    assert!(
+        called.is_err(),
+        "a `loop {{}}` tool must trap on fuel exhaustion, got: {called:?}"
+    );
+
+    // Host still alive: a fresh extension loads and runs.
+    let outcome = host.load(&[spec("hello_tool")], bridge()).await;
+    assert_eq!(outcome.extensions.len(), 1);
+    let result = host
+        .call_tool("hello_tool", "hello", &json!({}))
+        .await
+        .expect("host survives the trap");
+    assert_eq!(result.text, "Hello, world!");
 }
 
 // --------------------------------------------------------------------------

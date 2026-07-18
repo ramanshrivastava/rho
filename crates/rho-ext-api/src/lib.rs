@@ -304,26 +304,37 @@ pub struct Setup {
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::missing_const_for_fn, missing_docs)]
 impl Setup {
+    // The `+ 'static` bounds mirror the real `wasm32` `runtime::Setup` API, so a
+    // host-target build (`cargo check`) rejects the same closures the guest
+    // build would — no native/wasm skew.
     /// Register a custom tool (host-build stub).
-    pub fn tool<F: Fn(Value) -> ToolResult>(&mut self, _def: ToolDef, _handler: F) {}
+    pub fn tool<F: Fn(Value) -> ToolResult + 'static>(&mut self, _def: ToolDef, _handler: F) {}
     /// Register a slash command (host-build stub).
     pub fn command(&mut self, _def: CommandDef) {}
     /// Add a standalone system-prompt guideline (host-build stub).
     pub fn guideline(&mut self, _text: impl Into<String>) {}
     /// Register an `input` hook (host-build stub).
-    pub fn on_input<F: Fn(InputEvent) -> Option<InputOutcome>>(&mut self, _f: F) {}
+    pub fn on_input<F: Fn(InputEvent) -> Option<InputOutcome> + 'static>(&mut self, _f: F) {}
     /// Register a `tool_call` hook (host-build stub).
-    pub fn on_tool_call<F: Fn(ToolCallEvent) -> Option<ToolCallOutcome>>(&mut self, _f: F) {}
+    pub fn on_tool_call<F: Fn(ToolCallEvent) -> Option<ToolCallOutcome> + 'static>(
+        &mut self,
+        _f: F,
+    ) {
+    }
     /// Register a `tool_result` hook (host-build stub).
-    pub fn on_tool_result<F: Fn(ToolResultEvent) -> Option<ToolResultOutcome>>(&mut self, _f: F) {}
+    pub fn on_tool_result<F: Fn(ToolResultEvent) -> Option<ToolResultOutcome> + 'static>(
+        &mut self,
+        _f: F,
+    ) {
+    }
     /// Register a `session_start` hook (host-build stub).
-    pub fn on_session_start<F: Fn(LifecycleEvent)>(&mut self, _f: F) {}
+    pub fn on_session_start<F: Fn(LifecycleEvent) + 'static>(&mut self, _f: F) {}
     /// Register a `session_shutdown` hook (host-build stub).
-    pub fn on_session_shutdown<F: Fn(LifecycleEvent)>(&mut self, _f: F) {}
+    pub fn on_session_shutdown<F: Fn(LifecycleEvent) + 'static>(&mut self, _f: F) {}
     /// Register a generic agent-event hook (host-build stub).
-    pub fn on_agent_event<F: Fn(String, Value)>(&mut self, _f: F) {}
+    pub fn on_agent_event<F: Fn(String, Value) + 'static>(&mut self, _f: F) {}
     /// Register a custom-message renderer (host-build stub).
-    pub fn message_renderer<F: Fn(RenderRequest) -> Option<String>>(
+    pub fn message_renderer<F: Fn(RenderRequest) -> Option<String> + 'static>(
         &mut self,
         _custom_type: impl Into<String>,
         _f: F,

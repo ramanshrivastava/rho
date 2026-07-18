@@ -198,7 +198,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
     // `!cmd` / `!!cmd` run a terminal command instead of prompting the agent
     // (tau's `run_print_mode` routes these before the agent turn).
     if let Some(request) = crate::session::parse_terminal_command(&config.prompt) {
-        return match session
+        let ok = match session
             .run_terminal_command(&request.command, request.add_to_context)
             .await
         {
@@ -211,6 +211,8 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
                 false
             }
         };
+        emit_extension_shutdown(&session).await;
+        return ok;
     }
 
     // Slash commands are handled before the agent turn (tau `run_print_mode`):
@@ -230,6 +232,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
                 println!("{message}");
             }
         }
+        emit_extension_shutdown(&session).await;
         return true;
     }
 
@@ -249,8 +252,20 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
         eprintln!("Error: {err}");
         persist_failed = true;
     }
+    emit_extension_shutdown(&session).await;
     let ok = renderer.finish();
     ok && !persist_failed
+}
+
+/// Fire `session_shutdown` for extensions on print-mode exit (tau's quit
+/// lifecycle). A cheap no-op when no extensions are loaded.
+async fn emit_extension_shutdown(session: &CodingSession) {
+    if session.extension_runtime().has_extensions() {
+        session
+            .extension_runtime()
+            .emit_session_shutdown("quit")
+            .await;
+    }
 }
 
 /// Format an input-bar terminal command result (tau
