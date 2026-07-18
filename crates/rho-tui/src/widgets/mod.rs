@@ -11,8 +11,19 @@
 //! The status bar, footer hints, and input composer widgets live alongside these
 //! and are composed by the app layer (`app.rs`).
 
+pub mod composer;
+pub mod footer;
+pub mod sidebar;
+pub mod status;
 pub mod style;
 pub mod transcript;
 
+pub use composer::{
+    build_completion_lines, prompt_prefix, render_completion_popup, render_prompt_prefix,
+    render_queued_messages,
+};
+pub use footer::{FooterMode, footer_hints, render_footer};
+pub use sidebar::{SidebarInfo, render_sidebar};
+pub use status::{StatusInfo, build_compact_session_info, render_compact_session_info};
 pub use style::{RoleStyles, chat_role_styles, parse_color, parse_style, role_styles};
 pub use transcript::{build_transcript_lines, render_transcript};
