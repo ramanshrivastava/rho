@@ -22,6 +22,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::motion::{self, MotionCaps};
 use crate::state::{ChatItem, ChatItemRole, TuiState};
 use crate::theme::TuiTheme;
 use crate::widgets::style::{RoleStyles, chat_role_styles, parse_color, parse_style};
@@ -181,28 +182,120 @@ pub fn should_show_splash(state: &TuiState) -> bool {
     !state.running && transcript_is_empty(state)
 }
 
-/// Render the rho welcome splash into `area`, vertically + horizontally centered:
-/// the ρ mark, the π → τ → ρ lineage, and a one-line hint. A sanctioned identity
-/// divergence (tau shows a blank transcript on a fresh session).
-pub fn render_splash(frame: &mut Frame, area: ratatui::layout::Rect, theme: &TuiTheme) {
-    let accent = parse_style(&theme.accent).add_modifier(ratatui::style::Modifier::BOLD);
-    let muted = parse_style(&theme.muted_text);
+/// The committed benchmark record set, baked in at build time so the splash's
+/// benchmark brag cites the same numbers the repo committed (there is no
+/// `dev-notes/` beside an installed binary to read at runtime). Parsed lazily by
+/// [`bench_brag_line`]; a malformed/edited file degrades to no brag line.
+const BENCHMARKS_JSON: &str = include_str!("../../../../dev-notes/benchmarks.json");
+
+/// The heritage lineage stages: glyph + language label, in ancestry order.
+const LINEAGE: [(&str, &str); 3] = [
+    ("π", "Pi·TypeScript"),
+    ("τ", "tau·Python"),
+    ("ρ", "rho·Rust"),
+];
+
+/// The name "rho", written across scripts for the splash: Greek, Japanese
+/// (katakana), Hindi (Devanagari). A quiet, cool multi-script flourish under the
+/// mark.
+const NAME_IN_SCRIPTS: [&str; 3] = ["ρο", "ロー", "रो"];
+
+/// Rotating "did you know" heritage facts (task #45 welcome tips).
+const DID_YOU_KNOW: [&str; 4] = [
+    "ρ reads and writes τ's exact session files",
+    "π is TypeScript, τ is Python, ρ is Rust",
+    "ρ cold-starts in a few ms — no interpreter to boot",
+    "the rho theme is rust-oxide over warm parchment",
+];
+
+/// The one-line hints row (Claude-Code-style getting-started), built from the
+/// active keybindings so a user with customized `TuiSettings::keybindings` sees
+/// the keys they actually bound (the `/` and `!cmd` prefixes are literal syntax,
+/// not bindings).
+fn splash_hints_row(kb: &crate::theme::TuiKeybindings) -> String {
+    use crate::widgets::footer::key_hint;
+    format!(
+        "/ commands  ·  {} model  ·  {} sessions  ·  !cmd shell  ·  {} quit",
+        key_hint(&kb.model_cycle),
+        key_hint(&kb.session_picker),
+        key_hint(&kb.quit),
+    )
+}
+
+/// Frames each lineage glyph stays "active" before the oxidation marches on.
+const LINEAGE_STEP_FRAMES: usize = 4;
+/// Frames each "did you know" fact holds before rotating.
+const FACT_STEP_FRAMES: usize = 30;
+
+/// Render the rho welcome splash into `area`, filling the ENTIRE pane with the
+/// theme background (no color seam) and centering the heritage block: the ρ mark,
+/// the animated π → τ → ρ lineage, a one-line pitch, a real benchmark brag pulled
+/// from the committed `benchmarks.json`, the hints row, and a rotating heritage
+/// fact. An owner-sanctioned identity divergence (tau shows a blank transcript on
+/// a fresh session). The lineage's active glyph oxidizes/brightens marching
+/// π→τ→ρ while `caps` allow motion; otherwise it settles, bright, on ρ.
+pub fn render_splash(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    theme: &TuiTheme,
+    keybindings: &crate::theme::TuiKeybindings,
+    frame_idx: usize,
+    caps: MotionCaps,
+) {
     let bg = parse_color(&theme.transcript_background)
         .map_or_else(Style::default, |color| Style::default().bg(color));
 
-    let lines: Vec<Line<'static>> = vec![
-        Line::from(Span::styled("ρ", accent)),
+    // 1. Fill the WHOLE pane with the theme background first — this is the fix for
+    //    the "half-screen theme" seam (the centered block used to leave the top
+    //    padding at the default terminal background).
+    frame.render_widget(ratatui::widgets::Block::default().style(bg), area);
+
+    let accent = parse_style(&theme.accent).add_modifier(ratatui::style::Modifier::BOLD);
+    let muted = parse_style(&theme.muted_text);
+    let heading = parse_style(&theme.markdown_heading);
+
+    // 2. Build the centered heritage block.
+    let mark_style = if caps.animated() {
+        Style::default()
+            .fg(motion::oxide_ramp(
+                0.4 + 0.5 * motion::throb01(frame_idx, motion::THROB_PERIOD_FRAMES),
+            ))
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        accent
+    };
+
+    let bench = bench_brag_line();
+    // Rotate the fact only when motion is allowed; a reduced-motion / non-truecolor
+    // splash holds on the first fact so nothing shifts under the user.
+    let fact_index = if caps.animated() {
+        (frame_idx / FACT_STEP_FRAMES) % DID_YOU_KNOW.len()
+    } else {
+        0
+    };
+    let fact = DID_YOU_KNOW[fact_index];
+
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled("ρ", mark_style)),
+        Line::from(name_scripts_spans(frame_idx, caps, theme)),
         Line::default(),
-        Line::from(Span::styled("π → τ → ρ", muted)),
+        Line::from(lineage_spans(frame_idx, caps, theme)),
         Line::default(),
-        Line::from(Span::styled("rho", accent)),
-        Line::from(Span::styled("a Rust port of tau", muted)),
-        Line::default(),
-        Line::from(Span::styled(
-            "Type a message, /command, or !shell to begin.",
-            muted,
-        )),
+        Line::from(Span::styled("a Rust coding agent, oxidized", heading)),
     ];
+    if let Some(bench) = bench {
+        lines.push(Line::from(bench_brag_spans(&bench, theme)));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        splash_hints_row(keybindings),
+        muted,
+    )));
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        format!("· did you know — {fact}"),
+        muted.add_modifier(ratatui::style::Modifier::ITALIC),
+    )));
 
     // Vertically center: pad the top by half the slack (clamped so a short pane
     // still shows the mark from the top).
@@ -219,6 +312,173 @@ pub fn render_splash(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Tui
             .style(bg),
         inner,
     );
+}
+
+/// The name "rho" across scripts (Greek · Japanese · Hindi) as a quiet, sleek
+/// flourish beneath the mark: each script glyph on a gentle oxide gradient (dim →
+/// bright, cool → hot), thin-spaced with muted dot separators. A subtle
+/// synchronized throb rides the whole line when motion is available.
+fn name_scripts_spans(frame_idx: usize, caps: MotionCaps, theme: &TuiTheme) -> Vec<Span<'static>> {
+    let muted = parse_style(&theme.muted_text);
+    // A small brightness lift shared by all three scripts so they pulse together.
+    let lift = if caps.animated() {
+        0.15 * motion::throb01(frame_idx, motion::THROB_PERIOD_FRAMES)
+    } else {
+        0.0
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, script) in NAME_IN_SCRIPTS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", muted));
+        }
+        // Cool → hot across the three scripts (Greek dim, Japanese mid, Hindi hot).
+        #[allow(clippy::cast_precision_loss)]
+        let base = 0.35 + 0.25 * (i as f32);
+        let color = if caps.truecolor {
+            motion::oxide_ramp(base + lift)
+        } else {
+            ratatui::style::Color::Red
+        };
+        spans.push(Span::styled(
+            (*script).to_string(),
+            Style::default().fg(color),
+        ));
+    }
+    spans
+}
+
+/// The animated π → τ → ρ lineage spans: the active stage oxidizes/brightens
+/// (throbbing while animated), the rest stay muted; language labels trail each
+/// glyph. Marches π→τ→ρ over time; settles bright on ρ under no-motion.
+fn lineage_spans(frame_idx: usize, caps: MotionCaps, theme: &TuiTheme) -> Vec<Span<'static>> {
+    let muted = parse_style(&theme.muted_text);
+    let active = if caps.animated() {
+        (frame_idx / LINEAGE_STEP_FRAMES) % LINEAGE.len()
+    } else {
+        LINEAGE.len() - 1 // settle on ρ
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (glyph, label)) in LINEAGE.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("   →   ", muted));
+        }
+        let (glyph_style, label_style) = if i == active {
+            let bright = if caps.animated() {
+                motion::oxide_ramp(
+                    0.55 + 0.45 * motion::throb01(frame_idx, motion::THROB_PERIOD_FRAMES),
+                )
+            } else {
+                motion::oxide_ramp(0.75)
+            };
+            (
+                Style::default()
+                    .fg(bright)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+                Style::default().fg(bright),
+            )
+        } else {
+            (
+                muted.add_modifier(ratatui::style::Modifier::DIM),
+                muted.add_modifier(ratatui::style::Modifier::DIM),
+            )
+        };
+        spans.push(Span::styled((*glyph).to_string(), glyph_style));
+        spans.push(Span::styled(format!(" {label}"), label_style));
+    }
+    spans
+}
+
+/// Style the benchmark brag line: the `ρ` and the `×N` ratios in accent, the
+/// prose muted.
+fn bench_brag_spans(text: &str, theme: &TuiTheme) -> Vec<Span<'static>> {
+    // The whole line is short and cited from real data; keep it a single muted
+    // span with the leading ρ in accent so the brag stays quiet, not shouty.
+    let accent = parse_style(&theme.accent);
+    let muted = parse_style(&theme.muted_text);
+    if let Some(rest) = text.strip_prefix("ρ ") {
+        vec![
+            Span::styled("ρ ", accent),
+            Span::styled(rest.to_string(), muted),
+        ]
+    } else {
+        vec![Span::styled(text.to_string(), muted)]
+    }
+}
+
+/// Build the benchmark brag line from the committed benchmark records, e.g.
+/// `ρ · ~302× faster cold start than τ · ~21× lighter`. Returns `None` if the
+/// baked-in JSON can't be parsed or lacks the records to compute a ratio (so the
+/// splash simply omits the line — graceful degradation).
+#[must_use]
+pub fn bench_brag_line() -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(BENCHMARKS_JSON).ok()?;
+    let records = value.get("records")?.as_array()?;
+
+    let cold = cold_start_ratio(records);
+    let mem = memory_ratio(records);
+    match (cold, mem) {
+        (Some(cold), Some(mem)) => Some(format!(
+            "ρ · ~{cold}× faster cold start than τ · ~{mem}× lighter"
+        )),
+        (Some(cold), None) => Some(format!("ρ · ~{cold}× faster cold start than τ")),
+        (None, Some(mem)) => Some(format!("ρ · ~{mem}× lighter than τ")),
+        (None, None) => None,
+    }
+}
+
+/// The rho-vs-tau cold-start speedup, preferring the purest launch variant.
+fn cold_start_ratio(records: &[serde_json::Value]) -> Option<u64> {
+    for variant in ["version-direct", "version", "0ms"] {
+        let rho = bench_mean(records, "cold_start", "rho", variant);
+        let tau = bench_mean(records, "cold_start", "tau", variant);
+        if let (Some(rho), Some(tau)) = (rho, tau) {
+            if rho > 0.0 {
+                return Some(ratio_round(tau / rho));
+            }
+        }
+    }
+    None
+}
+
+/// The rho-vs-tau memory-footprint ratio at the smallest turn count.
+fn memory_ratio(records: &[serde_json::Value]) -> Option<u64> {
+    let rho = memory_rss_bytes(records, "rho", 1)?;
+    let tau = memory_rss_bytes(records, "tau", 1)?;
+    if rho > 0.0 {
+        Some(ratio_round(tau / rho))
+    } else {
+        None
+    }
+}
+
+fn bench_mean(
+    records: &[serde_json::Value],
+    family: &str,
+    impl_name: &str,
+    variant: &str,
+) -> Option<f64> {
+    records.iter().find_map(|r| {
+        (r.get("family")?.as_str()? == family
+            && r.get("impl")?.as_str()? == impl_name
+            && r.get("variant")?.as_str()? == variant)
+            .then(|| r.get("mean_ms")?.as_f64())
+            .flatten()
+    })
+}
+
+fn memory_rss_bytes(records: &[serde_json::Value], impl_name: &str, turns: u64) -> Option<f64> {
+    records.iter().find_map(|r| {
+        (r.get("family")?.as_str()? == "memory_rss"
+            && r.get("impl")?.as_str()? == impl_name
+            && r.get("turns")?.as_u64()? == turns)
+            .then(|| r.get("peak_rss_bytes")?.as_f64())
+            .flatten()
+    })
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn ratio_round(ratio: f64) -> u64 {
+    ratio.round().max(0.0) as u64
 }
 
 /// Render the whole transcript into `area` from the top (no scroll), clipped by

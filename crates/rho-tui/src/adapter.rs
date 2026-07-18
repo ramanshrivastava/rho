@@ -103,7 +103,17 @@ impl<'a> TuiEventAdapter<'a> {
 
     fn apply_message_end(&mut self, message: &AgentMessage) {
         match message {
-            AgentMessage::User(m) => self.state.add_user_message(&m.text(), None, None),
+            AgentMessage::User(m) => {
+                let text = m.text();
+                // Reconcile against an optimistic echo: a match keeps the already-
+                // shown item (no duplicate); a mismatch (an `input` hook / `/skill:`
+                // / `/template` transformed the text before this durable message)
+                // withdraws the stale echo so the real, transformed message renders
+                // in its place. No pending echo → a normal add.
+                if !self.state.reconcile_optimistic_user(&text) {
+                    self.state.add_user_message(&text, None, None);
+                }
+            }
             AgentMessage::Custom(m) => {
                 let details = match &m.details {
                     Some(serde_json::Value::Object(_)) => m.details.clone(),

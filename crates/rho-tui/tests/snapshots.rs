@@ -35,6 +35,7 @@ use rho_tui::modals::{
     ModelPickerModal, NoticeModal, OAuthLoginModal, ProviderPickerPurpose, SessionPickerModal,
     ThemePickerModal, TreePickerModal,
 };
+use rho_tui::motion::MotionCaps;
 use rho_tui::state::TuiState;
 use rho_tui::theme::{TuiKeybindings, TuiThemeName, get_tui_theme};
 use rho_tui::widgets::footer::FooterMode;
@@ -223,13 +224,98 @@ fn snapshot_sidebar() {
 #[test]
 fn snapshot_rho_splash() {
     // The rho welcome splash on a fresh (empty) transcript, in the default rho
-    // identity theme: the ρ mark, the π → τ → ρ lineage, and the hint, centered.
+    // identity theme: the ρ mark, the animated π → τ → ρ heritage lineage, the
+    // pitch, a real benchmark brag, the hints row, and a rotating fact. Rendered
+    // with plain (no-motion) caps at frame 0 so the lineage settles on ρ and the
+    // snapshot is deterministic.
     let theme = get_tui_theme(TuiThemeName::Rho);
-    let rendered = render_to_string(48, 14, |frame| {
+    let rendered = render_to_string(80, 18, |frame| {
         let area = full(frame);
-        rho_tui::widgets::render_splash(frame, area, &theme);
+        rho_tui::widgets::render_splash(
+            frame,
+            area,
+            &theme,
+            &TuiKeybindings::default(),
+            0,
+            MotionCaps::plain(),
+        );
     });
     insta::assert_snapshot!("rho_splash", rendered);
+}
+
+#[test]
+fn splash_fills_entire_pane_with_theme_background() {
+    // Regression for the "half-screen theme" bug: the splash must paint the theme
+    // background across the WHOLE pane (no black seam above the centered block).
+    // We assert every cell is the theme bg, but skip wide-glyph (CJK) continuation
+    // cells: ratatui resets a double-width char's trailing cell, which the wide
+    // glyph visually covers — that is not a seam. The seam bug left entire rows
+    // unpainted, which this still catches (edge columns are never continuations).
+    let theme = get_tui_theme(TuiThemeName::Rho);
+    let expected = ratatui::style::Color::Rgb(0x0e, 0x0c, 0x0b); // rho transcript bg
+    for (w, h) in [(48u16, 10u16), (80, 24), (100, 40), (120, 30)] {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = full(frame);
+                rho_tui::widgets::render_splash(
+                    frame,
+                    area,
+                    &theme,
+                    &TuiKeybindings::default(),
+                    0,
+                    MotionCaps::plain(),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        // The centered block is short and never reaches the edge columns, so
+        // columns 0 and w-1 are always padding (never a wide-glyph continuation
+        // cell). Asserting they are the theme bg at EVERY row proves no row was
+        // left unpainted — exactly the "half-screen seam" the old sub-rect render
+        // produced (its top padding rows fell through to the terminal default).
+        for y in 0..h {
+            for x in [0, w - 1] {
+                let bg = buffer.cell((x, y)).expect("cell").bg;
+                assert_eq!(
+                    bg, expected,
+                    "edge cell ({x},{y}) at {w}x{h} is not the theme background — seam!"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn snapshot_working_status_line() {
+    // The working-state signature line (plain caps → the shimmer verb is a single
+    // span, so the text is stable): `Tempering…  ·  2m 14s  ·  esc to interrupt`.
+    let theme = get_tui_theme(TuiThemeName::Rho);
+    let rendered = render_to_string(60, 1, |frame| {
+        let area = full(frame);
+        rho_tui::widgets::render_working_status(
+            frame,
+            area,
+            "Tempering",
+            134,
+            0,
+            "esc",
+            MotionCaps::plain(),
+            &theme,
+        );
+    });
+    insta::assert_snapshot!("working_status_line", rendered);
+}
+
+#[test]
+fn bench_brag_cites_real_committed_numbers() {
+    // The brag is computed from the committed benchmarks.json (baked in), not
+    // hardcoded, and reads as the expected shape.
+    let brag = rho_tui::widgets::bench_brag_line().expect("brag");
+    assert!(brag.starts_with("ρ · ~"), "{brag}");
+    assert!(brag.contains("× faster cold start than τ"), "{brag}");
+    assert!(brag.contains("× lighter"), "{brag}");
 }
 
 #[test]

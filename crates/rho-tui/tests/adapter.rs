@@ -345,3 +345,74 @@ fn uses_canonical_result_details_for_patch() {
             .contains("Patch:\n--- a.py\n+++ a.py")
     );
 }
+
+// --- optimistic first-message echo (task #45 latency fix) -------------------
+
+#[test]
+fn optimistic_echo_reconciles_without_double_render() {
+    // The submit path renders the user's message optimistically (so it appears on
+    // the next frame, before prompt()'s stream echoes it back). When the turn's
+    // real user MessageEnd arrives with the same text, it must reconcile — not
+    // render a duplicate — and clear the pending marker.
+    let mut state = TuiState::new();
+    state.add_optimistic_user_echo("hello world");
+    assert_eq!(
+        roles_and_text(&state),
+        vec![(ChatItemRole::User, "hello world".into())]
+    );
+    assert_eq!(state.optimistic_echo.as_deref(), Some("hello world"));
+
+    apply(
+        &mut state,
+        agent(AgentEvent::MessageEnd(MessageEndEvent::new(
+            AgentMessage::User(UserMessage::new("hello world")),
+        ))),
+    );
+    assert_eq!(
+        roles_and_text(&state),
+        vec![(ChatItemRole::User, "hello world".into())],
+        "the real echo must reconcile, not duplicate"
+    );
+    assert_eq!(state.optimistic_echo, None);
+}
+
+#[test]
+fn optimistic_echo_transform_withdraws_raw_and_renders_real() {
+    // When prompt()'s preprocessing transforms the text (an `input` hook, a
+    // `/skill:` / `/template` expansion), the durable user MessageEnd differs from
+    // the raw echo: the stale raw item must be WITHDRAWN and only the real,
+    // transformed message rendered — never both.
+    let mut state = TuiState::new();
+    state.add_optimistic_user_echo("/template greet");
+    apply(
+        &mut state,
+        agent(AgentEvent::MessageEnd(MessageEndEvent::new(
+            AgentMessage::User(UserMessage::new("Hello there, please greet warmly.")),
+        ))),
+    );
+    assert_eq!(
+        roles_and_text(&state),
+        vec![(
+            ChatItemRole::User,
+            "Hello there, please greet warmly.".into()
+        )],
+        "the raw directive must be withdrawn, only the transformed message renders"
+    );
+    assert_eq!(state.optimistic_echo, None);
+}
+
+#[test]
+fn optimistic_echo_withdrawn_when_turn_handles_without_user_message() {
+    // An `input` hook that HANDLES the prompt starts no agent run and produces no
+    // durable user message, so no user MessageEnd ever arrives. Dropping the
+    // pending echo (as finish_turn does) must remove the orphaned raw item.
+    let mut state = TuiState::new();
+    state.add_optimistic_user_echo("do the thing");
+    assert_eq!(state.items.len(), 1);
+    state.drop_optimistic_echo();
+    assert!(
+        state.items.is_empty(),
+        "orphaned raw echo must be withdrawn"
+    );
+    assert_eq!(state.optimistic_echo, None);
+}

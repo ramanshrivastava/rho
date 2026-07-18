@@ -5,11 +5,14 @@ expression: rendered
 
 
 
-                        ρ
+                                        ρ
+                               ρο  ·  ロ ー   ·  रो
 
-                    π → τ → ρ
+               π Pi·TypeScript   →   τ tau·Python   →   ρ rho·Rust
 
-                       rho
-               a Rust port of tau
+                          a Rust coding agent, oxidized
+                ρ · ~302× faster cold start than τ · ~21× lighter
 
-  Type a message, /command, or !shell to begin.
+ / commands  ·  Ctrl+P model  ·  Ctrl+R sessions  ·  !cmd shell  ·  Ctrl+D quit
+
+           · did you know — ρ reads and writes τ's exact session files

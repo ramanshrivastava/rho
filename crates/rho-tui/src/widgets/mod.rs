@@ -19,14 +19,14 @@ pub mod style;
 pub mod transcript;
 
 pub use composer::{
-    build_completion_lines, prompt_prefix, render_completion_popup, render_prompt_prefix,
-    render_queued_messages,
+    build_completion_lines, build_working_status_line, prompt_prefix, render_completion_popup,
+    render_prompt_prefix, render_queued_messages, render_working_status,
 };
 pub use footer::{FooterMode, footer_hints, render_footer};
 pub use sidebar::{SidebarInfo, render_sidebar};
 pub use status::{StatusInfo, build_compact_session_info, render_compact_session_info};
 pub use style::{RoleStyles, chat_role_styles, parse_color, parse_style, role_styles};
 pub use transcript::{
-    TranscriptCache, build_transcript_lines, render_splash, render_transcript, should_show_splash,
-    transcript_is_empty,
+    TranscriptCache, bench_brag_line, build_transcript_lines, render_splash, render_transcript,
+    should_show_splash, transcript_is_empty,
 };

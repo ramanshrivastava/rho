@@ -169,6 +169,24 @@ pub struct TuiState {
     pub tool_result_renderer: Option<ToolResultMarkup>,
     /// The current spinner frame while a tool runs.
     pub tool_spinner: Option<String>,
+    /// When the current turn started, driving the working-state elapsed timer.
+    /// `None` while idle.
+    pub turn_started_at: Option<Instant>,
+    /// Monotonic count of turns started this session, used to rotate the
+    /// forge/blacksmith working verb one-per-turn (the working-state signature).
+    pub turn_index: usize,
+    /// The raw text of a user message rendered *optimistically* on submit, before
+    /// `prompt()`'s stream echoes it back. The adapter reconciles the real user
+    /// `MessageEnd` against this so the message renders on the very next frame
+    /// (decoupled from durable-session persistence + provider init) without
+    /// double-rendering. See `App::submit_prompt`.
+    pub optimistic_echo: Option<String>,
+    /// The `[start, start+count)` transcript-item range the optimistic echo added,
+    /// so a provisional echo can be *withdrawn* when `prompt()`'s preprocessing
+    /// changes the outcome: an `input` hook that transforms the text (the durable
+    /// user message then differs from the raw echo) or handles it (no agent run,
+    /// no durable user message at all — e.g. `/template` / `/skill:` expansion).
+    optimistic_range: Option<(usize, usize)>,
 }
 
 impl std::fmt::Debug for TuiState {
@@ -453,6 +471,70 @@ impl TuiState {
         self.items.clear();
         self.assistant_buffer.clear();
         self.error = None;
+        // The cleared items include any pending optimistic echo; drop its (now
+        // dangling) range marker so a later stream event can't drain live items.
+        self.optimistic_echo = None;
+        self.optimistic_range = None;
+    }
+
+    /// Optimistically render a just-submitted user message and remember its raw
+    /// text + the item range it occupies, so the running turn's real user
+    /// `MessageEnd` reconciles against it (see [`reconcile_optimistic_user`]) and
+    /// so an echo made stale by `prompt()`'s preprocessing can be withdrawn. This
+    /// is what makes the *first* message appear on the next frame rather than
+    /// after the durable-session create + `ensure_session_indexed` + turn assembly
+    /// that precede the stream's user echo.
+    ///
+    /// [`reconcile_optimistic_user`]: Self::reconcile_optimistic_user
+    pub fn add_optimistic_user_echo(&mut self, text: &str) {
+        let start = self.items.len();
+        self.add_user_message(text, None, None);
+        let count = self.items.len().saturating_sub(start);
+        self.optimistic_echo = Some(text.to_string());
+        self.optimistic_range = Some((start, count));
+    }
+
+    /// Reconcile a streamed user `MessageEnd` against a pending optimistic echo.
+    ///
+    /// - **Match** (the durable text equals the raw echo): keep the already-shown
+    ///   item(s), clear the pending marker, and report `true` so the caller does
+    ///   *not* add a duplicate.
+    /// - **Mismatch** (an `input` hook / `/skill:` / `/template` transformed the
+    ///   text): withdraw the now-stale optimistic item(s) and report `false` so
+    ///   the caller renders the real, transformed message in their place.
+    /// - **No pending echo**: report `false` (a normal add).
+    #[must_use]
+    pub fn reconcile_optimistic_user(&mut self, text: &str) -> bool {
+        match self.optimistic_echo.take() {
+            Some(expected) if expected == text => {
+                self.optimistic_range = None;
+                true
+            }
+            Some(_) => {
+                self.drop_optimistic_echo();
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Withdraw any still-pending optimistic echo item(s) (used when a turn ends
+    /// without a matching user `MessageEnd` — e.g. an `input` hook handled the
+    /// prompt with no agent run — so no orphaned raw directive is left behind).
+    pub fn drop_optimistic_echo(&mut self) {
+        self.optimistic_echo = None;
+        if let Some((start, count)) = self.optimistic_range.take() {
+            let start = start.min(self.items.len());
+            let end = (start + count).min(self.items.len());
+            self.items.drain(start..end);
+        }
+    }
+
+    /// Elapsed whole seconds since the current turn began (0 when idle).
+    #[must_use]
+    pub fn working_elapsed_secs(&self) -> u64 {
+        self.turn_started_at
+            .map_or(0, |started| started.elapsed().as_secs())
     }
 
     /// Replace loaded skill metadata (tau `set_skills`).
