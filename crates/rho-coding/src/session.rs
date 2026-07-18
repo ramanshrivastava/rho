@@ -74,6 +74,7 @@ use crate::events::{
     CompactionEndEvent, CompactionReason, CompactionStartEvent, QueueUpdateEvent,
     SessionAgentEndEvent,
 };
+use crate::extensions::ExtensionRuntime;
 use crate::paths::RhoPaths;
 use crate::prompt_templates::{
     PromptTemplate, expand_prompt_template_command, load_prompt_templates_with_diagnostics,
@@ -226,6 +227,9 @@ struct CompactionPlan {
 }
 
 /// Configuration for a persistent coding session (dispatch-1 subset).
+// The many independent feature toggles mirror tau's config dataclass
+// field-for-field; each names a distinct knob, so they are not consolidated.
+#[allow(clippy::struct_excessive_bools)]
 pub struct CodingSessionConfig {
     /// The model provider.
     pub provider: Arc<dyn ModelProvider>,
@@ -276,6 +280,19 @@ pub struct CodingSessionConfig {
     /// Whether skill discovery is enabled (dispatch-2 loads them; here it only
     /// gates future wiring).
     pub skills_enabled: bool,
+    /// Whether extension discovery scans the resource directories (tau
+    /// `extensions_enabled`; default `true`).
+    pub extensions_enabled: bool,
+    /// Explicit extension component paths loaded regardless of
+    /// `extensions_enabled` (tau `extension_paths`; the `-x/--extension` flag).
+    pub extension_paths: Vec<PathBuf>,
+    /// Whether project-local `.rho/extensions` are discovered (tau
+    /// `project_extensions_enabled`; opt-in because they run at startup).
+    pub project_extensions_enabled: bool,
+    /// A pre-built extension runtime the session adopts instead of discovering
+    /// its own (tau `extension_runtime`). Used to inject a host/test double; a
+    /// fresh session builds a default [`ExtensionRuntime`] and loads it.
+    pub extension_runtime: Option<ExtensionRuntime>,
     /// Clock for entry/message timestamps.
     pub clock: Arc<dyn Clock>,
     /// Id generator for session entries.
@@ -313,6 +330,10 @@ impl CodingSessionConfig {
             index_on_first_persist: false,
             shell_command_prefix: None,
             skills_enabled: true,
+            extensions_enabled: true,
+            extension_paths: Vec::new(),
+            project_extensions_enabled: false,
+            extension_runtime: None,
             clock: system_clock(),
             id_gen: uuid_id_gen(),
         }
@@ -353,11 +374,20 @@ pub struct CodingSession {
     /// Providers swapped in by `set_model`/`set_provider`; kept alive here
     /// (tau's `_owned_providers`) so the live harness reference stays valid.
     owned_providers: Vec<Arc<dyn ModelProvider>>,
+    /// The long-lived extension runtime bound to this session (tau
+    /// `_extension_runtime`). Defaults to a [`NoopExtensionHost`]-backed runtime
+    /// so extension-free sessions carry zero WASM machinery and behave
+    /// identically to a pre-extension build.
+    ///
+    /// Boxed to keep `CodingSession` small: it is held across the print-mode
+    /// run future, and the runtime's registration tables would otherwise bloat
+    /// that future past the `large_futures` budget.
+    extension_runtime: Box<ExtensionRuntime>,
 }
 
 impl CodingSession {
     /// Load a coding session from append-only storage.
-    pub async fn load(config: CodingSessionConfig) -> Result<Self, SessionError> {
+    pub async fn load(mut config: CodingSessionConfig) -> Result<Self, SessionError> {
         let mut entries = config.storage.read_all().await?;
         let mut pending_initial_entries: Vec<SessionEntry> = Vec::new();
 
@@ -408,13 +438,39 @@ impl CodingSession {
         let base_tools = config.tools.clone().unwrap_or_else(|| {
             create_coding_tools(&config.cwd, config.shell_command_prefix.as_deref())
         });
+
+        // Adopt a provided extension runtime (a host/test double already loaded)
+        // or build a fresh one and discover extensions (tau `CodingSession.load`:
+        // `fresh_extension_runtime = extension_runtime is None`). A default
+        // runtime is `NoopExtensionHost`-backed, so with no extensions this is a
+        // pure pass-through (`compose_tools` returns the built-ins unwrapped and
+        // there are no prompt guidelines).
+        let extension_runtime = if let Some(runtime) = config.extension_runtime.take() {
+            runtime
+        } else {
+            let mut runtime = ExtensionRuntime::new();
+            if config.extensions_enabled || !config.extension_paths.is_empty() {
+                runtime
+                    .load(
+                        &resource_paths,
+                        &config.extension_paths,
+                        config.extensions_enabled,
+                        config.project_extensions_enabled,
+                    )
+                    .await;
+            }
+            runtime
+        };
+
+        let tools = extension_runtime.compose_tools(base_tools);
         let system = config.system.clone().unwrap_or_else(|| {
             build_system_prompt(&BuildSystemPromptOptions {
                 cwd: config.cwd.clone(),
-                tools: base_tools.clone(),
+                tools: tools.clone(),
                 custom_prompt: config.custom_system_prompt.clone(),
                 append_system_prompt: config.append_system_prompt.clone(),
                 context_files: resources.context_files.clone(),
+                extra_guidelines: extension_runtime.prompt_guidelines(),
                 ..Default::default()
             })
         });
@@ -422,7 +478,7 @@ impl CodingSession {
         let runtime_model = runtime_model_for_state(&config, &state);
         let harness = AgentHarness::new(
             AgentHarnessConfig::new(config.provider.clone(), runtime_model.clone(), system)
-                .with_tools(base_tools)
+                .with_tools(tools)
                 .with_clock(config.clock.clone()),
             state.messages.clone(),
         );
@@ -476,6 +532,7 @@ impl CodingSession {
             resource_paths,
             credential_store,
             owned_providers: Vec::new(),
+            extension_runtime: Box::new(extension_runtime),
         };
         session.persist_loaded_interrupted_tool_repairs().await?;
         session.sync_thinking_level_to_active_model();
@@ -489,6 +546,18 @@ impl CodingSession {
     #[must_use]
     pub fn cwd(&self) -> &Path {
         &self.config.cwd
+    }
+
+    /// The extension runtime bound to this session (tau `extension_runtime`).
+    #[must_use]
+    pub fn extension_runtime(&self) -> &ExtensionRuntime {
+        &self.extension_runtime
+    }
+
+    /// Mutable access to the extension runtime (for the agent-event fan-out and
+    /// lifecycle emit the harness/frontend drives).
+    pub fn extension_runtime_mut(&mut self) -> &mut ExtensionRuntime {
+        &mut self.extension_runtime
     }
 
     /// Active model.
@@ -1738,9 +1807,16 @@ impl CodingSession {
         if expand_prompt_template_command(text, &self.prompt_templates).is_some() {
             return CommandResult::default();
         }
-        // The default registry is stateless; rebuilding it per call avoids a
-        // borrow conflict (`&registry` + `&mut self`) with no observable cost.
-        let registry = create_default_command_registry();
+        // The registry is rebuilt per call (stateless) to avoid a borrow
+        // conflict (`&registry` + `&mut self`). When extensions are loaded it
+        // layers their commands over the defaults (tau
+        // `build_command_registry`); otherwise it is the plain default registry
+        // — byte-identical to before for extension-free sessions.
+        let registry = if self.extension_runtime.has_extensions() {
+            self.extension_runtime.build_command_registry()
+        } else {
+            create_default_command_registry()
+        };
         registry.execute(self, text)
     }
 
@@ -1806,7 +1882,6 @@ impl CodingSession {
     /// Kept `async` for parity with tau (whose reload awaits the extension
     /// lifecycle) and with the command surface that awaits it; the elided body
     /// has nothing to await here.
-    #[allow(clippy::unused_async)]
     pub async fn reload(&mut self) -> Result<CodingReloadSummary, SessionError> {
         let before_skills = skill_signatures(&self.skills);
         let before_prompt_templates = prompt_template_signatures(&self.prompt_templates);
@@ -1814,9 +1889,27 @@ impl CodingSession {
         let before_diagnostics = diagnostic_signatures(self.resource_diagnostics());
         let before_system_prompt_inputs =
             system_prompt_resource_signatures(&self.skills, &self.context_files);
-        // rho has no extension runtime, so the extensions category is always a
-        // zero-count no-op (tau tracks live extension names here).
-        let before_extensions: usize = 0;
+        // Extension registration set + guidelines before the reload (tau tracks
+        // live extension names + guidelines here).
+        let before_extensions = self.extension_runtime.extension_names().len();
+        let before_guidelines = self.extension_runtime.prompt_guidelines();
+
+        // Re-discover extensions: tear down the current generation and reload,
+        // mirroring tau's `_reload_extensions`. A `NoopExtensionHost`-backed
+        // runtime with no extensions reloads to the same empty set.
+        self.extension_runtime.reset_for_reload().await;
+        if self.config.extensions_enabled || !self.config.extension_paths.is_empty() {
+            self.extension_runtime
+                .load(
+                    &self.resource_paths,
+                    &self.config.extension_paths,
+                    self.config.extensions_enabled,
+                    self.config.project_extensions_enabled,
+                )
+                .await;
+        }
+        let after_extensions = self.extension_runtime.extension_names().len();
+        let after_guidelines = self.extension_runtime.prompt_guidelines();
 
         let resources = load_session_resources(
             &self.resource_paths,
@@ -1829,21 +1922,43 @@ impl CodingSession {
         let after_context_files = context_file_signatures(&resources.context_files);
         let after_system_prompt_inputs =
             system_prompt_resource_signatures(&resources.skills, &resources.context_files);
-        let after_extensions: usize = 0;
 
-        // rho drops tau's extension tool-name and guideline terms (there are no
-        // extension-composed tools or prompt guidelines here): the system prompt
-        // is rebuilt only when it is not fixed by config and the skill/context
-        // signatures changed.
+        // Extensions changing means the composed tool set + prompt guidelines
+        // may have changed, so both the harness tools and the system prompt need
+        // rebuilding (tau folds the extension tool names + guidelines into the
+        // prompt-input signature).
+        let extensions_changed =
+            before_extensions != after_extensions || before_guidelines != after_guidelines;
+
+        // Recompose the harness tools when extensions changed (the base built-in
+        // set is stable). With no extensions this branch never runs, so the
+        // harness — and its subscribers — are left untouched.
+        let recomposed_tools = if extensions_changed {
+            let base_tools = self.config.tools.clone().unwrap_or_else(|| {
+                create_coding_tools(
+                    &self.config.cwd,
+                    self.config.shell_command_prefix.as_deref(),
+                )
+            });
+            Some(self.extension_runtime.compose_tools(base_tools))
+        } else {
+            None
+        };
+
         let mut rebuilt_system_prompt: Option<String> = None;
-        if self.config.system.is_none() && before_system_prompt_inputs != after_system_prompt_inputs
+        if self.config.system.is_none()
+            && (before_system_prompt_inputs != after_system_prompt_inputs || extensions_changed)
         {
+            let tools = recomposed_tools
+                .clone()
+                .unwrap_or_else(|| self.harness.config().tools.clone());
             rebuilt_system_prompt = Some(build_system_prompt(&BuildSystemPromptOptions {
                 cwd: self.config.cwd.clone(),
-                tools: self.harness.config().tools.clone(),
+                tools,
                 custom_prompt: self.config.custom_system_prompt.clone(),
                 append_system_prompt: self.config.append_system_prompt.clone(),
                 context_files: resources.context_files.clone(),
+                extra_guidelines: after_guidelines.clone(),
                 ..Default::default()
             }));
         }
@@ -1854,9 +1969,14 @@ impl CodingSession {
         self.context_files = resources.context_files;
         self.resource_diagnostics = resources.diagnostics;
         let after_diagnostics = diagnostic_signatures(self.resource_diagnostics());
-        if let Some(system) = rebuilt_system_prompt {
+        if rebuilt_system_prompt.is_some() || recomposed_tools.is_some() {
             let mut config = self.harness.config().clone();
-            config.system = system;
+            if let Some(system) = rebuilt_system_prompt {
+                config.system = system;
+            }
+            if let Some(tools) = recomposed_tools {
+                config.tools = tools;
+            }
             self.harness = AgentHarness::new(config, self.harness.messages());
             self.invalidate_context_usage_cache();
         }
@@ -1868,7 +1988,11 @@ impl CodingSession {
                 &after_prompt_templates,
             ),
             context_files: category_summary_from(&before_context_files, &after_context_files),
-            extensions: ReloadCategorySummary::new(before_extensions, after_extensions, false),
+            extensions: ReloadCategorySummary::new(
+                before_extensions,
+                after_extensions,
+                extensions_changed,
+            ),
             diagnostics: category_summary_from(&before_diagnostics, &after_diagnostics),
             system_prompt_rebuilt,
         })
