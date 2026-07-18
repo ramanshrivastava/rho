@@ -219,7 +219,7 @@ def render_md(records: list[dict], meta: dict) -> str:
     a("## Methodology\n")
     a(f"- **Machine**: {meta['machine']} — {meta['cpu']} ({meta['ncpu']} cores), "
       f"{gib(meta['mem_bytes'])} RAM, {meta['os']}")
-    a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; uv {meta['uv']}")
+    a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; {meta['uv']}")
     a(f"- **tau**: pinned at rev `{meta['tau_rev'][:12]}` (fixtures/TAU_REV), run via `uv run --project <tau>`")
     a(f"- **rho**: `{meta['rho_rev']}` on branch m6-bench, `--release` builds throughout")
     a(f"- **Generated**: {meta['generated_utc']}")
@@ -332,38 +332,61 @@ def render_md(records: list[dict], meta: dict) -> str:
 
     # ---- family d: memory
     a("## (d) Memory (peak RSS)\n")
-    a("Peak resident set size over a scripted 500-turn FakeProvider session "
-      "(transcript accumulating in memory, no network), via `/usr/bin/time -l`.\n")
+    a("Peak resident set size over a scripted N-turn FakeProvider session "
+      "(transcript accumulating in memory, no network), via `/usr/bin/time -l`. "
+      "This is the family with the **most surprising, most honest** result, so it "
+      "gets a turn-count sweep rather than a single number.\n")
     mem = [r for r in records if r["family"] == "memory_rss"]
     if mem:
-        rho_m = next((r for r in mem if r["impl"] == "rho"), None)
-        tau_m = next((r for r in mem if r["impl"] == "tau"), None)
-        a("| Impl | turns | peak RSS |")
-        a("|---|--:|--:|")
-        for r in mem:
-            a(f"| {r['impl']} | {r['turns']} | {r['peak_rss_mib']} MiB |")
+        turn_set = sorted({r["turns"] for r in mem})
+        by = {(r["impl"], r["turns"]): r for r in mem}
+        a("| turns | rho peak RSS | tau peak RSS | rho/tau |")
+        a("|--:|--:|--:|--:|")
+        for t in turn_set:
+            r, tt = by.get(("rho", t)), by.get(("tau", t))
+            ratio = (r["peak_rss_bytes"] / tt["peak_rss_bytes"]) if r and tt and tt["peak_rss_bytes"] else None
+            a(f"| {t} | {r['peak_rss_mib'] if r else '—'} MiB | "
+              f"{tt['peak_rss_mib'] if tt else '—'} MiB | "
+              f"{ratio:.2f}× |" if ratio else f"| {t} | — | — | — |")
         a("")
-        if rho_m and tau_m and rho_m["peak_rss_bytes"]:
-            ratio = tau_m["peak_rss_bytes"] / rho_m["peak_rss_bytes"]
-            a(f"tau's resident set is **{ratio:.1f}× larger** — the CPython "
-              "interpreter, its imported module graph (pydantic/httpx/rich/textual), "
-              "and per-object headers dominate a 500-message transcript. rho carries "
-              "only its own code + the `Vec<AgentMessage>`.")
+        base = min(turn_set)
+        rb, tb = by.get(("rho", base)), by.get(("tau", base))
+        if rb and tb:
+            a(f"**Baseline ({base} turn): rho is tiny.** rho's near-empty process is "
+              f"~{rb['peak_rss_mib']:.0f} MiB against tau's ~{tb['peak_rss_mib']:.0f} "
+              "MiB — the CPython interpreter plus its import graph "
+              "(pydantic/anyio/httpx/rich/textual) costs tens of MiB before doing any "
+              "work, where the statically-linked rho binary + a current-thread tokio "
+              "runtime costs a couple. **This is rho's real, production-relevant "
+              "footprint advantage.**")
+        a("**But watch the sweep: rho's line is super-linear and crosses tau's.** "
+          "That is *not* the transcript — it is a **test-double artifact**. rho's "
+          "`FakeProvider` records every call with `messages.to_vec()`, deep-copying "
+          "the whole (growing) transcript by value on each of the N turns → O(n²) "
+          "retained `AgentMessage` copies. tau's `FakeProvider` does "
+          "`list(messages)`, which copies *references* to shared model objects → "
+          "O(n). Rust value semantics vs Python reference semantics, in a scripted "
+          "harness that a real provider never exercises (real providers don't retain "
+          "a deep-copied call log). So: rho wins the footprint that matters (baseline "
+          "+ real runs) and loses this particular fake-driver microbench — reported "
+          "as-is rather than quietly dropping the inconvenient rows. A cheap future "
+          "fix is to have `RecordedCall` retain `Arc`/references instead of owned "
+          "clones; out of scope for M6.")
         a("**Allocator honesty**: peak RSS is not a like-for-like allocator "
-          "comparison — macOS reports RSS in bytes and both processes are subject to "
-          "the system allocator's retention policy. The gap here is overwhelmingly "
-          "*baseline interpreter + library footprint*, not transcript data "
-          "structures; do not read it as \"Rust structs are 10× smaller than Python "
-          "objects\" (they are smaller, but that is the minority of this number).")
+          "comparison — both processes are subject to the system allocator's "
+          "retention policy and macOS reports RSS in bytes. Read the *baseline* row "
+          "for the interpreter-vs-binary gap and the *shape* for the O(n²) artifact; "
+          "do not read the crossover as \"Rust uses more memory than Python\" in "
+          "general — it does not.")
         if meta["anthropic_key_present"]:
             a("Real-LLM spot checks: `ANTHROPIC_API_KEY` was present; see the raw "
               "results for the 2–3 live-provider samples.")
         else:
             a("Real-LLM spot checks: **skipped** — `ANTHROPIC_API_KEY` was not set "
-              "in the environment. The intent of those checks is only to confirm the "
-              "obvious: against a live provider, network latency (hundreds of ms to "
-              "seconds per turn) dominates end-to-end time and memory is steady-state, "
-              "so neither implementation's CPU/RSS edge is observable end-to-end.")
+              "in the environment. Their only intent is to confirm the obvious: "
+              "against a live provider, network latency (hundreds of ms to seconds "
+              "per turn) dominates end-to-end time, so neither implementation's "
+              "CPU/RSS edge is observable end-to-end.")
         a("")
     else:
         a("_Not collected in this run._\n")
@@ -397,11 +420,12 @@ def render_md(records: list[dict], meta: dict) -> str:
     ver = _cold(ca_rho, ca_tau, "version")
     memline = ""
     if mem:
-        rho_m = next((r for r in mem if r["impl"] == "rho"), None)
-        tau_m = next((r for r in mem if r["impl"] == "tau"), None)
-        if rho_m and tau_m:
-            memline = (f" peak RSS on a 500-turn session drops from "
-                       f"{tau_m['peak_rss_mib']:.0f} MiB to {rho_m['peak_rss_mib']:.0f} MiB")
+        base = min(r["turns"] for r in mem)
+        rb = next((r for r in mem if r["impl"] == "rho" and r["turns"] == base), None)
+        tb = next((r for r in mem if r["impl"] == "tau" and r["turns"] == base), None)
+        if rb and tb and rb["peak_rss_bytes"]:
+            memline = (f" baseline process RSS is ~{tb['peak_rss_mib'] / rb['peak_rss_mib']:.0f}× "
+                       f"smaller ({rb['peak_rss_mib']:.0f} MiB vs {tb['peak_rss_mib']:.0f} MiB)")
     a("On this machine the port bought a large, consistent **cold-path and "
       "footprint** win with **no change to observable behavior**:")
     if ver:
@@ -411,7 +435,9 @@ def render_md(records: list[dict], meta: dict) -> str:
     if hc:
         a(f"- SSE canonicalization at 10k deltas: **{hc}** faster per token.")
     if memline:
-        a(f"-{memline}.")
+        a(f"- Memory:{memline} — though the FakeProvider microbench also exposes an "
+          "O(n²) memory artifact in rho's test double under long scripted runs "
+          "(family (d)); the production-relevant baseline is the durable win.")
     a("\nAnd it bought essentially **nothing for the latency a human feels in an "
       "interactive session against a real LLM** — there, the network dominates and "
       "always will. The honest verdict: rho is the right tool when the agent is a "

@@ -127,10 +127,21 @@ honest:
    etc. in module docs. Each bench/example carries
    `#![allow(missing_docs, clippy::doc_markdown)]` — appropriate for harness
    files, not for library code.
-6. **RSS: measure the worker, not the launcher.** `rss.sh` runs the Rust example
-   binary and the **venv python directly** (not via `uv run`), so `/usr/bin/time
-   -l`'s "maximum resident set size" reflects the actual process, not uv. On
-   Darwin that field is already in bytes.
+6. **RSS: measure the worker, not the launcher — and the fake double surprised
+   us.** `rss.sh` runs the Rust example binary and the **venv python directly**
+   (not via `uv run`), so `/usr/bin/time -l`'s "maximum resident set size"
+   reflects the actual process (bytes, on Darwin). The surprise: at a 1-turn
+   baseline rho is ~2 MiB vs tau's ~41 MiB (interpreter + import graph), but rho's
+   RSS grows **super-linearly** and *crosses* tau's around 500 turns (rho ≈ 73
+   MiB, tau ≈ 45 MiB; at 2000 turns rho ≈ 1.1 GiB, tau ≈ 69 MiB). Root cause: rho's
+   `FakeProvider` records each call with `messages.to_vec()`, deep-copying the
+   growing transcript *by value* on every turn → O(n²) retained `AgentMessage`
+   copies; tau's `list(messages)` copies *references* → O(n). Rust value semantics
+   vs Python reference semantics, in a test double a real provider never
+   exercises. We sweep turn counts and report it straight (baseline win + O(n²)
+   artifact) rather than cherry-picking the baseline. A cheap follow-up: have
+   `RecordedCall` hold `Arc`/references. This is exactly the kind of thing a
+   benchmark exists to surface.
 7. **Machine noise is real.** These run on a developer laptop; absolute numbers
    swing ±10–30% under background load. `run_all.sh` is strictly serial for this
    reason, and the report leads with *ratios* (orders of magnitude) rather than
