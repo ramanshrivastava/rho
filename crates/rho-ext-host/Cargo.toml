@@ -15,7 +15,7 @@ workspace = true
 # Off by default so `cargo build` never compiles wasmtime; enable to link the
 # real component runtime (`WasmExtensionHost`).
 default = []
-wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi"]
+wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:tokio"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -23,14 +23,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-wasmtime = { version = "36", optional = true, features = [
+tokio = { version = "1", default-features = false, features = ["sync"], optional = true }
+
+wasmtime = { version = "46", optional = true, features = [
     "async",
     "component-model",
     "cranelift",
     "runtime",
 ] }
-wasmtime-wasi = { version = "36", optional = true }
+wasmtime-wasi = { version = "46", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
+serde_json = { workspace = true }
