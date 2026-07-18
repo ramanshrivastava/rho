@@ -218,6 +218,18 @@ fn snapshot_sidebar() {
 }
 
 #[test]
+fn snapshot_rho_splash() {
+    // The rho welcome splash on a fresh (empty) transcript, in the default rho
+    // identity theme: the ρ mark, the π → τ → ρ lineage, and the hint, centered.
+    let theme = get_tui_theme(TuiThemeName::Rho);
+    let rendered = render_to_string(48, 14, |frame| {
+        let area = full(frame);
+        rho_tui::widgets::render_splash(frame, area, &theme);
+    });
+    insta::assert_snapshot!("rho_splash", rendered);
+}
+
+#[test]
 fn snapshot_footer_modes() {
     let kb = TuiKeybindings::default();
     let theme = dark();

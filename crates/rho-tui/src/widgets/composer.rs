@@ -12,20 +12,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::autocomplete::CompletionState;
-use crate::state::TOOL_SPINNER_FRAMES;
 use crate::theme::TuiTheme;
 use crate::widgets::style::parse_style;
+
+/// The rho prompt-prefix "spinner": the Greek lineage π → τ → ρ cycled as an
+/// oxidized activity mark while a turn runs. This is rho *chrome* — a sanctioned
+/// look/feel divergence — and is deliberately DISTINCT from the transcript's
+/// tool spinner (`state::TOOL_SPINNER_FRAMES`, the braille frames that stay
+/// byte-identical to tau). The extra tail frames give the cycle a gentle beat.
+pub const RHO_SPINNER_FRAMES: [&str; 6] = ["π", "τ", "ρ", "ρ", "τ", "π"];
 
 /// The prompt-prefix glyph shown left of the composer.
 ///
 /// tau animates a 3-row bouncing square while running and shows `τ` idle. rho
-/// collapses that to a single animated cell: the rho glyph `ρ` when idle, a
-/// braille spinner frame while running (the same `TOOL_SPINNER_FRAMES` the
-/// transcript uses), rebranded from tau's `τ`.
+/// collapses that to a single animated cell: the rho glyph `ρ` when idle, and a
+/// Greek-lineage spinner ([`RHO_SPINNER_FRAMES`]) while running — rho's own
+/// identity, not tau's `τ`.
 #[must_use]
 pub fn prompt_prefix(running: bool, frame_idx: usize) -> String {
     if running {
-        TOOL_SPINNER_FRAMES[frame_idx % TOOL_SPINNER_FRAMES.len()].to_string()
+        RHO_SPINNER_FRAMES[frame_idx % RHO_SPINNER_FRAMES.len()].to_string()
     } else {
         "ρ".to_string()
     }
@@ -177,9 +183,16 @@ mod tests {
 
     #[test]
     fn prompt_prefix_switches_on_running() {
+        // Idle shows the rho glyph; running cycles the Greek-lineage spinner
+        // (distinct from the tau-parity transcript tool spinner).
         assert_eq!(prompt_prefix(false, 0), "ρ");
-        assert_eq!(prompt_prefix(true, 0), TOOL_SPINNER_FRAMES[0]);
-        assert_eq!(prompt_prefix(true, 3), TOOL_SPINNER_FRAMES[3]);
+        assert_eq!(prompt_prefix(true, 0), RHO_SPINNER_FRAMES[0]);
+        assert_eq!(
+            prompt_prefix(true, 7),
+            RHO_SPINNER_FRAMES[7 % RHO_SPINNER_FRAMES.len()]
+        );
+        // The chrome spinner must NOT be tau's braille transcript spinner.
+        assert_ne!(prompt_prefix(true, 0), crate::state::TOOL_SPINNER_FRAMES[0]);
     }
 
     #[test]

@@ -18,13 +18,17 @@ use serde_json::{Map, Value};
 pub struct TuiConfigError(pub String);
 
 /// The built-in theme names, in order (mirrors `rho_coding::BUILTIN_TUI_THEME_NAMES`).
-pub const BUILTIN_TUI_THEME_NAMES: [&str; 3] = ["tau-dark", "tau-light", "high-contrast"];
+/// `rho` leads the list and is the default — rho's own identity theme; the three
+/// `tau-*` themes remain selectable for tau parity.
+pub const BUILTIN_TUI_THEME_NAMES: [&str; 4] = ["rho", "tau-dark", "tau-light", "high-contrast"];
 
-/// A built-in theme name (tau `TuiThemeName`).
+/// A built-in theme name (tau `TuiThemeName`, extended with rho's own `Rho`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TuiThemeName {
-    /// The default dark theme.
+    /// rho's default identity theme (rust-oxide accents, warm neutrals).
     #[default]
+    Rho,
+    /// tau's default dark theme.
     TauDark,
     /// The light theme.
     TauLight,
@@ -37,6 +41,7 @@ impl TuiThemeName {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Rho => "rho",
             Self::TauDark => "tau-dark",
             Self::TauLight => "tau-light",
             Self::HighContrast => "high-contrast",
@@ -47,6 +52,7 @@ impl TuiThemeName {
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
+            "rho" => Some(Self::Rho),
             "tau-dark" => Some(Self::TauDark),
             "tau-light" => Some(Self::TauLight),
             "high-contrast" => Some(Self::HighContrast),
@@ -275,6 +281,56 @@ fn role_styles(entries: &[(&'static str, &str, &str)]) -> Vec<(&'static str, Tui
         .collect()
 }
 
+/// The `rho` identity theme — rho's default. An owner-sanctioned look/feel
+/// divergence from tau: rust-oxide accents (ρ #B3391F) over warm neutral
+/// parchment text on a warm near-black ground, the graph-paper spirit adapted to
+/// a dark terminal. All colors are rho's own; the palette is documented as a
+/// deliberate divergence in `dev-notes/phase-5.md`.
+#[must_use]
+pub fn rho_theme() -> TuiTheme {
+    TuiTheme {
+        name: TuiThemeName::Rho,
+        screen_background: "#0e0c0b".into(),
+        screen_text: "#e6ddd1".into(),
+        chrome_background: "#0e0c0b".into(),
+        chrome_text: "#e6ddd1".into(),
+        muted_text: "#8a7c6d".into(),
+        sidebar_background: "#0e0c0b".into(),
+        border: "#2a2019".into(),
+        transcript_background: "#0e0c0b".into(),
+        prompt_background: "#161210".into(),
+        prompt_text: "#f0e8dc".into(),
+        prompt_border: "#b3391f".into(),
+        autocomplete_background: "#0e0c0b".into(),
+        accent: "#b3391f".into(),
+        highlight_background: "#e7b7a2".into(),
+        highlight_text: "#2a0f07".into(),
+        markdown_heading: "#d97a4e".into(),
+        markdown_table_header: "#a99883".into(),
+        markdown_table_border: "#4a3d32".into(),
+        markdown_inline_code: "#d9a441".into(),
+        markdown_code_block_background: "#17120f".into(),
+        markdown_link: "#5ca7a0".into(),
+        markdown_bullet: "#b3391f".into(),
+        completion_selected: "bold #2a0f07 on #e7b7a2".into(),
+        completion_selected_description: "#3a1a10 on #e7b7a2".into(),
+        completion_description: "#8a7c6d".into(),
+        syntax_theme: "ansi_dark".into(),
+        role_styles: role_styles(&[
+            ("user", "#c98a5a", "#e6ddd1 on #0e0c0b"),
+            ("assistant", "#8bb0a8", "#e6ddd1 on #0e0c0b"),
+            ("tool", "#b3391f", "#d8ccbb on #0e0c0b"),
+            ("error", "#ff5c4d", "#ffb9ab on #0e0c0b"),
+            ("status", "#6b5d4e", "#b6a894 on #0e0c0b"),
+            ("thinking", "#5a4f43", "#9c8f7d on #0e0c0b"),
+            ("skill", "#c08bb0", "#ecd8e6 on #0e0c0b"),
+            ("custom", "#8bb0a8", "#e6ddd1 on #0e0c0b"),
+            ("branch_summary", "#cf8a4e", "#f0dcc4 on #0e0c0b"),
+            ("compaction_summary", "#cf8a4e", "#f0dcc4 on #0e0c0b"),
+        ]),
+    }
+}
+
 /// The `tau-dark` theme.
 #[must_use]
 pub fn tau_dark_theme() -> TuiTheme {
@@ -417,6 +473,7 @@ pub fn tau_light_theme() -> TuiTheme {
 #[must_use]
 pub fn get_tui_theme(name: TuiThemeName) -> TuiTheme {
     match name {
+        TuiThemeName::Rho => rho_theme(),
         TuiThemeName::TauDark => tau_dark_theme(),
         TuiThemeName::TauLight => tau_light_theme(),
         TuiThemeName::HighContrast => high_contrast_theme(),
@@ -473,7 +530,7 @@ impl Default for TuiSettings {
     fn default() -> Self {
         Self {
             keybindings: TuiKeybindings::default(),
-            theme: TuiThemeName::TauDark,
+            theme: TuiThemeName::Rho,
             auto_copy_selection: false,
             sidebar_position: SidebarPosition::Left,
         }
@@ -631,7 +688,7 @@ fn key_string(value: &Value, field: &str) -> Result<String, TuiConfigError> {
 
 fn theme_name(value: Option<&Value>) -> Result<TuiThemeName, TuiConfigError> {
     let Some(raw) = value else {
-        return Ok(TuiThemeName::TauDark);
+        return Ok(TuiThemeName::Rho);
     };
     let name = match raw.as_str() {
         Some(s) if !s.trim().is_empty() => s.trim(),
@@ -686,6 +743,24 @@ mod tests {
     #[test]
     fn theme_names_match_rho_coding() {
         assert_eq!(BUILTIN_TUI_THEME_NAMES, rho_coding::BUILTIN_TUI_THEME_NAMES);
+    }
+
+    #[test]
+    fn rho_is_the_default_identity_theme() {
+        // rho's own theme is the default; the tau themes stay reachable.
+        assert_eq!(TuiThemeName::default(), TuiThemeName::Rho);
+        assert_eq!(TuiSettings::default().theme, TuiThemeName::Rho);
+        // A tui.json with no `theme` field resolves to rho, not tau-dark.
+        assert_eq!(
+            tui_settings_from_json(&Map::new()).unwrap().theme,
+            TuiThemeName::Rho
+        );
+        // The identity theme carries the rust-oxide accent and is round-trippable.
+        let theme = get_tui_theme(TuiThemeName::Rho);
+        assert_eq!(theme.accent, "#b3391f");
+        assert_eq!(theme.name, TuiThemeName::Rho);
+        assert_eq!(TuiThemeName::parse("rho"), Some(TuiThemeName::Rho));
+        assert_eq!(rho_theme().role_styles.len(), 10);
     }
 
     #[test]

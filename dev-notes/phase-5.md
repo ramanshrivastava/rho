@@ -265,3 +265,111 @@ _Original template retained below._
 
 _To be filled at PR: each Codex + CodeRabbit thread with FIX-with-SHA or
 REBUT-with-tau-evidence. Byte-compat with tau is the arbiter._
+
+## M5.5 — TUI polish milestone (owner-sanctioned look/feel divergence)
+
+Owner directive (recorded in project memory): the TUI's strict-parity rule is
+**relaxed for look / feel / performance** — the TUI may deliberately diverge from
+tau there. **Wire / session / CLI parity stays LOCKED.** Three workstreams,
+branch `feat/tui-polish`. Goldens/crosscheck untouched; full workspace + clippy
+`-D warnings` + fmt green throughout. The TUI was also driven live under
+`rho --fake` in a PTY (splash + rho theme + sidebar/status/footer all render;
+prompt submit + clean Ctrl+D quit confirmed) — the `[HUMAN]` live-drive item
+above is now machine-smoke-tested for launch/render/input.
+
+### 1. Parity gaps — audited rho-tui against tau `tui/` directly
+
+(A background audit subagent returned prompt-injected content — a fake
+`_ext_ai_health_check` payload — and was disregarded; the audit was done by hand
+against the tau source.)
+
+**Closed (real behavioral gaps, daily-use):**
+- **Hidden-thinking placeholder.** `build_transcript_lines` never honored
+  `state.show_thinking`, so Ctrl+T did nothing to the transcript. Now, when
+  thinking is hidden, a run of consecutive `thinking` items collapses to a single
+  `_HIDDEN_THINKING_PLACEHOLDER` block — exactly tau's `TranscriptView`
+  render (`widgets.py:653-669`, placeholder text `widgets.py:200`). Regression
+  test `hidden_thinking_collapses_to_single_placeholder`.
+- **Up-arrow recalls the last prompt.** Up on an EMPTY composer now recalls the
+  most recent submission (tau `action_recall_previous_prompt`, `app.py:4077`),
+  before falling through to cursor-up. Test
+  `up_recalls_previous_prompt_only_into_empty_composer`.
+- **Command-output modal scroll clamp.** The scrollable `$ cmd` output now clamps
+  its offset to the last page (tracks the rendered viewport height) instead of
+  drifting into blank space on over-scroll. Test
+  `command_output_scroll_clamps_to_last_page`.
+
+**Ledgered (deliberate, with rationale):**
+- **Edit-queued-message on Up while running** (tau `action_edit_queued_message`,
+  `app.py:4091`): pops the latest queued follow-up/steering message back into the
+  composer. Deferred — it needs `pop_latest_follow_up` / `pop_latest_steering` on
+  `HarnessControl` (they exist on `AgentHarness` but not the cloneable control
+  handle the TUI uses mid-turn), i.e. an `rho-agent` change outside this
+  milestone's `rho-tui` + TUI-wiring + theme-plumbing scope boundary. The common
+  case (recall a submitted prompt) is covered above.
+- **Session-picker / model-cycle mid-run notification.** tau *notifies* ("Tau is
+  already working. Press Escape to cancel.") when these keys are pressed during a
+  run; rho ignores them mid-turn. Deferred (cosmetic) — rho has no transient-toast
+  primitive and the immediate-mode borrow seam makes opening a modal mid-turn
+  awkward; the not-stranding-the-user bindings (quit, command palette) are live.
+- **Session-picker row format.** rho shows `{id}  {title}  {model}`; tau shows
+  `{updated_at} - {model} - {title}` (`app.py:5193`). Kept rho's format
+  deliberately — rho surfaces the session **id** because resume-from-picker is
+  itself deferred and the picker's notice tells the user to run
+  `rho --resume <id>`, so the id is the actionable field. Look/feel, sanctioned.
+
+### 2. Performance pass (measured)
+
+- **`TranscriptCache`** (`widgets/transcript.rs`): a fingerprint-keyed memo over
+  `build_transcript_lines`. The transcript was rebuilt from scratch every frame
+  (each 150 ms spinner tick during a run, each keystroke while composing) —
+  O(transcript) markdown parse + word wrap. The fingerprint hashes every input
+  that affects the render (per-item role/text/result/update/always-show, the
+  `show_*` toggles, `assistant_buffer`, the active `tool_spinner`, theme name,
+  width), so an unchanged frame reuses the prior render and there is no manual
+  invalidation to drift. Held in a `RefCell` so the immutable-borrow render path
+  refreshes it in place.
+- **Stream-delta coalescing** (`app.rs::run_turn`): the turn loop drains every
+  already-ready stream event (`now_or_never`) before the next draw, so a burst of
+  token deltas is one redraw, not one per delta.
+
+Measured (`cargo bench -p rho-tui --bench transcript_render`, criterion medians):
+
+| transcript size        | rebuild (before) | cache hit (after) | speedup |
+|------------------------|------------------|-------------------|---------|
+| 50 turns (150 items)   | 4.16 ms          | 0.21 ms           | ~20×    |
+| 200 turns (600 items)  | 16.4 ms          | 1.07 ms           | ~15×    |
+| 500 turns (1500 items) | 43.5 ms          | 2.67 ms           | ~16×    |
+
+The cache-hit cost is now dominated by the `Vec<Line>` clone handed to the
+`Paragraph` (a zero-copy render path is a possible future follow-up); the
+markdown parse/wrap is skipped entirely on unchanged frames. CI compiles the new
+bench but never runs it (same policy as the M6 benches).
+
+### 3. rho identity (sanctioned divergence — rho looks like rho, not tau)
+
+All divergences below are **look/feel only**; none touch a wire/session/CLI byte
+or a golden. rho's `tui.json` is rho-local (tau never reads it), so extending its
+theme vocabulary is not a parity surface.
+
+- **`rho` theme, now the default.** `TuiThemeName::Rho` + `rho_theme()`: rust-oxide
+  accents (ρ `#b3391f`) over warm neutral parchment text on a warm near-black
+  ground — the graph-paper spirit adapted to a dark terminal. `"rho"` leads
+  `BUILTIN_TUI_THEME_NAMES` in both `rho-tui` and `rho-coding` (kept equal by
+  `theme_names_match_rho_coding`); it is the default for a fresh session and for a
+  `tui.json` with no `theme` field. The three `tau-*` themes stay fully
+  selectable (`/theme`, the theme picker).
+- **Greek prompt-prefix spinner.** While a turn runs, the composer prefix cycles
+  the π → τ → ρ lineage (`RHO_SPINNER_FRAMES`) instead of tau's braille. This is
+  chrome and is deliberately **distinct** from the transcript tool spinner
+  (`state::TOOL_SPINNER_FRAMES`), which stays byte-identical to tau — guarded by a
+  test asserting the two differ.
+- **Welcome splash.** A fresh (empty) transcript shows a centered ρ mark, the
+  π → τ → ρ lineage, and "a Rust port of tau" instead of a blank pane
+  (snapshot `rho_splash`). tau shows a blank transcript.
+- **`--help` lineage.** The binary `long_about` states the π → τ → ρ lineage and
+  the tau-compat guarantee.
+
+The idle prompt glyph `ρ` and the `ρ`/`RHO_TERMINAL_TITLE` terminal title were
+already rho's (prior commits); this milestone extends the identity to the theme,
+the running spinner, the empty state, and the help text.
