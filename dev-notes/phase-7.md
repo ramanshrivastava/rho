@@ -147,6 +147,7 @@ verified the whole stack.
 | `async_support(true)` + `func_wrap_async`; init-phase-only registration | ✅ `in_init` flag enforces it |
 | Hooks dispatched strictly sequentially per extension | ✅ runtime iterates subscribers in load order |
 | Capability sandbox (no ambient FS/net) | ✅ empty `WasiCtx`; sandbox-denial test |
+| Resource bounds (CPU/mem/wall-clock; no wedging) | ✅ fuel+yield, per-dispatch timeout, `StoreLimits`, per-instance locks; `runaway` boundedness + responsiveness test |
 | Discovery from `~/.rho/extensions/` + `-x` | ✅ `discovery.rs`; simpler than tau (one-file component) |
 | Hot reload (re-instantiation, `/reload` parity) | ✅ `load` replaces the instance set; reload tests |
 | Port `hello_tool` + `permission_gate` as Rust guests | ✅ under `examples/extensions/` (+ `sandbox_probe` fixture) |
@@ -169,10 +170,21 @@ wiring:
   session and update in place on `set_model`/`set_provider`, via a shared
   `Arc<Mutex<SessionContext>>` (the sync-mutator-friendly design that sidesteps
   the `CodingSession`-ownership cycle).
-- **wasmtime resource limits.** A malicious guest can no longer hang or OOM the
-  host: per-call fuel metering (a `loop {}` tool traps — `runaway` fixture test)
-  plus a `StoreLimits` memory ceiling, complementing the empty-`WasiCtx`
-  capability sandbox.
+- **wasmtime resource bounds (the malicious-guest threat model).** Four
+  independent guarantees complement the empty-`WasiCtx` capability sandbox:
+  (a) **CPU** — `Config::consume_fuel(true)` with a per-call fuel budget and
+  `fuel_async_yield_interval`, so a compute-bound loop cooperatively yields and
+  either exhausts its fuel (trap) or is preempted; (b) **wall-clock** — every
+  dispatch is wrapped in a `tokio::time::timeout`, so a guest blocking on a slow
+  host import or a huge-but-finite loop is cancelled at a hard bound;
+  (c) **memory** — a `StoreLimits` ceiling fails an over-large `memory.grow`
+  cleanly instead of letting a guest climb toward the 4 GiB wasm32 limit;
+  (d) **no subsystem wedging** — each extension lives behind its own
+  `Arc<Mutex<Instance>>`; the subsystem lock is held only to *clone* that handle,
+  so the guest runs without it and `load`/`teardown`/other extensions stay
+  responsive while one guest loops. The `runaway` fixture test asserts all of
+  this: an infinite-loop tool is bounded **and** a concurrent `load` + dispatch
+  to another extension complete promptly.
 - **`/login` robustness.** Transactional credential persistence (roll back on a
   failed provider upsert), OAuth account/org selection through the modal (no
   silent first-pick), a bounded extension-UI channel, and `run_turn`

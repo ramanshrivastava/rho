@@ -133,35 +133,58 @@ fn bridge() -> Arc<dyn HostBridge> {
     Arc::new(TestBridge::default())
 }
 
-/// A runaway guest (`loop {}` in its tool) must trap on the host's per-call fuel
-/// budget rather than hanging, and the host must stay usable afterwards.
+/// A runaway guest (`loop {}` in its tool) must (a) be bounded — trap on fuel or
+/// time out rather than hanging forever — and (b) NOT wedge the subsystem: while
+/// one guest loops, `load`/other dispatch must stay responsive (the guest runs
+/// without holding the subsystem lock). This is the resource-bound guarantee.
 #[tokio::test]
-async fn runaway_guest_traps_on_fuel_exhaustion_and_host_survives() {
-    let host = WasmExtensionHost::new().expect("host");
-    let outcome = host.load(&[spec("runaway")], bridge()).await;
-    assert_eq!(outcome.extensions.len(), 1, "runaway should load");
+async fn runaway_guest_is_bounded_and_subsystem_stays_responsive() {
+    use std::sync::Arc;
+    use std::time::Duration;
 
-    // The call must COMPLETE (with a trap error), not hang. A generous timeout
-    // guards the test harness itself — fuel exhaustion should return far sooner.
-    let called = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        host.call_tool("runaway", "spin", &json!({})),
-    )
-    .await
-    .expect("call_tool must return (fuel trap), not hang");
-    assert!(
-        called.is_err(),
-        "a `loop {{}}` tool must trap on fuel exhaustion, got: {called:?}"
+    let host = Arc::new(WasmExtensionHost::new().expect("host"));
+    assert_eq!(
+        host.load(&[spec("runaway")], bridge())
+            .await
+            .extensions
+            .len(),
+        1
     );
 
-    // Host still alive: a fresh extension loads and runs.
-    let outcome = host.load(&[spec("hello_tool")], bridge()).await;
-    assert_eq!(outcome.extensions.len(), 1);
-    let result = host
-        .call_tool("hello_tool", "hello", &json!({}))
+    // Kick off the never-returning tool call in the background.
+    let spinner = {
+        let host = host.clone();
+        tokio::spawn(async move { host.call_tool("runaway", "spin", &json!({})).await })
+    };
+
+    // (b) Responsiveness: while the guest loops, `load` (which takes the
+    // subsystem lock) must return promptly — it is NOT blocked behind the guest.
+    let reload = tokio::time::timeout(
+        Duration::from_secs(5),
+        host.load(&[spec("hello_tool")], bridge()),
+    )
+    .await
+    .expect("load must not block behind a looping guest");
+    assert_eq!(reload.extensions.len(), 1);
+    let hello = tokio::time::timeout(
+        Duration::from_secs(5),
+        host.call_tool("hello_tool", "hello", &json!({})),
+    )
+    .await
+    .expect("dispatch to another extension must not block")
+    .expect("hello runs");
+    assert_eq!(hello.text, "Hello, world!");
+
+    // (a) Boundedness: the spinning call itself completes (fuel trap or timeout),
+    // it does not hang forever.
+    let spun = tokio::time::timeout(Duration::from_secs(40), spinner)
         .await
-        .expect("host survives the trap");
-    assert_eq!(result.text, "Hello, world!");
+        .expect("the runaway call must terminate")
+        .expect("spawn ok");
+    assert!(
+        spun.is_err(),
+        "a `loop {{}}` tool must be bounded, got: {spun:?}"
+    );
 }
 
 // --------------------------------------------------------------------------

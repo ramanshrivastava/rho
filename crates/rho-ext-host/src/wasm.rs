@@ -38,6 +38,16 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 /// the host. Generous enough for legitimate work; a `loop {}` guest trips it.
 const FUEL_PER_CALL: u64 = 2_000_000_000;
 
+/// How often a running guest yields back to the async executor (every this many
+/// fuel units). This makes a compute-bound loop cooperatively yield so the
+/// wall-clock [`DISPATCH_TIMEOUT`] can preempt it even before fuel is exhausted.
+const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
+
+/// Wall-clock ceiling for a single guest dispatch. A guest that blocks (a slow
+/// host import, a huge-but-finite loop) is cancelled at this bound; combined
+/// with fuel yielding, no single call can wedge a dispatch indefinitely.
+const DISPATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Memory ceiling per extension store: a guest that tries to grow past this
 /// fails the allocation cleanly rather than exhausting host memory.
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
@@ -120,23 +130,20 @@ struct Instance {
 }
 
 struct Inner {
-    instances: HashMap<String, Instance>,
+    /// Per-extension instances behind their own locks. The subsystem lock
+    /// (`WasmExtensionHost::inner`) is held only long enough to *clone* the
+    /// `Arc`; the guest then runs while holding only its own instance lock, so
+    /// a looping guest can never wedge `load`/`teardown`/other extensions.
+    instances: HashMap<String, Arc<Mutex<Instance>>>,
 }
 
-impl Inner {
-    /// Look up a loaded instance and reset its fuel budget for the next guest
-    /// call (so each hook/tool invocation gets a fresh CPU allowance rather than
-    /// sharing one cumulative budget across the extension's lifetime).
-    fn instance_mut(&mut self, extension: &str) -> Result<&mut Instance, HostError> {
-        let inst = self
-            .instances
-            .get_mut(extension)
-            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))?;
-        // Best-effort: `set_fuel` only fails if fuel metering is disabled, which
-        // it never is here.
-        let _ = inst.store.set_fuel(FUEL_PER_CALL);
-        Ok(inst)
-    }
+/// A dispatch that overran [`DISPATCH_TIMEOUT`].
+fn timed_out(extension: &str, event: &str) -> HostError {
+    HostError::dispatch(
+        extension,
+        event,
+        format!("timed out after {DISPATCH_TIMEOUT:?}"),
+    )
 }
 
 /// wasmtime component runtime for rho extensions.
@@ -186,6 +193,18 @@ impl WasmExtensionHost {
         })
     }
 
+    /// Clone the lock guarding one loaded extension, holding the subsystem lock
+    /// only for the clone. The caller then locks the returned handle and runs
+    /// the guest without blocking the rest of the subsystem.
+    async fn acquire(&self, extension: &str) -> Result<Arc<Mutex<Instance>>, HostError> {
+        let inner = self.inner.lock().await;
+        inner
+            .instances
+            .get(extension)
+            .cloned()
+            .ok_or_else(|| HostError::UnknownExtension(extension.to_string()))
+    }
+
     /// Instantiate one component, run its `init`, and return the registrations
     /// it produced alongside the live instance.
     async fn instantiate(
@@ -199,11 +218,13 @@ impl WasmExtensionHost {
         let mut state = StoreState::new(bridge);
         state.in_init = true;
         let mut store = Store::new(&self.engine, state);
-        // Enforce the memory ceiling and give `init` its fuel budget.
+        // Enforce the memory ceiling, give `init` its fuel budget, and make the
+        // guest yield periodically so a wall-clock timeout can preempt it.
         store.limiter(|s| &mut s.limits);
         store
             .set_fuel(FUEL_PER_CALL)
             .map_err(|e| format!("fuel init failed: {e}"))?;
+        store.fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL));
 
         let instance = bindings::Extension::instantiate_async(&mut store, &component, &self.linker)
             .await
@@ -396,7 +417,9 @@ impl ExtensionHost for WasmExtensionHost {
         for spec in specs {
             match self.instantiate(spec, bridge.clone()).await {
                 Ok((loaded, instance)) => {
-                    inner.instances.insert(spec.name.clone(), instance);
+                    inner
+                        .instances
+                        .insert(spec.name.clone(), Arc::new(Mutex::new(instance)));
                     outcome.extensions.push(loaded);
                 }
                 Err(message) => {
@@ -410,9 +433,14 @@ impl ExtensionHost for WasmExtensionHost {
     }
 
     async fn bind(&self, bridge: Arc<dyn HostBridge>) {
-        let mut inner = self.inner.lock().await;
-        for instance in inner.instances.values_mut() {
-            instance.store.data_mut().bridge = bridge.clone();
+        // Clone the Arcs under a brief subsystem lock, then update each instance
+        // under its own lock — never holding both at once.
+        let arcs: Vec<Arc<Mutex<Instance>>> = {
+            let inner = self.inner.lock().await;
+            inner.instances.values().cloned().collect()
+        };
+        for arc in arcs {
+            arc.lock().await.store.data_mut().bridge = bridge.clone();
         }
     }
 
@@ -422,14 +450,19 @@ impl ExtensionHost for WasmExtensionHost {
         tool: &str,
         arguments: &Value,
     ) -> Result<ToolCallResult, HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
 
-        let result_json = inst
+        let args_json = to_json(arguments);
+        let call = inst
             .bindings
-            .call_call_tool(&mut inst.store, tool, &to_json(arguments))
-            .await
-            .map_err(dispatch_err(extension, "call_tool"))?;
+            .call_call_tool(&mut inst.store, tool, &args_json);
+        let result_json = match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "call_tool"))?,
+            Err(_) => return Err(timed_out(extension, "call_tool")),
+        };
 
         let value: Value = serde_json::from_str(&result_json).map_err(|e| {
             HostError::dispatch(extension, "call_tool", format!("bad tool result JSON: {e}"))
@@ -455,19 +488,21 @@ impl ExtensionHost for WasmExtensionHost {
         extension: &str,
         event: &InputEvent,
     ) -> Result<Option<InputOutcome>, HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
 
         let ev = wit::InputEvent {
             text: event.text.clone(),
             source: event.source.clone(),
             streaming_behavior: event.streaming_behavior.clone(),
         };
-        let out = inst
-            .bindings
-            .call_on_input(&mut inst.store, &ev)
-            .await
-            .map_err(dispatch_err(extension, "on_input"))?;
+        let call = inst.bindings.call_on_input(&mut inst.store, &ev);
+        let out = match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "on_input"))?,
+            Err(_) => return Err(timed_out(extension, "on_input")),
+        };
 
         Ok(out.map(|o| {
             let action = match o.action.as_str() {
@@ -488,18 +523,20 @@ impl ExtensionHost for WasmExtensionHost {
         extension: &str,
         event: &ToolCallEvent,
     ) -> Result<Option<ToolCallOutcome>, HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
 
         let ev = wit::ToolCallEvent {
             tool_name: event.tool_name.clone(),
             arguments_json: to_json(&event.arguments),
         };
-        let out = inst
-            .bindings
-            .call_on_tool_call(&mut inst.store, &ev)
-            .await
-            .map_err(dispatch_err(extension, "on_tool_call"))?;
+        let call = inst.bindings.call_on_tool_call(&mut inst.store, &ev);
+        let out = match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "on_tool_call"))?,
+            Err(_) => return Err(timed_out(extension, "on_tool_call")),
+        };
 
         Ok(out.map(|o| ToolCallOutcome {
             block: o.block,
@@ -513,8 +550,10 @@ impl ExtensionHost for WasmExtensionHost {
         extension: &str,
         event: &ToolResultEvent,
     ) -> Result<Option<ToolResultOutcome>, HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
 
         let ev = wit::ToolResultEvent {
             tool_name: event.tool_name.clone(),
@@ -522,11 +561,11 @@ impl ExtensionHost for WasmExtensionHost {
             result_text: event.result_text.clone(),
             result_details_json: event.result_details.as_ref().map(to_json),
         };
-        let out = inst
-            .bindings
-            .call_on_tool_result(&mut inst.store, &ev)
-            .await
-            .map_err(dispatch_err(extension, "on_tool_result"))?;
+        let call = inst.bindings.call_on_tool_result(&mut inst.store, &ev);
+        let out = match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "on_tool_result"))?,
+            Err(_) => return Err(timed_out(extension, "on_tool_result")),
+        };
 
         Ok(out.map(|o| ToolResultOutcome {
             content: o.content,
@@ -539,15 +578,18 @@ impl ExtensionHost for WasmExtensionHost {
         extension: &str,
         event: &LifecycleEvent,
     ) -> Result<(), HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
         let ev = wit::LifecycleEvent {
             reason: event.reason.clone(),
         };
-        inst.bindings
-            .call_on_session_start(&mut inst.store, &ev)
-            .await
-            .map_err(dispatch_err(extension, "on_session_start"))
+        let call = inst.bindings.call_on_session_start(&mut inst.store, &ev);
+        match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "on_session_start")),
+            Err(_) => Err(timed_out(extension, "on_session_start")),
+        }
     }
 
     async fn on_session_shutdown(
@@ -555,15 +597,18 @@ impl ExtensionHost for WasmExtensionHost {
         extension: &str,
         event: &LifecycleEvent,
     ) -> Result<(), HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
         let ev = wit::LifecycleEvent {
             reason: event.reason.clone(),
         };
-        inst.bindings
-            .call_on_session_shutdown(&mut inst.store, &ev)
-            .await
-            .map_err(dispatch_err(extension, "on_session_shutdown"))
+        let call = inst.bindings.call_on_session_shutdown(&mut inst.store, &ev);
+        match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "on_session_shutdown")),
+            Err(_) => Err(timed_out(extension, "on_session_shutdown")),
+        }
     }
 
     async fn on_agent_event(
@@ -571,12 +616,18 @@ impl ExtensionHost for WasmExtensionHost {
         extension: &str,
         event: &AgentHookEvent,
     ) -> Result<(), HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
-        inst.bindings
-            .call_on_agent_event(&mut inst.store, &event.event_type, &to_json(&event.payload))
-            .await
-            .map_err(dispatch_err(extension, "on_agent_event"))
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
+        let payload_json = to_json(&event.payload);
+        let call =
+            inst.bindings
+                .call_on_agent_event(&mut inst.store, &event.event_type, &payload_json);
+        match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "on_agent_event")),
+            Err(_) => Err(timed_out(extension, "on_agent_event")),
+        }
     }
 
     async fn render_message(
@@ -587,19 +638,22 @@ impl ExtensionHost for WasmExtensionHost {
         details: Option<&Value>,
         expanded: bool,
     ) -> Result<Option<String>, HostError> {
-        let mut inner = self.inner.lock().await;
-        let inst = inner.instance_mut(extension)?;
+        let arc = self.acquire(extension).await?;
+        let mut guard = arc.lock().await;
+        let inst = &mut *guard;
+        let _ = inst.store.set_fuel(FUEL_PER_CALL);
         let details_json = details.map(to_json);
-        inst.bindings
-            .call_render_message(
-                &mut inst.store,
-                custom_type,
-                content,
-                details_json.as_deref(),
-                expanded,
-            )
-            .await
-            .map_err(dispatch_err(extension, "render_message"))
+        let call = inst.bindings.call_render_message(
+            &mut inst.store,
+            custom_type,
+            content,
+            details_json.as_deref(),
+            expanded,
+        );
+        match tokio::time::timeout(DISPATCH_TIMEOUT, call).await {
+            Ok(r) => r.map_err(dispatch_err(extension, "render_message")),
+            Err(_) => Err(timed_out(extension, "render_message")),
+        }
     }
 
     async fn teardown(&self) {
