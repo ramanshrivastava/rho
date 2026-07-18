@@ -79,6 +79,13 @@ fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64
         item.update_text.hash(&mut h);
         item.always_show_tool_result.hash(&mut h);
     }
+    // Not hashed: `tool_name` / `tool_arguments` / `custom_type` / `details`.
+    // They only reach the render through the extension resolvers
+    // (`tool_call_renderer` / `custom_renderer`), which are never installed
+    // before M7 — today those items fall back to `item.text` (already hashed).
+    // They are also set once when an item is created and never mutated, so any
+    // change to them arrives as a new item, i.e. a new sequence with a different
+    // hash. When M7 wires the resolvers this fingerprint must fold them in.
     h.finish()
 }
 
