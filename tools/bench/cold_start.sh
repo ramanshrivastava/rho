@@ -54,8 +54,28 @@ mkdir -p "$RESULTS_DIR"
 WORK="$(mktemp -d)"
 RHO_HOME="$WORK/rho-home"
 TAU_HOME="$WORK/tau-home"
+PI_HOME="$WORK/pi-agent"
 UV_CACHE="$(uv cache dir)"
-mkdir -p "$RHO_HOME" "$TAU_HOME"
+mkdir -p "$RHO_HOME" "$TAU_HOME" "$PI_HOME"
+
+# pi (TypeScript/Node, the original agent both tau and rho port) is measured two
+# ways, mirroring tau's uv-vs-venv treatment:
+#   * "pi" via the fnm PATH shim — what a user actually types (adds fnm's
+#     multishell resolution, the Node analogue of `uv run`'s launcher cost)
+#   * the real Node binary + the resolved cli.js entry directly — bypassing both
+#     fnm shims, the fairest process-spawn number
+# We resolve the real entry once so both are exact. pi is OPTIONAL: if it (or
+# node) is absent, the pi rows are skipped and rho/tau still benchmark — so
+# regenerating the rho/tau numbers never requires installing pi.
+PI_SHIM="$(command -v pi || true)"
+PI_OK=0
+if [[ -n "$PI_SHIM" ]] && command -v node >/dev/null 2>&1; then
+  PI_ENTRY="$(readlink -f "$PI_SHIM" 2>/dev/null || realpath "$PI_SHIM")"   # .../dist/cli.js
+  NODE_REAL="$(readlink -f "$(command -v node)" 2>/dev/null || realpath "$(command -v node)")"
+  PI_OK=1
+else
+  echo ">> pi/node not on PATH — skipping pi cold-start rows (rho/tau only)" >&2
+fi
 
 MOCK_PID=""
 cleanup() {
@@ -83,18 +103,30 @@ env RHO_HOME="$RHO_HOME" "$RHO_BIN" setup --provider bench \
 env HOME="$TAU_HOME" UV_CACHE_DIR="$UV_CACHE" uv run --project "$TAU_CHECKOUT" tau \
   --provider openai --model "$MODEL" --base-url "http://127.0.0.1:$PORT/v1" \
   --api-key-env OPENAI_API_KEY setup >/dev/null 2>&1 </dev/null
+# pi has no `setup` positional: a custom OpenAI-compatible provider is declared in
+# $PI_CODING_AGENT_DIR/models.json (api "openai-completions", pointed at the mock).
+if [[ "$PI_OK" == 1 ]]; then
+  cat >"$PI_HOME/models.json" <<JSON
+{ "providers": { "bench": {
+  "baseUrl": "http://127.0.0.1:$PORT/v1", "apiKey": "OPENAI_API_KEY", "api": "openai-completions",
+  "models": [ { "id": "$MODEL", "name": "Bench Model", "contextWindow": 128000, "maxTokens": 4096 } ] } } }
+JSON
+fi
 
 RHO_PRINT="env RHO_HOME=$RHO_HOME OPENAI_API_KEY=dummy $RHO_BIN -p 'Say hello' --provider bench -o text"
 TAU_PRINT="env HOME=$TAU_HOME UV_CACHE_DIR=$UV_CACHE OPENAI_API_KEY=dummy uv run --project $TAU_CHECKOUT tau -p 'Say hello' --provider openai --model $MODEL -o text"
+# pi -p reads stdin when piped, so redirect </dev/null or it blocks. PI_OFFLINE
+# disables the startup version/catalog network probe (the fair, isolated spawn).
+PI_PRINT="env PI_CODING_AGENT_DIR=$PI_HOME OPENAI_API_KEY=dummy PI_OFFLINE=1 $PI_SHIM -p 'Say hello' --provider bench --model $MODEL --mode text --no-session </dev/null"
 
 run_variant() { # $1=label $2=latency_ms $3=chunk_size
   local label="$1"
   echo ">> cold-start variant: $label (latency=${2}ms chunk=${3})"
   start_mock "$2" "$3"
+  local hf=(-n "rho ($label)" "$RHO_PRINT" -n "tau ($label)" "$TAU_PRINT")
+  [[ "$PI_OK" == 1 ]] && hf+=(-n "pi ($label)" "$PI_PRINT")
   hyperfine --warmup "$WARMUP" --runs "$RUNS" --shell=default \
-    --export-json "$RESULTS_DIR/cold_start_${label}.json" \
-    -n "rho ($label)" "$RHO_PRINT" \
-    -n "tau ($label)" "$TAU_PRINT"
+    --export-json "$RESULTS_DIR/cold_start_${label}.json" "${hf[@]}"
   stop_mock
 }
 
@@ -102,12 +134,16 @@ run_variant "0ms" 0 0
 run_variant "20ms-chunk" 20 16
 
 # --version: pure startup, no provider needed. tau is invoked via `uv run` (its
-# usual entry here), so this row includes uv's launcher.
-echo ">> cold-start variant: version (--version via uv run)"
+# usual entry here), so this row includes uv's launcher. pi gets two rows — the
+# fnm PATH shim ("what users type") and the real node binary + resolved entry
+# ("direct") — the Node analogue of tau's uv-run-vs-venv split.
+echo ">> cold-start variant: version (--version via uv run / pi shim + direct)"
+vhf=(-n "rho (version)" "$RHO_BIN --version" \
+     -n "tau (version)" "env HOME=$TAU_HOME UV_CACHE_DIR=$UV_CACHE uv run --project $TAU_CHECKOUT tau --version")
+[[ "$PI_OK" == 1 ]] && vhf+=(-n "pi-shim (version)" "env PI_OFFLINE=1 $PI_SHIM --version" \
+                             -n "pi-node (version)" "env PI_OFFLINE=1 $NODE_REAL $PI_ENTRY --version")
 hyperfine --warmup "$WARMUP" --runs "$RUNS" --shell=default \
-  --export-json "$RESULTS_DIR/cold_start_version.json" \
-  -n "rho (version)" "$RHO_BIN --version" \
-  -n "tau (version)" "env HOME=$TAU_HOME UV_CACHE_DIR=$UV_CACHE uv run --project $TAU_CHECKOUT tau --version"
+  --export-json "$RESULTS_DIR/cold_start_version.json" "${vhf[@]}"
 
 # version-direct: the tau console script straight out of the venv, bypassing uv,
 # to separate interpreter+import cost from the launcher (skeptic-proofs the

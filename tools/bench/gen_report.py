@@ -114,9 +114,10 @@ def read_criterion(group: str) -> dict[str, dict]:
 def build_records() -> tuple[list[dict], dict]:
     records: list[dict] = []
 
-    # Family (b): session replay — rho (criterion) + tau (script)
+    # Family (b): session replay — rho (criterion) + tau (script) + pi (script)
     rho_sr = read_criterion("session_replay")
     tau_sr = {r["dataset"]: r for r in (load_json(RESULTS / "tau_session_replay.json") or [])}
+    pi_sr = {r["dataset"]: r for r in (load_json(RESULTS / "pi_session_replay.json") or [])}
     for variant, r in sorted(rho_sr.items()):
         n = r["n"]
         records.append({
@@ -127,6 +128,14 @@ def build_records() -> tuple[list[dict], dict]:
     for variant, r in sorted(tau_sr.items()):
         records.append({
             "family": "session_replay", "impl": "tau", "variant": variant,
+            "n_entries": r["n_entries"], "mean_ms": r["mean_ms"], "stddev_ms": r.get("stddev_ms"),
+            "entries_per_sec": r["entries_per_sec"],
+        })
+    # pi only ports the `linear` variant (same entry counts, pi's own tree format);
+    # deep-branch/compaction-heavy are rho-vs-tau only — see benchmarks.md.
+    for variant, r in sorted(pi_sr.items()):
+        records.append({
+            "family": "session_replay", "impl": "pi", "variant": variant,
             "n_entries": r["n_entries"], "mean_ms": r["mean_ms"], "stddev_ms": r.get("stddev_ms"),
             "entries_per_sec": r["entries_per_sec"],
         })
@@ -149,13 +158,18 @@ def build_records() -> tuple[list[dict], dict]:
             "ns_per_delta": r["ns_per_delta"], "deltas_per_sec": r["deltas_per_sec"],
         })
 
-    # Family (a): cold start — hyperfine JSON (mean/stddev in seconds)
+    # Family (a): cold start — hyperfine JSON (mean/stddev in seconds).
+    # hyperfine stores the `-n` name in `command`; derive impl from its prefix.
+    # Names: "rho (…)", "tau (…)", "pi (…)", "pi-shim (version)", "pi-node (version)".
+    def _cold_impl(name: str) -> str:
+        head = name.split(" ", 1)[0]
+        return head if head in ("rho", "tau", "pi", "pi-shim", "pi-node") else "tau"
     for label in ("0ms", "20ms-chunk", "version", "version-direct"):
         hf = load_json(RESULTS / f"cold_start_{label}.json")
         if not hf:
             continue
         for res in hf.get("results", []):
-            impl = "rho" if res["command"].startswith("rho") else "tau"
+            impl = _cold_impl(res["command"])
             records.append({
                 "family": "cold_start", "impl": impl, "variant": label,
                 "mean_ms": res["mean"] * 1e3, "stddev_ms": res.get("stddev", 0.0) * 1e3,
@@ -174,6 +188,9 @@ def collect_meta() -> dict:
     tau_rev = (REPO_ROOT / "fixtures" / "TAU_REV").read_text().strip() if (
         REPO_ROOT / "fixtures" / "TAU_REV"
     ).exists() else "unknown"
+    pi_rev = (REPO_ROOT / "tools" / "bench" / "PI_REV").read_text().strip() if (
+        REPO_ROOT / "tools" / "bench" / "PI_REV"
+    ).exists() else "unknown"
     return {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
         "machine": _run(["sysctl", "-n", "hw.model"]) or platform.machine(),
@@ -184,6 +201,9 @@ def collect_meta() -> dict:
         "rustc": _run(["rustc", "--version"]),
         "cargo": _run(["cargo", "--version"]),
         "uv": _run(["uv", "--version"]),
+        "node": _run(["node", "--version"]),
+        "pi_version": _run(["pi", "--version"]),
+        "pi_rev": pi_rev,
         "tau_rev": tau_rev,
         "rho_rev": _run(["git", "rev-parse", "--short", "HEAD"]),
         # Derive the branch rather than hard-coding it, so provenance stays honest
@@ -211,17 +231,29 @@ def render_md(records: list[dict], meta: dict) -> str:
     L: list[str] = []
     a = L.append
 
-    a("# rho vs tau — benchmark showdown\n")
-    a("> The founding question of the rho project: **tau is a minimalist Python "
-      "coding agent; what does porting it to Rust actually buy?** This report "
-      "answers it with real numbers from one machine, across four benchmark "
-      "families. The honest headline is at the bottom — read the caveats first.\n")
+    a("# π vs τ vs ρ — three-way benchmark showdown\n")
+    a("> **pi** (TypeScript/Node) is the original coding agent; **tau** (Python) "
+      "and **rho** (Rust) are both ports of it. The founding question of the rho "
+      "project was *what does porting tau to Rust buy?*; this report widens it to "
+      "the full language triangle — **JIT-warmed Node vs interpreted Python vs "
+      "compiled Rust** — with real numbers from one machine, across four benchmark "
+      "families. The honest headline is at the bottom — read the caveats first. "
+      "Where a family has no fair pi counterpart the pi column is `—` and the reason "
+      "is stated, never silently dropped.\n")
 
     # ---- methodology
     a("## Methodology\n")
     a(f"- **Machine**: {meta['machine']} — {meta['cpu']} ({meta['ncpu']} cores), "
       f"{gib(meta['mem_bytes'])} RAM, {meta['os']}")
-    a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; {meta['uv']}")
+    a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; {meta['uv']}; Node {meta.get('node', '?')}")
+    a(f"- **pi**: v{meta.get('pi_version', '?')}, the installed `pi` binary (Node via fnm), "
+      f"corresponding to `earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` "
+      "(tools/bench/PI_REV) — its package set is v" + str(meta.get("pi_version", "?")) +
+      ", matching the installed binary exactly. Cold start measures pi both via the fnm PATH "
+      "shim (\"what users type\") and via the real node binary + resolved `dist/cli.js` entry "
+      "(\"direct\"), mirroring tau's uv-run-vs-venv split. In-process families import the "
+      "installed binary's OWN bundled internals (`@earendil-works/pi-{ai,agent-core}`), never "
+      "a rebuild, so they measure the shipped code.")
     a(f"- **tau**: pinned at rev `{meta['tau_rev'][:12]}` (fixtures/TAU_REV), run via `uv run --project <tau>`")
     a(f"- **rho**: `{meta['rho_rev']}` on branch `{meta['rho_branch']}`, `--release` builds throughout")
     a(f"- **Generated**: {meta['generated_utc']}")
@@ -241,84 +273,134 @@ def render_md(records: list[dict], meta: dict) -> str:
       "window, so no reported figure is contaminated by contention.")
     a("- **Variance caveat**: this is still a developer laptop, not an isolated "
       "bench rig. Absolute numbers move ±10–30% between runs; the *ratios* between "
-      "rho and tau are the durable result, and they span orders of magnitude, not "
-      "percentages.\n")
+      "the three engines are the durable result, and the big ones span orders of "
+      "magnitude, not percentages (the near-1× pi-vs-tau startup tie is the "
+      "exception — read it as \"indistinguishable,\" not a precise figure).\n")
 
     # ---- family a: cold start
     a("## (a) Cold start + end-to-end print latency\n")
-    a("`rho -p` (compiled binary) vs `tau -p` (Python via `uv run`), both driving "
-      "one print-mode turn against the same mock provider replaying a fixed "
-      "OpenAI-compatible SSE body. Process spawn → exit, wall-clock via hyperfine.\n")
+    a("`rho -p` (compiled binary) vs `tau -p` (Python via `uv run`) vs `pi -p` "
+      "(TypeScript/Node), all three driving one print-mode turn against the **same** "
+      "mock provider replaying a fixed OpenAI-compatible SSE body (pi via a custom "
+      "`openai-completions` provider in `models.json` pointed at the mock). Process "
+      "spawn → exit, wall-clock via hyperfine, all rerun in one quiesced window. The "
+      "two `--version` rows separate launcher cost from runtime boot for *both* "
+      "interpreted agents: the first includes each one's launcher (tau `uv run`, pi "
+      "fnm PATH shim), the second is the direct entry (tau `.venv/bin/tau`, pi "
+      "`node dist/cli.js`).\n")
     ca_rho, ca_tau = pair(records, "cold_start", "rho"), pair(records, "cold_start", "tau")
-    if ca_rho or ca_tau:
-        a("| Variant | rho (spawn→exit) | tau (spawn→exit) | tau/rho |")
-        a("|---|---|---|---|")
-        labels = {"version": "`--version` (via `uv run`, tau's usual entry)",
-                  "version-direct": "`--version` (direct `.venv/bin/tau`, no uv)",
+    ca_pi = pair(records, "cold_start", "pi")
+    ca_pishim, ca_pinode = pair(records, "cold_start", "pi-shim"), pair(records, "cold_start", "pi-node")
+    if ca_rho or ca_tau or ca_pi:
+        def _c(d):
+            return f"{d['mean_ms']:.1f} ± {d['stddev_ms']:.1f} ms" if d else "—"
+        # pi's per-variant cell: shim for the launcher row, node for the direct row,
+        # the print pi rows straight through.
+        pi_for = {"version": ca_pishim.get("version"),
+                  "version-direct": ca_pinode.get("version"),
+                  "0ms": ca_pi.get("0ms"), "20ms-chunk": ca_pi.get("20ms-chunk")}
+        a("| Variant | rho | tau | pi | tau/rho | tau/pi |")
+        a("|---|---|---|---|---|---|")
+        labels = {"version": "`--version` (with launcher: tau `uv run`, pi fnm shim)",
+                  "version-direct": "`--version` (direct entry: tau venv, pi `node cli.js`)",
                   "0ms": "print, 0 ms latency", "20ms-chunk": "print, 20 ms/chunk streaming"}
         for v in ("version", "version-direct", "0ms", "20ms-chunk"):
-            r, t = ca_rho.get(v), ca_tau.get(v)
-            if not r and not t:
+            r, t, p = ca_rho.get(v), ca_tau.get(v), pi_for.get(v)
+            if not r and not t and not p:
                 continue
-            rr = f"{r['mean_ms']:.1f} ± {r['stddev_ms']:.1f} ms" if r else "—"
-            tt = f"{t['mean_ms']:.1f} ± {t['stddev_ms']:.1f} ms" if t else "—"
-            a(f"| {labels[v]} | {rr} | {tt} | "
-              f"{speedup(t['mean_ms'] if t else 0, r['mean_ms'] if r else 0)} |")
+            a(f"| {labels[v]} | {_c(r)} | {_c(t)} | {_c(p)} | "
+              f"{speedup(t['mean_ms'] if t else 0, r['mean_ms'] if r else 0)} | "
+              f"{speedup(t['mean_ms'] if t else 0, p['mean_ms'] if p else 0)} |")
         a("")
-        # Skeptic-proof the headline: is the gap just uv's launcher? Compare the two
-        # --version rows if both were collected.
+        # Skeptic-proof the headline: is the gap just each launcher? Compare direct rows.
         vd_r, vd_t = ca_rho.get("version-direct"), ca_tau.get("version-direct")
+        vd_p = ca_pinode.get("version")
         if vd_t:
-            direct = (f" And it is **not** merely `uv run`'s launcher overhead: invoking "
-                      f"the console script directly (`.venv/bin/tau --version`, no uv) "
-                      f"still takes **{vd_t['mean_ms'] / 1000:.2f} s** "
-                      f"({speedup(vd_t['mean_ms'], vd_r['mean_ms'] if vd_r else 0)} slower "
-                      "than rho) — the cost is Python interpreter boot plus tau's import "
-                      "graph, which uv adds only a modest fraction on top of.")
+            direct = (f" And it is **not** merely a launcher artifact: the direct entries "
+                      f"(no `uv run`, no fnm shim) still cost **{vd_t['mean_ms'] / 1000:.2f} s** "
+                      f"for tau ({speedup(vd_t['mean_ms'], vd_r['mean_ms'] if vd_r else 0)} "
+                      f"slower than rho)"
+                      + (f" and **{vd_p['mean_ms']:.0f} ms** for pi "
+                         f"({speedup(vd_p['mean_ms'], vd_r['mean_ms'] if vd_r else 0)} slower "
+                         "than rho)" if vd_p else "")
+                      + " — that residue is runtime boot + import graph (CPython for tau, "
+                      "Node/V8 for pi), which the launchers only add a modest fraction on top of.")
         else:
             direct = ""
-        a("**Interpreter startup vs compiled binary is the whole story here.** The "
-          "`--version` rows are the cleanest read: almost entirely process startup. "
-          "rho is a statically-linked binary that execs and prints; tau pays Python "
-          "interpreter boot + module imports (pydantic, httpx, typer, rich, textual) "
-          f"before it does any work.{direct}")
+        a("**A native binary vs two interpreter runtimes is the whole story here.** The "
+          "`--version` rows are the cleanest read: almost entirely process startup. rho "
+          "is a statically-linked binary that execs and prints; tau pays CPython boot + "
+          "imports (pydantic, httpx, typer, rich, textual); pi pays Node/V8 boot + its "
+          "large bundled module graph and model-catalog load. The measured surprise: "
+          "**pi's cold start is on par with tau's, not faster** — both land in the ~2–2.5 s "
+          "range (see the `tau/pi ≈ 1×` column), roughly two orders of magnitude above "
+          "rho. So a JIT runtime buys nothing over CPython for *startup* here; if anything "
+          "pi's shipped bundle makes `--version` as heavy as tau's import graph. Note too "
+          "that pi's fnm PATH shim adds almost nothing (shim ≈ direct node entry), whereas "
+          f"tau's `uv run` adds a visible slice over its venv — but that's noise next to "
+          f"the runtime tax both pay.{direct}")
         a("**But note the 20 ms/chunk row.** Once the provider streams with even a "
-          "small per-chunk latency, a fixed ~hundreds-of-ms cost lands on *both* "
-          "implementations equally, and the spawn-time gap starts to disappear into "
+          "small per-chunk latency, a fixed ~hundreds-of-ms cost lands on *all three* "
+          "implementations equally, and the spawn-time gaps start to disappear into "
           "it. With a real LLM (first token in hundreds of ms, full response in "
-          "seconds) the startup difference is a rounding error on end-to-end "
+          "seconds) the startup differences are a rounding error on end-to-end "
           "latency — see the caveats.\n")
     else:
         a("_Not collected in this run._\n")
 
     # ---- family b: session replay
     a("## (b) Session replay throughput\n")
-    a("Parse every JSONL entry line and replay the log into `SessionState` — the "
-      "load path both implementations run when opening a session. Synthetic trees "
-      "under `fixtures/sessions/synthetic/` (100k inflated in-process).\n")
+    a("Parse every JSONL entry line and replay the log into the runtime message "
+      "list — the load path each implementation runs when opening a session. rho/tau "
+      "use the pinned synthetic trees under `fixtures/sessions/synthetic/` (100k "
+      "inflated in-process); pi replays an equivalent-length `linear` session in its "
+      "OWN format (see the pi caveats below).\n")
     sr_rho, sr_tau = pair(records, "session_replay", "rho"), pair(records, "session_replay", "tau")
+    sr_pi = pair(records, "session_replay", "pi")
     if sr_rho:
-        a("| Dataset | entries | rho | tau | rho entries/s | tau entries/s | tau/rho |")
-        a("|---|--:|--:|--:|--:|--:|--:|")
+        a("| Dataset | entries | rho | tau | pi | rho/s | tau/s | pi/s |")
+        a("|---|--:|--:|--:|--:|--:|--:|--:|")
         for v in sorted(sr_rho, key=lambda k: (k.rsplit("-", 1)[0], _size_key(k))):
             r = sr_rho[v]
             t = sr_tau.get(v)
+            p = sr_pi.get(v)
             tau_ms = fmt_ms(t["mean_ms"]) if t else "—"
+            pi_ms = fmt_ms(p["mean_ms"]) if p else "—"
             tau_rate = fmt_rate(t["entries_per_sec"]) if t else "—"
-            ratio = speedup(t["mean_ms"], r["mean_ms"]) if t else "—"
-            a(f"| {v} | {r['n_entries']} | {fmt_ms(r['mean_ms'])} | {tau_ms} | "
-              f"{fmt_rate(r['entries_per_sec'])} | {tau_rate} | {ratio} |")
+            pi_rate = fmt_rate(p["entries_per_sec"]) if p else "—"
+            a(f"| {v} | {r['n_entries']} | {fmt_ms(r['mean_ms'])} | {tau_ms} | {pi_ms} | "
+              f"{fmt_rate(r['entries_per_sec'])} | {tau_rate} | {pi_rate} |")
         a("")
-        a("**Parse dominates on both sides** (replay of a linear log is trivially "
+        a("**Parse dominates on all sides** (replay of a linear log is trivially "
           "O(n)); the gap is entirely in decode. tau pays a pydantic `TypeAdapter` "
           "per entry (validation + model construction). rho pays its own tax: "
           "`SessionEntry` is an `#[serde(untagged)]` union, so serde buffers each "
-          "line and trial-decodes it against every variant — deliberately, for "
-          "byte-compat — which is far from free. The net is a solid **several-fold** "
-          "rho win (see the ratio column), not the ~100× seen in the "
-          "allocation-light micro-benches: this is the family where rho's "
-          "compatibility constraints cost it the most, and it's the honest one to "
-          "show.")
+          "line and trial-decodes it against every variant. **This is a deliberate, "
+          "documented trade, not a Rust shortcoming** — rho *cannot* use the fast "
+          "internally-tagged `#[serde(tag = ...)]` path, because tau writes the "
+          "`type` discriminator in the *fourth* field position (after "
+          "`id`/`parent_id`/`timestamp`) and internally-tagged serde only emits the "
+          "tag first; untagged serializes in declared field order and so is the only "
+          "shape that reproduces tau's bytes exactly (see `dev-notes/phase-1.md`, "
+          "\"Why untagged unions + monostate\"). rho pays trial-decode CPU to buy "
+          "byte-parity. So over tau, rho still posts a solid **several-fold** win, not "
+          "the ~100× of the allocation-light micro-benches: this is where rho's "
+          "compatibility constraints cost it the most. **pi is the surprise: on the "
+          "`linear` rows it is the fastest of the three** — V8's JIT-compiled "
+          "`JSON.parse` plus a light id/parentId tree-walk beats both pydantic and "
+          "rho's trial-decoding untagged union, so rho's win over tau does *not* carry "
+          "to pi. (Forward-looking, not done: a tagged fast-path — try the "
+          "internally-tagged decode first and fall back to untagged only when the tag "
+          "isn't first — would likely close much of the V8 gap without breaking "
+          "byte-parity; future work.) Two honest caveats scope the pi column: (1) **same "
+          "workload, different format** — pi replays its OWN session format (a typed "
+          "id/parentId entry tree) over the same entry counts, not tau/rho's "
+          "`SessionEntry` bytes, so only the `linear` rows are directly comparable and "
+          "deep-branch/compaction-heavy stay rho-vs-tau only; (2) pi's replay step "
+          "(`buildSessionContext`) is a lighter reconstruction than rho's full "
+          "`SessionState`, so part of pi's edge is doing modestly less work, not only "
+          "decoding faster. It is the honest row to show precisely because it punctures "
+          "the \"Rust always wins the cold path\" story.")
         # Derive the compaction comparison from the records so it can't drift
         # from the table; only assert the tau-vs-rho figure when both sides exist.
         cr, ct = sr_rho.get("compaction-heavy-10k"), sr_tau.get("compaction-heavy-10k")
@@ -358,7 +440,20 @@ def render_md(records: list[dict], meta: dict) -> str:
         a("")
         a("Both maintain a running partial message and snapshot it into each event. "
           "tau deep-copies a pydantic model per event; rho clones one working "
-          "struct. Same protocol, very different constant factor.\n")
+          "struct. Same protocol, very different constant factor.")
+        a("> **No pi column — documented, not dropped.** pi has no standalone "
+          "canonicalization stage to isolate. tau's `canonicalize_provider_stream` "
+          "and rho's `StreamAccumulator` are a discrete *provider-events → "
+          "canonical-events* pass that snapshots the partial message once per event; "
+          "pi's providers instead build the partial and emit canonical "
+          "`AssistantMessageEvent`s **inline**, and — critically — each event carries "
+          "the partial **by reference** (one mutated object), not a per-event deep "
+          "copy (tau) or clone (rho). There is thus no equivalent unit of work: pi's "
+          "per-delta snapshot cost is O(1) by construction, so a like-for-like number "
+          "would pit an accumulate-and-copy pass against a pointer write and flatter "
+          "pi meaninglessly; benchmarking the faux/provider delta loop would measure "
+          "the test double, not the wire path. The architectural takeaway stands on "
+          "its own: pi sidesteps the per-token copy that both ports pay.\n")
     else:
         a("_Not collected in this run._\n")
 
@@ -372,18 +467,29 @@ def render_md(records: list[dict], meta: dict) -> str:
     if mem:
         turn_set = sorted({r["turns"] for r in mem})
         by = {(r["impl"], r["turns"]): r for r in mem}
-        a("| turns | rho peak RSS | tau peak RSS | rho/tau |")
+
+        def _mib(impl, t):
+            r = by.get((impl, t))
+            return f"{r['peak_rss_mib']:.2f} MiB" if r else "—"
+
+        a("| turns | rho peak RSS | tau peak RSS | pi peak RSS |")
         a("|--:|--:|--:|--:|")
         for t in turn_set:
-            r, tt = by.get(("rho", t)), by.get(("tau", t))
-            ratio = (r["peak_rss_bytes"] / tt["peak_rss_bytes"]) if r and tt and tt["peak_rss_bytes"] else None
-            a(f"| {t} | {r['peak_rss_mib'] if r else '—'} MiB | "
-              f"{tt['peak_rss_mib'] if tt else '—'} MiB | "
-              f"{ratio:.2f}× |" if ratio else f"| {t} | — | — | — |")
+            a(f"| {t} | {_mib('rho', t)} | {_mib('tau', t)} | {_mib('pi', t)} |")
         a("")
         base = min(turn_set)
-        rb, tb = by.get(("rho", base)), by.get(("tau", base))
-        if rb and tb:
+        rb, tb, pb = by.get(("rho", base)), by.get(("tau", base)), by.get(("pi", base))
+        if rb and tb and pb:
+            a(f"**Baseline ({base} turn): the two interpreter runtimes cost tens of MiB; "
+              f"rho costs a couple.** rho's near-empty process is "
+              f"~{rb['peak_rss_mib']:.0f} MiB against tau's ~{tb['peak_rss_mib']:.0f} MiB "
+              f"(CPython + pydantic/anyio/httpx/rich/textual) and pi's "
+              f"~{pb['peak_rss_mib']:.0f} MiB (Node/V8 + its module graph). Both "
+              "interpreted agents pay a fixed runtime-plus-imports tax before doing any "
+              "work; the statically-linked rho binary + a current-thread tokio runtime "
+              "does not. **This baseline is rho's real, production-relevant footprint "
+              "advantage — and it holds against Node just as it does against CPython.**")
+        elif rb and tb:
             a(f"**Baseline ({base} turn): rho is tiny.** rho's near-empty process is "
               f"~{rb['peak_rss_mib']:.0f} MiB against tau's ~{tb['peak_rss_mib']:.0f} "
               "MiB — the CPython interpreter plus its import graph "
@@ -391,6 +497,16 @@ def render_md(records: list[dict], meta: dict) -> str:
               "work, where the statically-linked rho binary + a current-thread tokio "
               "runtime costs a couple. **This is rho's real, production-relevant "
               "footprint advantage.**")
+        if pb:
+            a("**pi's sweep is the level-headed one.** pi's in-process driver runs "
+              "pi's OWN `Agent` + faux provider (the shipped code) and, unlike rho's "
+              "`FakeProvider`, its test double retains no deep-copied call log, so pi's "
+              "curve grows ~linearly with the transcript rather than exploding. Read "
+              "the pi column as the honest \"what a Node agent's memory does as a "
+              "session grows\" line — well above rho's baseline, climbing gently. (pi's "
+              "driver issues N discrete prompts → 2N messages, vs tau/rho's one prompt "
+              "+ N−1 continues → N+1 messages; the `note` field records each, and the "
+              "sweep is read by shape, not by matching message counts cell-for-cell.)")
         a("**But watch the sweep: rho's line is super-linear and crosses tau's.** "
           "That is *not* the transcript — it is a **test-double artifact**. rho's "
           "`FakeProvider` records every call with `messages.to_vec()`, deep-copying "
@@ -423,6 +539,47 @@ def render_md(records: list[dict], meta: dict) -> str:
     else:
         a("_Not collected in this run._\n")
 
+    # ---- π vs τ vs ρ: the language triangle
+    a("## π vs τ vs ρ — the language triangle\n")
+    a("Three implementations of the same agent, one per runtime model: **pi** on "
+      "JIT-warmed Node/V8, **tau** on interpreted CPython, **rho** on compiled Rust. "
+      "Read across the families and a consistent shape emerges — it is *not* a simple "
+      "\"Rust wins everything\" ladder.\n")
+    a("- **Process startup (native ≫ both runtimes, which tie).** A native binary that "
+      "just execs and prints is untouchable: rho's `--version` is single-digit "
+      "milliseconds. The measured surprise is that the two interpreted agents **tie** — "
+      "pi (~2.2 s) is on par with tau (~2–2.5 s), not faster. Node's JIT buys nothing "
+      "for cold start here; pi's shipped bundle + model-catalog load makes `--version` "
+      "as heavy as tau's CPython import graph. So the startup ladder is **rho ≪ pi ≈ "
+      "tau** — a ~200–300× native-vs-interpreted gap that does *not* discriminate "
+      "between the two runtimes.")
+    a("- **JSONL decode (JIT can beat compiled).** On linear session replay the warmed "
+      "V8 `JSON.parse` is the *fastest of the three* — ahead of both Python's pydantic "
+      "and rho's deliberately-cautious `#[serde(untagged)]` trial-decode. This is the "
+      "family that most punctures the ladder: rho's byte-compat design tax lets a JIT "
+      "win a hot loop. (Caveats in family (b): pi replays its own format and does a "
+      "lighter reconstruction.)")
+    a("- **Per-token streaming bookkeeping (architecture > language).** The dominant "
+      "cost isn't the runtime, it's the data model: tau deep-copies a pydantic model "
+      "per event, rho clones a struct, **pi mutates one object and snapshots by "
+      "reference**. pi's design sidesteps the per-token copy entirely (family (c)) — a "
+      "reminder that how you represent the partial message matters more than which "
+      "language you wrote it in.")
+    a("- **Baseline memory (native ≪ both runtimes).** Here the compiled binary's "
+      "advantage is unambiguous and holds against *both* interpreters: rho's ~2 MiB "
+      "baseline vs tens of MiB for CPython (tau) and Node (pi) alike. Runtime + import "
+      "graph is a fixed footprint tax that a static binary simply doesn't pay.")
+    a("\n**The synthesis:** rho wins decisively where a *native binary* wins — cold "
+      "start and baseline footprint — and those wins hold against Node as firmly as "
+      "against Python. But on hot CPU loops the picture is nuanced: a warmed JIT (pi) "
+      "can match or beat compiled Rust when Rust is carrying a compatibility tax, and "
+      "the biggest per-token differences come from *data-model choices* (copy vs "
+      "reference), not the language. tau is the consistent trailing edge on CPU-bound "
+      "work (interpreter overhead + pydantic), but even it is within a rounding error "
+      "of the others the moment a real network turn is in the loop. Three runtimes, "
+      "three different lessons — and the same conclusion below about when any of it "
+      "matters.\n")
+
     # ---- caveats + conclusion
     a("## Caveats — where the Rust win is real, and where it doesn't matter\n")
     a("- **Where Rust clearly wins**: process startup (no interpreter boot), "
@@ -443,7 +600,17 @@ def render_md(records: list[dict], meta: dict) -> str:
       "entry here), which adds a small fixed launcher cost to cold start; the "
       "session/canonicalization timers call tau's library directly, so those "
       "exclude launcher and interpreter-boot cost and measure pure algorithm "
-      "throughput. RSS uses the venv interpreter directly for the same reason.\n")
+      "throughput. RSS uses the venv interpreter directly for the same reason.")
+    a("- **pi fair-comparison notes**: pi's cold start is measured both via the fnm "
+      "PATH shim (what users type — the Node analogue of `uv run`'s launcher cost) "
+      "and via the real node binary + resolved `dist/cli.js` entry (both fnm shims "
+      "bypassed — the isolated spawn). Its in-process families (session replay, RSS) "
+      "import the **installed** binary's own bundled internals "
+      "(`@earendil-works/pi-{ai,agent-core}`, v" + str(meta.get("pi_version", "?")) +
+      f"), never a rebuild, so they measure the shipped code, pinned to "
+      f"`earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` (tools/bench/PI_REV). "
+      "pi runs `PI_OFFLINE=1` during startup timing to disable its version/catalog "
+      "network probe. Family (c) has no pi row for the architectural reason stated there.\n")
 
     a("## Conclusion — what the Rust port bought\n")
     # headline numbers
@@ -478,6 +645,16 @@ def render_md(records: list[dict], meta: dict) -> str:
       "sitting at a prompt waiting on a model. The port's real deliverable is that "
       "it achieves the former **while remaining byte-for-byte compatible** with the "
       "latter.\n")
+    a("**Widening it to pi** (the original Node/TS agent) sharpens rather than "
+      "overturns this. rho's decisive wins — cold start and baseline RSS — hold "
+      "against Node just as firmly as against Python, because they are *native-binary* "
+      "wins, not *anti-Python* wins. But pi also shows the ladder isn't monotonic: a "
+      "warmed V8 beats rho on the linear-JSONL hot loop (where rho pays a byte-compat "
+      "decode tax), and pi's reference-snapshot streaming sidesteps the per-token copy "
+      "both ports pay. So the fuller verdict: **compile for startup and footprint; the "
+      "runtime matters least exactly where humans feel it most (the network turn), and "
+      "on the CPU-bound cold path your data-model choices can matter more than your "
+      "language.**\n")
 
     a("---\n")
     a("_Regenerate with `just bench` (runs every family, then this generator). "

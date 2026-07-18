@@ -150,12 +150,78 @@ honest:
    reason, and the report leads with *ratios* (orders of magnitude) rather than
    treating any single millisecond figure as gospel.
 
+## Widening to pi (three-way: π vs τ vs ρ)
+
+M6's original suite is rho-vs-tau. A follow-up widens it to **pi** — the
+original TypeScript/Node agent that *both* tau and rho port — so the report
+becomes the full language triangle (JIT-warmed Node vs interpreted Python vs
+compiled Rust). Engineering log for the pi side:
+
+- **Measure the installed binary, pinned to its source rev.** The current pi
+  source is `earendil-works/pi` (rev pinned in `tools/bench/PI_REV`, e.g.
+  `3da591ab`), whose package set is v0.80.10 — matching the installed `pi` on
+  PATH exactly. (An older `badlogic/pi-mono` checkout also exists locally at
+  v0.57.1 under the `@mariozechner` scope; it is 4 months stale and is **not**
+  used for internals harnessing or provider-config research — `earendil-works/pi`
+  is the current repo.) Every pi number measures the **installed** binary and,
+  for in-process families, its OWN bundled internals under
+  `…/pi-coding-agent/node_modules/@earendil-works/pi-{ai,agent-core}/dist` —
+  resolved from `readlink -f $(command -v pi)` so we never rebuild or diverge
+  from what users run. pi ships those internals as importable ESM (not a single
+  bundle), which is what makes the in-process harnesses possible at all.
+- **fnm shim vs direct entry = uv-run vs venv.** `pi` on PATH is an fnm
+  multishell shim → node shim → `dist/cli.js`. Cold start measures both the shim
+  (`pi --version`, "what users type") and the real node binary + resolved
+  `cli.js` (`node dist/cli.js --version`, both fnm shims bypassed). These map
+  cleanly onto tau's existing `version` (via `uv run`) / `version-direct` (via
+  `.venv/bin/tau`) rows, so the report's two `--version` rows now separate
+  launcher cost from runtime boot for *both* interpreted agents at once.
+- **Print E2E against the same mock.** pi has no `setup` positional; a custom
+  OpenAI-compatible provider is declared in `$PI_CODING_AGENT_DIR/models.json`
+  (`api: "openai-completions"`, `baseUrl` → the mock). Two gotchas: `pi -p`
+  reads stdin when piped, so hyperfine commands need `</dev/null` or they block
+  for 2 minutes; and `PI_OFFLINE=1` disables pi's startup version/catalog network
+  probe, giving the isolated spawn.
+- **RSS driver = pi's own faux provider.** pi-ai ships `createFauxCore`
+  (`providers/faux.js`), its FakeProvider analogue. `pi_rss_session.mjs` builds a
+  real `Agent` with the faux `streamSimple` as `streamFn` and issues N prompts so
+  the transcript accumulates in memory. Note pi's driver retains no deep-copied
+  call log (unlike rho's `FakeProvider`), so pi's RSS grows ~linearly, not
+  O(n²) — a fair difference, reported straight. Message count differs by
+  construction (N prompts → 2N messages vs tau/rho's prompt+continue → N+1); the
+  `note` field records both and the sweep is read by *shape*.
+- **Session replay (family b) — same workload, different format.**
+  `pi_session_replay.mjs` uses pi's real load path (`parseSessionEntries` +
+  `buildSessionContext` from the coding-agent dist) over a synthetic `linear`
+  session in pi's OWN id/parentId entry-tree format, at the same entry counts as
+  tau/rho's `linear` trees. Only `linear` is ported (deep-branch/compaction-heavy
+  have different tree/compaction semantics in pi — porting them would compare two
+  algorithms, not one). Headline finding: **V8's `JSON.parse` makes pi the
+  fastest of the three here**, ahead of rho's `#[serde(untagged)]` trial-decode —
+  the family that most punctures the "Rust always wins the cold path" story.
+- **SSE canonicalization (family c) — no fair pi row, documented not dropped.**
+  pi has no standalone canonicalization stage: providers build the partial and
+  emit canonical `AssistantMessageEvent`s inline, snapshotting the partial **by
+  reference** (one mutated object), not per-event deep-copy (tau) / clone (rho).
+  There's no equivalent unit of work to time; a faux-loop number would measure
+  the test double, and pi's per-delta cost is O(1) by construction. So (c) stays
+  rho-vs-tau with an architectural note — pi sidesteps the per-token copy both
+  ports pay.
+
+The report (`gen_report.py` → `benchmarks.{md,json}`) renders three columns
+where pi data exists, adds a "π vs τ vs ρ" language-triangle section, and carries
+the provenance + honesty caveats per family. All three engines still run serially
+in one quiesced window via `run_all.sh`.
+
 ## CI
 
 Benchmarks must **compile** in CI but never **run** (wall-clock on shared runners
 is noise). The new `benches compile` job runs `cargo bench --workspace --no-run`
 + `cargo build --workspace --examples`; `just bench-check` is the local mirror.
-Actual measurement is a developer-invoked `just bench`.
+Actual measurement is a developer-invoked `just bench`. The pi harnesses are
+Node/Python scripts (no Rust), so they add nothing to the compile job; they run
+only under `just bench` when a `pi` binary is present (gracefully skipped
+otherwise).
 
 ## The answer
 

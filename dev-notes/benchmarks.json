@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_utc": "2026-07-18 13:26:52Z",
+    "generated_utc": "2026-07-18 14:32:38Z",
     "machine": "Mac16,7",
     "cpu": "Apple M4 Pro",
     "ncpu": "14",
@@ -9,9 +9,12 @@
     "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
     "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
     "uv": "uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)",
+    "node": "v24.15.0",
+    "pi_version": "0.80.10",
+    "pi_rev": "3da591ab74ab9ab407e72ed882600b2c851fae21",
     "tau_rev": "81de4f8896a94ed6861bd77b0c486c33eebd3f8d",
-    "rho_rev": "89c934b",
-    "rho_branch": "m6-bench",
+    "rho_rev": "57c2f05",
+    "rho_branch": "fix/pi-bench",
     "anthropic_key_present": false
   },
   "records": [
@@ -20,276 +23,339 @@
       "impl": "rho",
       "variant": "compaction-heavy-10k",
       "n_entries": 10000,
-      "mean_ms": 2838.1623875,
-      "stddev_ms": 288.8057242454566,
-      "entries_per_sec": 3523.406568997807
+      "mean_ms": 2661.3007125,
+      "stddev_ms": 154.58282036721036,
+      "entries_per_sec": 3757.5610877156746
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "compaction-heavy-1k",
       "n_entries": 1000,
-      "mean_ms": 32.9373976881746,
-      "stddev_ms": 15.967670120380333,
-      "entries_per_sec": 30360.625616729474
+      "mean_ms": 38.15967572632936,
+      "stddev_ms": 6.428365569430423,
+      "entries_per_sec": 26205.673422691623
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "deep-branch-100k",
       "n_entries": 100000,
-      "mean_ms": 1111.8493958,
-      "stddev_ms": 211.89208058888875,
-      "entries_per_sec": 89940.23864900139
+      "mean_ms": 921.5383208,
+      "stddev_ms": 53.49686732052771,
+      "entries_per_sec": 108514.20688961544
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "deep-branch-10k",
       "n_entries": 10000,
-      "mean_ms": 88.12636946666667,
-      "stddev_ms": 50.16030543812461,
-      "entries_per_sec": 113473.413922747
+      "mean_ms": 92.14087587571427,
+      "stddev_ms": 38.91266365167171,
+      "entries_per_sec": 108529.46539697173
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "deep-branch-1k",
       "n_entries": 1000,
-      "mean_ms": 8.20855778898526,
-      "stddev_ms": 3.365675158028906,
-      "entries_per_sec": 121824.0799061999
+      "mean_ms": 6.847345799259259,
+      "stddev_ms": 4.514212479081535,
+      "entries_per_sec": 146041.98901539037
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "linear-100k",
       "n_entries": 100000,
-      "mean_ms": 2118.6929709,
-      "stddev_ms": 183.94786045177068,
-      "entries_per_sec": 47198.91054224859
+      "mean_ms": 2077.3448668,
+      "stddev_ms": 161.40708959022007,
+      "entries_per_sec": 48138.37201429283
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "linear-10k",
       "n_entries": 10000,
-      "mean_ms": 190.9687687,
-      "stddev_ms": 65.87779767702798,
-      "entries_per_sec": 52364.58331942945
+      "mean_ms": 229.14019795,
+      "stddev_ms": 84.1671526168692,
+      "entries_per_sec": 43641.40421220231
     },
     {
       "family": "session_replay",
       "impl": "rho",
       "variant": "linear-1k",
       "n_entries": 1000,
-      "mean_ms": 21.8659246946627,
-      "stddev_ms": 11.774765216743372,
-      "entries_per_sec": 45733.25912185604
+      "mean_ms": 20.82528852349206,
+      "stddev_ms": 6.7118369377116585,
+      "entries_per_sec": 48018.54240203902
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "compaction-heavy-10k",
       "n_entries": 10000,
-      "mean_ms": 8369.087637594203,
-      "stddev_ms": 830.833222648164,
-      "entries_per_sec": 1194.8733760511348
+      "mean_ms": 7126.724433107302,
+      "stddev_ms": 333.4243495167694,
+      "entries_per_sec": 1403.1691689305196
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "compaction-heavy-1k",
       "n_entries": 1000,
-      "mean_ms": 57.42259593680501,
-      "stddev_ms": 68.18286504280648,
-      "entries_per_sec": 17414.74734267543
+      "mean_ms": 49.76961946619364,
+      "stddev_ms": 28.32697533483804,
+      "entries_per_sec": 20092.57878049996
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "deep-branch-100k",
       "n_entries": 100000,
-      "mean_ms": 4317.081763661311,
-      "stddev_ms": 202.0541057654698,
-      "entries_per_sec": 23163.79570147176
+      "mean_ms": 3829.6649996579313,
+      "stddev_ms": 349.2247630765648,
+      "entries_per_sec": 26111.94451967263
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "deep-branch-10k",
       "n_entries": 10000,
-      "mean_ms": 286.7995959997643,
-      "stddev_ms": 119.74824982236626,
-      "entries_per_sec": 34867.552602857286
+      "mean_ms": 236.17897919612005,
+      "stddev_ms": 52.93266021352531,
+      "entries_per_sec": 42340.770690248966
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "deep-branch-1k",
       "n_entries": 1000,
-      "mean_ms": 27.085566662329562,
-      "stddev_ms": 44.406516069348264,
-      "entries_per_sec": 36920.0324463137
+      "mean_ms": 21.592123538721353,
+      "stddev_ms": 29.75685474212359,
+      "entries_per_sec": 46313.18444462819
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "linear-100k",
       "n_entries": 100000,
-      "mean_ms": 9182.214610996502,
-      "stddev_ms": 850.1009213466832,
-      "entries_per_sec": 10890.618901483886
+      "mean_ms": 8875.54486101726,
+      "stddev_ms": 459.2430698047245,
+      "entries_per_sec": 11266.913926514548
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "linear-10k",
       "n_entries": 10000,
-      "mean_ms": 616.4432500954717,
-      "stddev_ms": 121.0472811474131,
-      "entries_per_sec": 16222.093434312483
+      "mean_ms": 602.0563917933032,
+      "stddev_ms": 56.642131956894495,
+      "entries_per_sec": 16609.739779049105
     },
     {
       "family": "session_replay",
       "impl": "tau",
       "variant": "linear-1k",
       "n_entries": 1000,
-      "mean_ms": 44.20232639725631,
-      "stddev_ms": 61.384699201076195,
-      "entries_per_sec": 22623.24365040821
+      "mean_ms": 46.5179584066694,
+      "stddev_ms": 27.804457665860724,
+      "entries_per_sec": 21497.074124745497
+    },
+    {
+      "family": "session_replay",
+      "impl": "pi",
+      "variant": "linear-100k",
+      "n_entries": 100000,
+      "mean_ms": 756.2664863333333,
+      "stddev_ms": 106.17718705962817,
+      "entries_per_sec": 132228.52236231955
+    },
+    {
+      "family": "session_replay",
+      "impl": "pi",
+      "variant": "linear-10k",
+      "n_entries": 10000,
+      "mean_ms": 57.52387900000001,
+      "stddev_ms": 48.706679471418774,
+      "entries_per_sec": 173840.84964089433
+    },
+    {
+      "family": "session_replay",
+      "impl": "pi",
+      "variant": "linear-1k",
+      "n_entries": 1000,
+      "mean_ms": 6.064020800000005,
+      "stddev_ms": 19.046363131794664,
+      "entries_per_sec": 164907.08607068087
     },
     {
       "family": "sse_canonicalize",
       "impl": "rho",
       "variant": "100",
       "n_deltas": 100,
-      "mean_ms": 0.13064429402070263,
-      "stddev_ms": 0.24142181962060033,
-      "ns_per_delta": 1306.4429402070264,
-      "deltas_per_sec": 765437.1800130317
+      "mean_ms": 0.1099370607428105,
+      "stddev_ms": 0.1254846858038687,
+      "ns_per_delta": 1099.370607428105,
+      "deltas_per_sec": 909611.3660337209
     },
     {
       "family": "sse_canonicalize",
       "impl": "rho",
       "variant": "1000",
       "n_deltas": 1000,
-      "mean_ms": 1.5864025982608698,
-      "stddev_ms": 2.3658796744627457,
-      "ns_per_delta": 1586.4025982608698,
-      "deltas_per_sec": 630357.0109480865
+      "mean_ms": 1.1660884841726706,
+      "stddev_ms": 1.7178191753736487,
+      "ns_per_delta": 1166.0884841726706,
+      "deltas_per_sec": 857567.8549038164
     },
     {
       "family": "sse_canonicalize",
       "impl": "rho",
       "variant": "10000",
       "n_deltas": 10000,
-      "mean_ms": 32.68696712,
-      "stddev_ms": 48.628076391731575,
-      "ns_per_delta": 3268.696712,
-      "deltas_per_sec": 305932.3296434362
+      "mean_ms": 21.603513515,
+      "stddev_ms": 16.26444188477054,
+      "ns_per_delta": 2160.3513515,
+      "deltas_per_sec": 462887.6683904535
     },
     {
       "family": "sse_canonicalize",
       "impl": "tau",
       "variant": "100",
       "n_deltas": 100,
-      "mean_ms": 10.266274262685329,
-      "stddev_ms": 27.037940771846845,
-      "ns_per_delta": 102662.74262685329,
-      "deltas_per_sec": 9740.632038583703
+      "mean_ms": 10.582606701646,
+      "stddev_ms": 21.11138531193524,
+      "ns_per_delta": 105826.06701646,
+      "deltas_per_sec": 9449.467680249913
     },
     {
       "family": "sse_canonicalize",
       "impl": "tau",
       "variant": "1000",
       "n_deltas": 1000,
-      "mean_ms": 86.82580751599744,
-      "stddev_ms": 62.44304142197346,
-      "ns_per_delta": 86825.80751599744,
-      "deltas_per_sec": 11517.312981117422
+      "mean_ms": 84.54410593723878,
+      "stddev_ms": 36.343593067022645,
+      "ns_per_delta": 84544.10593723878,
+      "deltas_per_sec": 11828.14566331033
     },
     {
       "family": "sse_canonicalize",
       "impl": "tau",
       "variant": "10000",
       "n_deltas": 10000,
-      "mean_ms": 902.895830856869,
-      "stddev_ms": 154.68375086411228,
-      "ns_per_delta": 90289.5830856869,
-      "deltas_per_sec": 11075.474775988023
+      "mean_ms": 868.1510641414206,
+      "stddev_ms": 74.10976950987664,
+      "ns_per_delta": 86815.10641414206,
+      "deltas_per_sec": 11518.732641178925
     },
     {
       "family": "cold_start",
       "impl": "rho",
       "variant": "0ms",
-      "mean_ms": 41.065268200000006,
-      "stddev_ms": 10.989445933442745,
-      "min_ms": 13.105451600000006,
-      "max_ms": 61.55653560000001
+      "mean_ms": 38.75852457999999,
+      "stddev_ms": 6.874017331744986,
+      "min_ms": 25.218010780000004,
+      "max_ms": 53.380885780000014
     },
     {
       "family": "cold_start",
       "impl": "tau",
       "variant": "0ms",
-      "mean_ms": 3605.5947459999998,
-      "stddev_ms": 1032.0489386330437,
-      "min_ms": 2999.0060346000005,
-      "max_ms": 7221.814618599999
+      "mean_ms": 2971.8208274466665,
+      "stddev_ms": 350.5756399519929,
+      "min_ms": 2583.23696878,
+      "max_ms": 3960.17830278
+    },
+    {
+      "family": "cold_start",
+      "impl": "pi",
+      "variant": "0ms",
+      "mean_ms": 2503.504713646667,
+      "stddev_ms": 199.02324138532197,
+      "min_ms": 2316.96709378,
+      "max_ms": 2972.2665527800004
     },
     {
       "family": "cold_start",
       "impl": "rho",
       "variant": "20ms-chunk",
-      "mean_ms": 434.22567145333335,
-      "stddev_ms": 9.902383941238366,
-      "min_ms": 414.55409052000005,
-      "max_ms": 450.46909152
+      "mean_ms": 438.1251186733334,
+      "stddev_ms": 8.93694053409711,
+      "min_ms": 420.31814054000006,
+      "max_ms": 449.72018254
     },
     {
       "family": "cold_start",
       "impl": "tau",
       "variant": "20ms-chunk",
-      "mean_ms": 3583.3841910533333,
-      "stddev_ms": 1116.9583503447286,
-      "min_ms": 2894.84896652,
-      "max_ms": 7556.15813252
+      "mean_ms": 3123.392343606667,
+      "stddev_ms": 568.9920167975966,
+      "min_ms": 2734.74509854,
+      "max_ms": 5139.40018254
+    },
+    {
+      "family": "cold_start",
+      "impl": "pi",
+      "variant": "20ms-chunk",
+      "mean_ms": 2747.0285964066666,
+      "stddev_ms": 185.3574003177877,
+      "min_ms": 2477.09901654,
+      "max_ms": 3139.33230754
     },
     {
       "family": "cold_start",
       "impl": "rho",
       "variant": "version",
-      "mean_ms": 7.564071906666667,
-      "stddev_ms": 2.5229610513687475,
-      "min_ms": 2.0311274400000023,
-      "max_ms": 13.230085440000002
-    },
-    {
-      "family": "cold_start",
-      "impl": "tau",
-      "variant": "version",
-      "mean_ms": 2895.0801913066666,
-      "stddev_ms": 847.1218127234389,
-      "min_ms": 2422.76096144,
-      "max_ms": 5919.08416944
-    },
-    {
-      "family": "cold_start",
-      "impl": "rho",
-      "variant": "version-direct",
-      "mean_ms": 5.969508955000008,
-      "stddev_ms": 7.926840033832321,
+      "mean_ms": 12.229651559999992,
+      "stddev_ms": 8.000042350423694,
       "min_ms": 0.0,
-      "max_ms": 32.59497654000001
+      "max_ms": 30.23556279999999
+    },
+    {
+      "family": "cold_start",
+      "impl": "tau",
+      "variant": "version",
+      "mean_ms": 2506.1897931333333,
+      "stddev_ms": 104.16030000978125,
+      "min_ms": 2278.4388127999996,
+      "max_ms": 2641.6551038
+    },
+    {
+      "family": "cold_start",
+      "impl": "pi-shim",
+      "variant": "version",
+      "mean_ms": 2184.3347903999997,
+      "stddev_ms": 200.43413568767585,
+      "min_ms": 1926.0796458,
+      "max_ms": 2667.7430628
+    },
+    {
+      "family": "cold_start",
+      "impl": "pi-node",
+      "variant": "version",
+      "mean_ms": 2176.6420014666664,
+      "stddev_ms": 280.0574617075701,
+      "min_ms": 1866.6155618,
+      "max_ms": 3017.9086458
+    },
+    {
+      "family": "cold_start",
+      "impl": "rho",
+      "variant": "version-direct",
+      "mean_ms": 6.520805773333336,
+      "stddev_ms": 3.571947860073638,
+      "min_ms": 1.0029390400000011,
+      "max_ms": 14.186314040000001
     },
     {
       "family": "cold_start",
       "impl": "tau",
       "variant": "version-direct",
-      "mean_ms": 2489.8363238399997,
-      "stddev_ms": 470.1395236158128,
-      "min_ms": 1913.3213095400001,
-      "max_ms": 4064.96139254
+      "mean_ms": 1970.7919862400004,
+      "stddev_ms": 112.9806506325823,
+      "min_ms": 1778.5522730400003,
+      "max_ms": 2135.5668140400003
     },
     {
       "family": "memory_rss",
@@ -303,41 +369,65 @@
       "family": "memory_rss",
       "impl": "tau",
       "turns": 1,
-      "peak_rss_bytes": 43008000,
-      "peak_rss_mib": 41.02,
+      "peak_rss_bytes": 43483136,
+      "peak_rss_mib": 41.47,
+      "note": "turns=1 messages=2"
+    },
+    {
+      "family": "memory_rss",
+      "impl": "pi",
+      "turns": 1,
+      "peak_rss_bytes": 83869696,
+      "peak_rss_mib": 79.98,
       "note": "turns=1 messages=2"
     },
     {
       "family": "memory_rss",
       "impl": "rho",
       "turns": 500,
-      "peak_rss_bytes": 77201408,
-      "peak_rss_mib": 73.62,
+      "peak_rss_bytes": 76578816,
+      "peak_rss_mib": 73.03,
       "note": "turns=500 messages=501"
     },
     {
       "family": "memory_rss",
       "impl": "tau",
       "turns": 500,
-      "peak_rss_bytes": 47267840,
-      "peak_rss_mib": 45.08,
+      "peak_rss_bytes": 47300608,
+      "peak_rss_mib": 45.11,
       "note": "turns=500 messages=501"
+    },
+    {
+      "family": "memory_rss",
+      "impl": "pi",
+      "turns": 500,
+      "peak_rss_bytes": 90521600,
+      "peak_rss_mib": 86.33,
+      "note": "turns=500 messages=1000"
     },
     {
       "family": "memory_rss",
       "impl": "rho",
       "turns": 2000,
-      "peak_rss_bytes": 1141112832,
-      "peak_rss_mib": 1088.25,
+      "peak_rss_bytes": 1139359744,
+      "peak_rss_mib": 1086.58,
       "note": "turns=2000 messages=2001"
     },
     {
       "family": "memory_rss",
       "impl": "tau",
       "turns": 2000,
-      "peak_rss_bytes": 72253440,
-      "peak_rss_mib": 68.91,
+      "peak_rss_bytes": 72220672,
+      "peak_rss_mib": 68.88,
       "note": "turns=2000 messages=2001"
+    },
+    {
+      "family": "memory_rss",
+      "impl": "pi",
+      "turns": 2000,
+      "peak_rss_bytes": 108855296,
+      "peak_rss_mib": 103.81,
+      "note": "turns=2000 messages=4000"
     }
   ]
 }
