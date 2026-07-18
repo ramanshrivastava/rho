@@ -377,23 +377,42 @@ fn optimistic_echo_reconciles_without_double_render() {
 }
 
 #[test]
-fn optimistic_echo_mismatch_still_renders_the_real_message() {
-    // Safety net: if the streamed user message does not match the optimistic
-    // echo, it is still rendered (the transcript is never wrong — worst case it
-    // is the pre-optimistic behavior).
+fn optimistic_echo_transform_withdraws_raw_and_renders_real() {
+    // When prompt()'s preprocessing transforms the text (an `input` hook, a
+    // `/skill:` / `/template` expansion), the durable user MessageEnd differs from
+    // the raw echo: the stale raw item must be WITHDRAWN and only the real,
+    // transformed message rendered — never both.
     let mut state = TuiState::new();
-    state.add_optimistic_user_echo("first");
+    state.add_optimistic_user_echo("/template greet");
     apply(
         &mut state,
         agent(AgentEvent::MessageEnd(MessageEndEvent::new(
-            AgentMessage::User(UserMessage::new("second")),
+            AgentMessage::User(UserMessage::new("Hello there, please greet warmly.")),
         ))),
     );
     assert_eq!(
         roles_and_text(&state),
-        vec![
-            (ChatItemRole::User, "first".into()),
-            (ChatItemRole::User, "second".into()),
-        ]
+        vec![(
+            ChatItemRole::User,
+            "Hello there, please greet warmly.".into()
+        )],
+        "the raw directive must be withdrawn, only the transformed message renders"
     );
+    assert_eq!(state.optimistic_echo, None);
+}
+
+#[test]
+fn optimistic_echo_withdrawn_when_turn_handles_without_user_message() {
+    // An `input` hook that HANDLES the prompt starts no agent run and produces no
+    // durable user message, so no user MessageEnd ever arrives. Dropping the
+    // pending echo (as finish_turn does) must remove the orphaned raw item.
+    let mut state = TuiState::new();
+    state.add_optimistic_user_echo("do the thing");
+    assert_eq!(state.items.len(), 1);
+    state.drop_optimistic_echo();
+    assert!(
+        state.items.is_empty(),
+        "orphaned raw echo must be withdrawn"
+    );
+    assert_eq!(state.optimistic_echo, None);
 }

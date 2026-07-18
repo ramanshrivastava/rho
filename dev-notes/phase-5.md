@@ -389,9 +389,16 @@ performance for personality; the pieces:
   `ensure_session_indexed` + turn assembly *before* emitting the user echo, so
   the message appeared to lag. The adapter reconciles the real user `MessageEnd`
   against the pending `optimistic_echo` marker (exact-text match) so nothing
-  double-renders; a mismatch falls back to a normal add (never wrong). Covered
-  by `optimistic_echo_reconciles_without_double_render` +
-  `optimistic_echo_mismatch_still_renders_the_real_message`.
+  double-renders. Because `CodingSession::prompt` runs `input` hooks + `/skill:`
+  / `/template` expansion **before** emitting the durable user message (Codex PR
+  #19 P1), the echo is **self-correcting**: a mismatch (the durable text was
+  transformed) *withdraws* the stale raw item (`reconcile_optimistic_user` drops
+  the tracked `optimistic_range`) and renders the real message in its place; a
+  turn that ends with no user `MessageEnd` at all (a hook *handled* the prompt,
+  no agent run) withdraws the orphan at `finish_turn` (`drop_optimistic_echo`).
+  Covered by `optimistic_echo_reconciles_without_double_render`,
+  `optimistic_echo_transform_withdraws_raw_and_renders_real`, and
+  `optimistic_echo_withdrawn_when_turn_handles_without_user_message`.
 - **Full-pane splash background (the "half-screen theme" bug).** `render_splash`
   now paints the theme background across the **entire** transcript pane (a
   `Block` fill) before centering its content, killing the black seam above the
@@ -422,7 +429,13 @@ performance for personality; the pieces:
 - **Heritage splash + bench brag + welcome tips.** The splash centerpiece is the
   animated π→τ→ρ lineage with language labels (`π Pi·TypeScript → τ tau·Python →
   ρ rho·Rust`); the active glyph oxidizes/brightens marching π→τ→ρ (settles on ρ
-  under no-motion). A **benchmark brag** line pulls REAL numbers from the
+  under no-motion). Beneath the ρ mark, the **name across scripts** — `ρο · ロー ·
+  रो` (Greek · Japanese-katakana · Hindi-Devanagari) — on a cool→hot oxide
+  gradient with a shared gentle throb (owner request). The full-pane bg
+  regression test skips wide-glyph (CJK) continuation cells, which ratatui resets
+  and the wide glyph visually covers; it asserts the theme bg on the full-height
+  edge columns instead (never continuation cells) so an unpainted-row seam is
+  still caught. A **benchmark brag** line pulls REAL numbers from the
   committed `dev-notes/benchmarks.json` (baked in via `include_str!`, parsed at
   runtime, degrades to no line on malformed data): `ρ · ~302× faster cold start
   than τ · ~21× lighter` (cold-start = `version-direct` variant tau/rho; memory =

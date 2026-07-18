@@ -195,6 +195,11 @@ const LINEAGE: [(&str, &str); 3] = [
     ("ρ", "rho·Rust"),
 ];
 
+/// The name "rho", written across scripts for the splash: Greek, Japanese
+/// (katakana), Hindi (Devanagari). A quiet, cool multi-script flourish under the
+/// mark.
+const NAME_IN_SCRIPTS: [&str; 3] = ["ρο", "ロー", "रो"];
+
 /// Rotating "did you know" heritage facts (task #45 welcome tips).
 const DID_YOU_KNOW: [&str; 4] = [
     "ρ reads and writes τ's exact session files",
@@ -254,6 +259,7 @@ pub fn render_splash(
 
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled("ρ", mark_style)),
+        Line::from(name_scripts_spans(frame_idx, caps, theme)),
         Line::default(),
         Line::from(lineage_spans(frame_idx, caps, theme)),
         Line::default(),
@@ -285,6 +291,39 @@ pub fn render_splash(
             .style(bg),
         inner,
     );
+}
+
+/// The name "rho" across scripts (Greek · Japanese · Hindi) as a quiet, sleek
+/// flourish beneath the mark: each script glyph on a gentle oxide gradient (dim →
+/// bright, cool → hot), thin-spaced with muted dot separators. A subtle
+/// synchronized throb rides the whole line when motion is available.
+fn name_scripts_spans(frame_idx: usize, caps: MotionCaps, theme: &TuiTheme) -> Vec<Span<'static>> {
+    let muted = parse_style(&theme.muted_text);
+    // A small brightness lift shared by all three scripts so they pulse together.
+    let lift = if caps.animated() {
+        0.15 * motion::throb01(frame_idx, motion::THROB_PERIOD_FRAMES)
+    } else {
+        0.0
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, script) in NAME_IN_SCRIPTS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", muted));
+        }
+        // Cool → hot across the three scripts (Greek dim, Japanese mid, Hindi hot).
+        #[allow(clippy::cast_precision_loss)]
+        let base = 0.35 + 0.25 * (i as f32);
+        let color = if caps.truecolor {
+            motion::oxide_ramp(base + lift)
+        } else {
+            ratatui::style::Color::Red
+        };
+        spans.push(Span::styled(
+            (*script).to_string(),
+            Style::default().fg(color),
+        ));
+    }
+    spans
 }
 
 /// The animated π → τ → ρ lineage spans: the active stage oxidizes/brightens

@@ -1541,11 +1541,13 @@ impl App {
         // stream ended without a settle event (the adapter clears it on settle /
         // error, but a bare stream close would otherwise leave it stuck true).
         self.state.running = false;
-        // Retire the working-state timer, drop any unreconciled optimistic echo
-        // marker (the item stays; only the reconcile flag clears), and advance the
-        // turn counter so the next turn rotates to the next forge-verb.
+        // Retire the working-state timer and advance the turn counter so the next
+        // turn rotates to the next forge-verb. Withdraw any still-pending optimistic
+        // echo: if the turn ended without a matching user MessageEnd (an `input`
+        // hook handled the prompt with no agent run), the provisional item is stale
+        // and must not linger as an orphaned raw directive.
         self.state.turn_started_at = None;
-        self.state.optimistic_echo = None;
+        self.state.drop_optimistic_echo();
         self.state.turn_index = self.state.turn_index.wrapping_add(1);
         if let Some(error) = self.session.take_run_error() {
             self.state.error = Some(error.clone());

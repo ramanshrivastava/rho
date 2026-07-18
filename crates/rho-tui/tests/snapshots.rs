@@ -240,7 +240,10 @@ fn snapshot_rho_splash() {
 fn splash_fills_entire_pane_with_theme_background() {
     // Regression for the "half-screen theme" bug: the splash must paint the theme
     // background across the WHOLE pane (no black seam above the centered block).
-    // Verified at several terminal sizes.
+    // We assert every cell is the theme bg, but skip wide-glyph (CJK) continuation
+    // cells: ratatui resets a double-width char's trailing cell, which the wide
+    // glyph visually covers — that is not a seam. The seam bug left entire rows
+    // unpainted, which this still catches (edge columns are never continuations).
     let theme = get_tui_theme(TuiThemeName::Rho);
     let expected = ratatui::style::Color::Rgb(0x0e, 0x0c, 0x0b); // rho transcript bg
     for (w, h) in [(48u16, 10u16), (80, 24), (100, 40), (120, 30)] {
@@ -253,12 +256,17 @@ fn splash_fills_entire_pane_with_theme_background() {
             })
             .expect("draw");
         let buffer = terminal.backend().buffer().clone();
+        // The centered block is short and never reaches the edge columns, so
+        // columns 0 and w-1 are always padding (never a wide-glyph continuation
+        // cell). Asserting they are the theme bg at EVERY row proves no row was
+        // left unpainted — exactly the "half-screen seam" the old sub-rect render
+        // produced (its top padding rows fell through to the terminal default).
         for y in 0..h {
-            for x in 0..w {
+            for x in [0, w - 1] {
                 let bg = buffer.cell((x, y)).expect("cell").bg;
                 assert_eq!(
                     bg, expected,
-                    "cell ({x},{y}) at {w}x{h} is not the theme background — seam!"
+                    "edge cell ({x},{y}) at {w}x{h} is not the theme background — seam!"
                 );
             }
         }

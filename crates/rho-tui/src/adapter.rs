@@ -105,14 +105,12 @@ impl<'a> TuiEventAdapter<'a> {
         match message {
             AgentMessage::User(m) => {
                 let text = m.text();
-                // Reconcile against an optimistic echo: if the submit path already
-                // rendered this exact user message on the frame the user pressed
-                // Enter, consume the pending marker instead of adding a duplicate.
-                // Any mismatch falls through to a normal add, so the transcript is
-                // never wrong — worst case it is the pre-optimistic behavior.
-                if self.state.optimistic_echo.as_deref() == Some(text.as_str()) {
-                    self.state.optimistic_echo = None;
-                } else {
+                // Reconcile against an optimistic echo: a match keeps the already-
+                // shown item (no duplicate); a mismatch (an `input` hook / `/skill:`
+                // / `/template` transformed the text before this durable message)
+                // withdraws the stale echo so the real, transformed message renders
+                // in its place. No pending echo → a normal add.
+                if !self.state.reconcile_optimistic_user(&text) {
                     self.state.add_user_message(&text, None, None);
                 }
             }
