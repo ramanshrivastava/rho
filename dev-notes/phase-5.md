@@ -191,6 +191,46 @@ all in the newly-written `app.rs`, plus 4 in the salvaged `transcript.rs` render
   matches it exactly; byte-compat with tau is the arbiter, and skipping symlinks would
   diverge from tau's output.
 
+### Adversarial review round (team lead)
+
+A second, adversarial pass found issues the bot pass and the first fix commit had
+not yet covered (the reviewer read a pre-`6dd76e1` tree for some, but three were
+genuinely new). `HarnessControl` (rho-agent) was independently verified clean
+(purely additive, token identity preserved) and stays as-is.
+
+**Fixed (criticals):**
+- **C1 — empty code-fence panic** (`transcript.rs::render_fenced_body`): an empty
+  ` ```\n``` ` matched the opening line's own newline as the closing fence, so the
+  code slice `text[fence_line_end+1..closing]` was a reversed range → panic on any
+  body (tool/skill/user/error). Now searches for the closing fence from
+  `fence_line_end+1` via `get(..).find`, so `closing >= code_start` always.
+  Regression test with an empty fence in a tool result.
+- **C2 — terminal never restored on panic** (`app.rs`): added a chained panic hook
+  **and** a `TerminalGuard` RAII drop, so any unwind (e.g. in render) restores raw
+  mode / alt screen / mouse capture before the process dies. Test: an RAII guard's
+  `Drop` runs during `catch_unwind`.
+- **C3 / F-Stale / F-Seed** were already fixed in `6dd76e1` (transcript
+  bottom-follow scroll + overflow snapshot; per-turn `HarnessControl`, no cached
+  field; `load_messages`-based seeding) — re-verified on HEAD.
+
+**Fixed (importants):** `!`/`!!` → `run_terminal_command` (F-Bang); Shift+Tab no
+longer collides with plain Tab so the thinking-cycle binding lives (F-Bindings, with
+regression test); **quit and command-palette stay live during a running turn**
+(F-Quit) — `handle_running_key` returns a `Quit` outcome that cancels the run and
+exits; code-block truncation by display width (F-Width).
+
+**Ledgered (deliberate scope for M5):**
+- **Session-picker during a running turn:** tau *notifies* ("can't switch while
+  running") rather than opening it; rho currently ignores the key mid-turn. The
+  live bindings that matter for not-stranding-the-user (quit, palette) are wired;
+  the mid-run session-picker notification is deferred (cosmetic).
+- **Chrome frozen during a turn:** intentional immediate-mode seam trade-off (the
+  status token counter is one turn stale during a run; refreshed at settle) — see
+  the borrow-seam journal above.
+- **Minors:** modal Enter-on-empty-filter, session-picker row format, `format_g`
+  `%g` on absurd magnitudes, and the tau-parity file-reference traversal rebuttal
+  are all documented above / in the salvage-audit ledger.
+
 _Original template retained below._
 
 _To be filled at PR: each Codex + CodeRabbit thread with FIX-with-SHA or

@@ -1,0 +1,10 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+▌message number 10
+
+▌message number 11
+
+▌message number 12

@@ -391,22 +391,47 @@ fn init_terminal() -> io::Result<Terminal<Backend>> {
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
-fn restore_terminal(terminal: &mut Terminal<Backend>) -> io::Result<()> {
+/// Best-effort terminal reset that works from just `stdout` (no `Terminal`
+/// handle), so both the panic hook and the RAII guard can call it.
+fn restore_terminal_stdout() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    Ok(())
+}
+
+/// Restores the terminal on drop — including during a panic unwind — so a crash
+/// (e.g. in a render) can never leave raw mode / the alternate screen / mouse
+/// capture on. tau gets this from Textual's try/finally; rho makes it explicit.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = restore_terminal_stdout();
+    }
 }
 
 /// Run the interactive TUI to completion (the `rho` no-`-p` entry point).
 pub async fn run_tui(session: CodingSession, settings: TuiSettings) -> io::Result<()> {
     let mut app = App::new(session, settings);
     let mut terminal = init_terminal()?;
-    let result = app.event_loop(&mut terminal).await;
-    restore_terminal(&mut terminal)?;
+
+    // Chain a panic hook that restores the terminal FIRST (so the panic message
+    // is legible on a cooked terminal), then defers to the previous hook.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = restore_terminal_stdout();
+        previous_hook(info);
+    }));
+
+    // The guard restores on normal return AND on any unwind through here.
+    let result = {
+        let _guard = TerminalGuard;
+        app.event_loop(&mut terminal).await
+    };
+
+    let _ = terminal.show_cursor();
+    // Re-lower to the default panic hook now that the TUI owns the terminal no more.
+    let _ = std::panic::take_hook();
     result
 }
 
@@ -793,8 +818,9 @@ impl App {
         let control = self.session.control();
         let keybindings = self.settings.keybindings.clone();
         // Scope the disjoint field borrows (and the `session`-borrowing stream)
-        // so they all drop before we touch `self` again after the turn.
-        {
+        // so they all drop before we touch `self` again after the turn. The block
+        // yields whether the user asked to quit mid-turn.
+        let quit_requested = {
             let App {
                 session,
                 state,
@@ -809,6 +835,7 @@ impl App {
             let stream = session.prompt(text, Some(StreamingBehavior::Steer));
             futures::pin_mut!(stream);
             let mut ticker = tokio::time::interval(Duration::from_millis(150));
+            let mut quit_requested = false;
 
             loop {
                 {
@@ -845,7 +872,12 @@ impl App {
                     maybe_key = events.next() => {
                         match maybe_key {
                             Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                                handle_running_key(key, &keybindings, &control, textarea, state);
+                                if let RunningKeyOutcome::Quit =
+                                    handle_running_key(key, &keybindings, &control, textarea, state)
+                                {
+                                    quit_requested = true;
+                                    break;
+                                }
                             }
                             Some(Ok(_)) => {}
                             // Input closed / errored mid-turn: cancel the run and
@@ -858,6 +890,10 @@ impl App {
                     }
                 }
             }
+            quit_requested
+        };
+        if quit_requested {
+            self.should_quit = true;
         }
         self.state.tool_spinner = None;
         // Surface a run error the session recorded (tau shows the failure in the
@@ -872,15 +908,38 @@ impl App {
     }
 }
 
+/// What a key handled mid-turn asks the turn loop to do next.
+enum RunningKeyOutcome {
+    /// Keep streaming.
+    Continue,
+    /// Quit the app (cancel the run first).
+    Quit,
+}
+
 /// Handle a key while a turn streams: steer / follow-up / cancel via the control
-/// handle, plus the pure-UI toggles that don't touch the borrowed session.
+/// handle, the pure-UI toggles that don't touch the borrowed session, and the
+/// always-live quit / command-palette bindings tau keeps active during a run
+/// (via priority bindings) so the user is never stranded while the agent works.
 fn handle_running_key(
     key: KeyEvent,
     kb: &TuiKeybindings,
     control: &HarnessControl,
     textarea: &mut TextArea<'static>,
     state: &mut TuiState,
-) {
+) -> RunningKeyOutcome {
+    // Quit stays live during a run (tau keeps `quit` as a priority binding): cancel
+    // the in-flight run, then let the loop exit the app.
+    if matches_binding(&key, &kb.quit) {
+        control.cancel();
+        return RunningKeyOutcome::Quit;
+    }
+    // Command palette stays live: seed the composer with `/` (completions rebuild on
+    // the next keystroke, once the turn releases the session borrow).
+    if matches_binding(&key, &kb.command_palette) {
+        *textarea = fresh_textarea();
+        textarea.insert_str("/");
+        return RunningKeyOutcome::Continue;
+    }
     if key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT) {
         let text = textarea.lines().join("\n");
         if !text.trim().is_empty() {
@@ -898,7 +957,7 @@ fn handle_running_key(
             );
             *textarea = fresh_textarea();
         }
-        return;
+        return RunningKeyOutcome::Continue;
     }
     if matches_binding(&key, &kb.queue_follow_up) {
         let text = textarea.lines().join("\n");
@@ -917,22 +976,23 @@ fn handle_running_key(
             );
             *textarea = fresh_textarea();
         }
-        return;
+        return RunningKeyOutcome::Continue;
     }
     if matches_binding(&key, &kb.cancel) {
         control.cancel();
-        return;
+        return RunningKeyOutcome::Continue;
     }
     if matches_binding(&key, &kb.toggle_tool_results) {
         state.show_tool_results = !state.show_tool_results;
-        return;
+        return RunningKeyOutcome::Continue;
     }
     if matches_binding(&key, &kb.toggle_thinking) {
         state.show_thinking = !state.show_thinking;
-        return;
+        return RunningKeyOutcome::Continue;
     }
     // Otherwise let the user keep composing the next steering message.
     textarea.input(Event::Key(key));
+    RunningKeyOutcome::Continue
 }
 
 fn fresh_textarea() -> TextArea<'static> {
@@ -1005,6 +1065,32 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn raii_guard_restores_on_panic() {
+        // C2 mechanism: a Drop guard (like TerminalGuard) runs during an unwind,
+        // so a panic in the render/event loop still restores the terminal.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static RESTORED: AtomicBool = AtomicBool::new(false);
+        struct Spy;
+        impl Drop for Spy {
+            fn drop(&mut self) {
+                RESTORED.store(true, Ordering::SeqCst);
+            }
+        }
+        let result = std::panic::catch_unwind(|| {
+            let _spy = Spy;
+            panic!("boom in render");
+        });
+        assert!(result.is_err());
+        assert!(
+            RESTORED.load(Ordering::SeqCst),
+            "guard must restore on unwind"
+        );
+        // The real guard's Drop must also be panic-safe on a non-tty (no double panic).
+        let guard = TerminalGuard;
+        drop(guard);
     }
 
     #[test]

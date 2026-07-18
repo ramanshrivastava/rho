@@ -416,12 +416,16 @@ fn render_fenced_body(
         {
             return None;
         }
-        let closing = text[fence_line_end..]
-            .find("\n```")
-            .map_or(usize::MAX, |i| fence_line_end + i);
-        if closing == usize::MAX {
-            return None;
-        }
+        // Search for the closing fence AFTER the opening fence line's terminator.
+        // Starting at `fence_line_end` lets an EMPTY block ("```\n```") match the
+        // opening line's own newline as the closing fence, so `code` became a
+        // reversed-range slice (`text[fence_line_end+1..closing]` with
+        // `closing < fence_line_end+1`) and panicked. `get` also guards a fence
+        // with no trailing newline.
+        let code_start = fence_line_end + 1;
+        let rest = text.get(code_start..)?;
+        let rel = rest.find("\n```")?;
+        let closing = code_start + rel; // '\n' before the closing fence; >= code_start
         append_plain(
             &mut lines,
             &text[cursor..fence_start],
@@ -429,7 +433,7 @@ fn render_fenced_body(
             inner_width,
         );
         let _language = text[fence_start + 3..fence_line_end].trim_start();
-        let code = &text[fence_line_end + 1..closing];
+        let code = &text[code_start..closing];
         lines.extend(code_block_lines(
             code.trim_end_matches('\n'),
             theme,
@@ -925,6 +929,28 @@ mod tests {
             visible_chat_text(&item, &state),
             "**Branch Summary**\n\nthe summary"
         );
+    }
+
+    #[test]
+    fn empty_code_fence_does_not_panic() {
+        // Regression: an empty fence "```\n```" used to slice a reversed range
+        // (`text[fence_line_end+1..closing]` with closing < that) and panic.
+        let theme = crate::theme::tau_dark_theme();
+        let body = s("#d8dee9");
+        // Direct: the malformed/empty fence yields None, never a panic.
+        assert!(render_fenced_body("```\n```", &theme, body, 40).is_none());
+        assert!(render_fenced_body("before\n```\n```", &theme, body, 40).is_none());
+        // A well-formed fence still renders.
+        assert!(render_fenced_body("```\ncode\n```", &theme, body, 40).is_some());
+        // Via a full assistant body render (the real transcript path).
+        let item = ChatItem::new(ChatItemRole::Assistant, "text\n```\n```\nmore".into());
+        let _ = build_chat_item_lines(&item, &TuiState::new(), &theme, 40);
+        // Via a tool RESULT containing an empty fence (the reported repro).
+        let mut tool = ChatItem::new(ChatItemRole::Tool, "→ bash $ echo".into());
+        tool.tool_result_text = Some("✓ bash\n```\n```".into());
+        let mut state = TuiState::new();
+        state.show_tool_results = true;
+        let _ = build_chat_item_lines(&tool, &state, &theme, 40);
     }
 
     #[test]

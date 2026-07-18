@@ -137,6 +137,39 @@ fn snapshot_transcript() {
     insta::assert_snapshot!("transcript", rendered);
 }
 
+#[test]
+fn snapshot_transcript_follows_bottom_when_overflowing() {
+    // C3 regression: a transcript taller than the pane must show its TAIL (newest
+    // turns), not clip below the fold. Mirrors app.rs render_transcript_scrolled:
+    // a bottom-anchored scroll offset over build_transcript_lines.
+    use rho_tui::widgets::build_transcript_lines;
+    let mut state = TuiState::new();
+    for i in 1..=12 {
+        state.add_item(rho_tui::ChatItemRole::User, format!("message number {i}"));
+    }
+    let theme = dark();
+    let rendered = render_to_string(40, 6, |frame| {
+        let area = full(frame);
+        let lines = build_transcript_lines(&state, &theme, area.width);
+        let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let offset = total.saturating_sub(area.height);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(lines).scroll((offset, 0)),
+            area,
+        );
+    });
+    // The newest message must be visible; the oldest must have scrolled off.
+    assert!(
+        rendered.contains("message number 12"),
+        "tail must be visible"
+    );
+    assert!(
+        !rendered.contains("message number 1\n"),
+        "head must scroll off"
+    );
+    insta::assert_snapshot!("transcript_follows_bottom", rendered);
+}
+
 // --- chrome widgets ---------------------------------------------------------
 
 fn status_info() -> StatusInfo {
