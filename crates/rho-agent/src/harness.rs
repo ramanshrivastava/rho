@@ -273,6 +273,15 @@ impl AgentHarness {
         self.messages.lock().expect("messages lock").clone()
     }
 
+    /// The number of messages in the transcript, without cloning it (tau reads
+    /// `len(harness.messages)`). Cheaper than [`Self::messages`] when only the
+    /// count is needed — e.g. a memory benchmark that must not allocate a full
+    /// transcript copy at peak RSS.
+    #[must_use]
+    pub fn message_count(&self) -> usize {
+        self.messages.lock().expect("messages lock").len()
+    }
+
     /// The harness configuration.
     #[must_use]
     pub fn config(&self) -> &AgentHarnessConfig {

@@ -22,7 +22,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TAU_CHECKOUT="${TAU_CHECKOUT:-/Users/ramanshrivastava/code/oss-gold/tau}"
+TAU_CHECKOUT="${TAU_CHECKOUT:-$REPO_ROOT/../tau}"
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/tools/bench/results}"
 RHO_BIN="$REPO_ROOT/target/release/rho"
 MOCK_BIN="$REPO_ROOT/target/release/mock-provider"

@@ -305,13 +305,21 @@ def render_md(records: list[dict], meta: dict) -> str:
           "allocation-light micro-benches: this is the family where rho's "
           "compatibility constraints cost it the most, and it's the honest one to "
           "show.")
+        # Derive the compaction comparison from the records so it can't drift
+        # from the table; only assert the tau-vs-rho figure when both sides exist.
+        cr, ct = sr_rho.get("compaction-heavy-10k"), sr_tau.get("compaction-heavy-10k")
+        if cr and ct:
+            measured = (f" (measured tau 10k replay {fmt_ms(ct['mean_ms'])}, "
+                        f"{ct['mean_ms'] / cr['mean_ms']:.1f}× the rho "
+                        f"{fmt_ms(cr['mean_ms'])})")
+        else:
+            measured = ""
         a("> **`compaction-heavy-100k` is intentionally excluded** (both timers). "
           "Compaction replay is O(n²) in *both* implementations — each compaction "
           "entry rescans the retained transcript, a shared byte-compatible "
-          "algorithm, not a rho regression (measured tau 10k replay ≈ 7 s, actually "
-          "slower than rho's ≈ 2.6 s). At 100k that single cell costs minutes per "
-          "iteration in either language and adds nothing beyond the 1k→10k trend "
-          "already visible above. Flagged, not silently capped.\n")
+          f"algorithm, not a rho regression{measured}. At 100k that single cell "
+          "costs minutes per iteration in either language and adds nothing beyond "
+          "the 1k→10k trend already visible above. Flagged, not silently capped.\n")
     else:
         a("_Not collected in this run._\n")
 

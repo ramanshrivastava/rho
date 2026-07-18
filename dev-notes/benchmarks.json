@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_utc": "2026-07-18 12:29:17Z",
+    "generated_utc": "2026-07-18 13:15:21Z",
     "machine": "Mac16,7",
     "cpu": "Apple M4 Pro",
     "ncpu": "14",
@@ -10,7 +10,7 @@
     "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
     "uv": "uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)",
     "tau_rev": "81de4f8896a94ed6861bd77b0c486c33eebd3f8d",
-    "rho_rev": "376cb69",
+    "rho_rev": "9ce444d",
     "rho_branch": "m6-bench",
     "anthropic_key_present": false
   },
@@ -164,30 +164,30 @@
       "impl": "rho",
       "variant": "100",
       "n_deltas": 100,
-      "mean_ms": 0.10300278859642104,
-      "stddev_ms": 0.1474445937426016,
-      "ns_per_delta": 1030.0278859642103,
-      "deltas_per_sec": 970847.5019235996
+      "mean_ms": 0.13064429402070263,
+      "stddev_ms": 0.24142181962060033,
+      "ns_per_delta": 1306.4429402070264,
+      "deltas_per_sec": 765437.1800130317
     },
     {
       "family": "sse_canonicalize",
       "impl": "rho",
       "variant": "1000",
       "n_deltas": 1000,
-      "mean_ms": 1.2610225950810883,
-      "stddev_ms": 2.120363251248177,
-      "ns_per_delta": 1261.0225950810884,
-      "deltas_per_sec": 793007.2021712636
+      "mean_ms": 1.5864025982608698,
+      "stddev_ms": 2.3658796744627457,
+      "ns_per_delta": 1586.4025982608698,
+      "deltas_per_sec": 630357.0109480865
     },
     {
       "family": "sse_canonicalize",
       "impl": "rho",
       "variant": "10000",
       "n_deltas": 10000,
-      "mean_ms": 24.115760390000002,
-      "stddev_ms": 25.853534487043763,
-      "ns_per_delta": 2411.576039,
-      "deltas_per_sec": 414666.5847678046
+      "mean_ms": 32.68696712,
+      "stddev_ms": 48.628076391731575,
+      "ns_per_delta": 3268.696712,
+      "deltas_per_sec": 305932.3296434362
     },
     {
       "family": "sse_canonicalize",
@@ -285,40 +285,40 @@
       "family": "memory_rss",
       "impl": "tau",
       "turns": 1,
-      "peak_rss_bytes": 43565056,
-      "peak_rss_mib": 41.55,
+      "peak_rss_bytes": 43008000,
+      "peak_rss_mib": 41.02,
       "note": "turns=1 messages=2"
     },
     {
       "family": "memory_rss",
       "impl": "rho",
       "turns": 500,
-      "peak_rss_bytes": 77316096,
-      "peak_rss_mib": 73.73,
+      "peak_rss_bytes": 77201408,
+      "peak_rss_mib": 73.62,
       "note": "turns=500 messages=501"
     },
     {
       "family": "memory_rss",
       "impl": "tau",
       "turns": 500,
-      "peak_rss_bytes": 47038464,
-      "peak_rss_mib": 44.86,
+      "peak_rss_bytes": 47267840,
+      "peak_rss_mib": 45.08,
       "note": "turns=500 messages=501"
     },
     {
       "family": "memory_rss",
       "impl": "rho",
       "turns": 2000,
-      "peak_rss_bytes": 1137295360,
-      "peak_rss_mib": 1084.61,
+      "peak_rss_bytes": 1141112832,
+      "peak_rss_mib": 1088.25,
       "note": "turns=2000 messages=2001"
     },
     {
       "family": "memory_rss",
       "impl": "tau",
       "turns": 2000,
-      "peak_rss_bytes": 72368128,
-      "peak_rss_mib": 69.02,
+      "peak_rss_bytes": 72253440,
+      "peak_rss_mib": 68.91,
       "note": "turns=2000 messages=2001"
     }
   ]

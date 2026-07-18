@@ -14,13 +14,13 @@ future milestone must respect.
 ```
 crates/rho-agent/benches/session_replay.rs   # (b) criterion: parse+replay
 crates/rho-ai/benches/sse_canonicalize.rs     # (c) criterion: StreamAccumulator
-crates/rho-agent/examples/rss_session.rs      # (d) 500-turn FakeProvider driver
+crates/rho-agent/examples/rss_session.rs      # (d) N-turn FakeProvider driver (RSS)
 tools/bench/
   cold_start.sh        # (a) hyperfine rho -p vs tau -p vs mock-provider
   rss.sh               # (d) /usr/bin/time -l peak RSS, rho vs tau
   tau_session_replay.py# (b) tau timer
   tau_canonicalize.py  # (c) tau timer
-  tau_rss_session.py   # (d) tau 500-turn driver
+  tau_rss_session.py   # (d) tau N-turn driver
   _common.py           # shared stats + normalized-JSON emit
   gen_report.py        # normalize everything -> dev-notes/benchmarks.{md,json}
   run_all.sh           # orchestrator behind `just bench`
@@ -32,11 +32,13 @@ Four families, each measuring a different axis:
   compiled binary vs `uv run` Python, both against the mock provider. hyperfine,
   three variants (0 ms, 20 ms/chunk, `--version`).
 - **(b) Session replay throughput** — parse every JSONL entry + replay into
-  `SessionState`, over the pinned synthetic trees (1k/10k/100k ×
-  linear/deep-branch/compaction-heavy). Criterion vs a `perf_counter` timer.
+  `SessionState`, over the pinned synthetic trees — 1k/10k/100k ×
+  linear/deep-branch/compaction-heavy, **minus `compaction-heavy-100k`** (O(n²),
+  see pitfalls), so **eight datasets**. Criterion vs a `perf_counter` timer.
 - **(c) SSE canonicalization** — feed N text deltas through the canonical-event
   accumulator and drain events. Criterion vs `canonicalize_provider_stream`.
-- **(d) Memory** — peak RSS over a scripted 500-turn FakeProvider session, plus a
+- **(d) Memory** — peak RSS over scripted FakeProvider sessions swept across
+  1/500/2000 turns, plus a
   graceful-skip hook for real-LLM spot checks when `ANTHROPIC_API_KEY` is set.
 
 ## Criterion setup

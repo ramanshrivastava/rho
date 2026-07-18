@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TAU_CHECKOUT="${TAU_CHECKOUT:-/Users/ramanshrivastava/code/oss-gold/tau}"
+TAU_CHECKOUT="${TAU_CHECKOUT:-$REPO_ROOT/../tau}"
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/tools/bench/results}"
 RHO_EXAMPLE="$REPO_ROOT/target/release/examples/rss_session"
 TAU_PY="$TAU_CHECKOUT/.venv/bin/python"
@@ -33,15 +33,34 @@ mkdir -p "$RESULTS_DIR"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# macOS `/usr/bin/time -l` writes "<bytes>  maximum resident set size" to stderr.
-max_rss_bytes() { awk '/maximum resident set size/ {print $1}' "$1"; }
+# Peak RSS via `/usr/bin/time`, normalized to bytes across BSD (macOS) and GNU
+# (Linux) — their flags AND units differ:
+#   * macOS/BSD:  `-l`  → "<bytes>  maximum resident set size"      (bytes)
+#   * GNU/Linux:  `-v`  → "Maximum resident set size (kbytes): N"   (kibibytes)
+case "$(uname -s)" in
+  Darwin) TIME_FLAG="-l" ;;
+  Linux)  TIME_FLAG="-v" ;;
+  *) echo "error: unsupported OS $(uname -s) — RSS bench needs BSD or GNU /usr/bin/time" >&2; exit 1 ;;
+esac
+
+max_rss_bytes() { # $1 = time stderr capture; echoes bytes (empty on parse failure)
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    awk '/maximum resident set size/ {print $1; exit}' "$1"
+  else
+    awk -F':[[:space:]]*' '/Maximum resident set size/ {print $2 * 1024; exit}' "$1"
+  fi
+}
 
 : >"$WORK/records.jsonl"
 for turns in "${TURN_COUNTS[@]}"; do
   echo ">> RSS: $turns turns"
-  /usr/bin/time -l "$RHO_EXAMPLE" "$turns" >"$WORK/rho.out" 2>"$WORK/rho.time"
-  /usr/bin/time -l "$TAU_PY" "$TAU_SCRIPT" "$turns" >"$WORK/tau.out" 2>"$WORK/tau.time"
+  /usr/bin/time "$TIME_FLAG" "$RHO_EXAMPLE" "$turns" >"$WORK/rho.out" 2>"$WORK/rho.time"
+  /usr/bin/time "$TIME_FLAG" "$TAU_PY" "$TAU_SCRIPT" "$turns" >"$WORK/tau.out" 2>"$WORK/tau.time"
   rho_rss="$(max_rss_bytes "$WORK/rho.time")"; tau_rss="$(max_rss_bytes "$WORK/tau.time")"
+  if [[ -z "$rho_rss" || -z "$tau_rss" ]]; then
+    echo "error: could not parse peak RSS from /usr/bin/time output" >&2
+    cat "$WORK/rho.time" >&2; exit 1
+  fi
   rho_msg="$(cat "$WORK/rho.out")"; tau_msg="$(cat "$WORK/tau.out")"
   echo "   rho: $rho_msg  peak=$rho_rss B    tau: $tau_msg  peak=$tau_rss B"
   python3 - "$turns" "$rho_rss" "$tau_rss" "$rho_msg" "$tau_msg" >>"$WORK/records.jsonl" <<'PY'

@@ -16,7 +16,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TAU_CHECKOUT="${TAU_CHECKOUT:-/Users/ramanshrivastava/code/oss-gold/tau}"
+TAU_CHECKOUT="${TAU_CHECKOUT:-$REPO_ROOT/../tau}"
 RESULTS_DIR="$REPO_ROOT/tools/bench/results"
 BENCH_SCALE="${BENCH_SCALE:-1.0}"
 cd "$REPO_ROOT"

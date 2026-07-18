@@ -7,7 +7,9 @@ trees ship gzipped and are inflated in-process, exactly like the Rust bench.
 Run via uv against the pinned tau revision, e.g.:
 
     uv run --project <tau> python tools/bench/tau_session_replay.py \
-        --iterations 30 --warmup 3 --out tools/bench/results/tau_session_replay.json
+        --scale 1.0 --out tools/bench/results/tau_session_replay.json
+
+(`--scale` multiplies the per-size iteration counts; use `<1` for a quick smoke.)
 
 Emits records: {family, impl, dataset, n_entries, mean_ms, entries_per_sec, ...}.
 """

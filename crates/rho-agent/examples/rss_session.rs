@@ -61,6 +61,9 @@ async fn main() {
     }
 
     // Print the final transcript size so the run can't be optimized away and so
-    // the sampler can sanity-check it drove the expected number of turns.
-    println!("turns={turns} messages={}", harness.messages().len());
+    // the sampler can sanity-check it drove the expected number of turns. Use the
+    // non-cloning count — cloning the whole transcript here would allocate a
+    // second copy at peak RSS and skew the very measurement this example exists
+    // for (tau likewise only reads `len(harness.messages)`).
+    println!("turns={turns} messages={}", harness.message_count());
 }
