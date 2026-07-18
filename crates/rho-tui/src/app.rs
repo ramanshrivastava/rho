@@ -84,14 +84,25 @@ pub struct App {
 
 impl App {
     /// Build an app around a loaded session.
+    ///
+    /// `startup_message`, when present, is surfaced as a status notice on launch
+    /// (tau's warning-severity startup toast — used for the login-required
+    /// prompt when the session opened without a usable credential).
     #[must_use]
-    pub fn new(mut session: CodingSession, settings: TuiSettings) -> Self {
+    pub fn new(
+        mut session: CodingSession,
+        settings: TuiSettings,
+        startup_message: Option<String>,
+    ) -> Self {
         let theme = settings.resolved_theme();
         let cwd = session.cwd().to_path_buf();
         let mut state = TuiState::new();
         state.show_tool_results = false;
         state.show_thinking = true;
         seed_transcript(&mut state, &session);
+        if let Some(message) = startup_message {
+            state.add_item(crate::state::ChatItemRole::Status, message);
+        }
         let chrome = build_chrome(&mut session, &cwd);
         let mut textarea = TextArea::default();
         textarea.set_placeholder_text("Type a message, /command, or !shell");
@@ -411,8 +422,12 @@ impl Drop for TerminalGuard {
 }
 
 /// Run the interactive TUI to completion (the `rho` no-`-p` entry point).
-pub async fn run_tui(session: CodingSession, settings: TuiSettings) -> io::Result<()> {
-    let mut app = App::new(session, settings);
+pub async fn run_tui(
+    session: CodingSession,
+    settings: TuiSettings,
+    startup_message: Option<String>,
+) -> io::Result<()> {
+    let mut app = App::new(session, settings, startup_message);
     let mut terminal = init_terminal()?;
 
     // Chain a panic hook that restores the terminal FIRST (so the panic message
@@ -1160,5 +1175,50 @@ mod tests {
             &key(KeyCode::Char('c'), KeyModifiers::ALT),
             "ctrl+c"
         ));
+    }
+
+    /// Build a minimal loaded session whose live provider is the login-required
+    /// placeholder — the shape the CLI hands the TUI when no credential exists.
+    async fn login_required_session(dir: &std::path::Path) -> CodingSession {
+        use rho_agent::provider::ModelProvider;
+        use rho_coding::login_required::LoginRequiredProvider;
+        use rho_coding::session::{CodingSessionConfig, jsonl_session_storage};
+
+        let provider: std::sync::Arc<dyn ModelProvider> =
+            std::sync::Arc::new(LoginRequiredProvider::new("placeholder"));
+        let storage = jsonl_session_storage(dir.join("session.jsonl"));
+        let config = CodingSessionConfig::new(provider, "gpt-4", storage, dir.to_path_buf());
+        CodingSession::load(config).await.expect("session loads")
+    }
+
+    #[tokio::test]
+    async fn startup_message_is_seeded_as_a_status_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = login_required_session(tmp.path()).await;
+        let message = "Login required. Run /login to choose a provider, \
+                       or /login openai to continue with the current provider.";
+        let app = App::new(session, TuiSettings::default(), Some(message.to_string()));
+        assert!(
+            app.state.items.iter().any(|item| {
+                item.role == crate::state::ChatItemRole::Status && item.text == message
+            }),
+            "the startup message is seeded as a status notice: {:?}",
+            app.state.items
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_startup_message_no_status_notice_is_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = login_required_session(tmp.path()).await;
+        let app = App::new(session, TuiSettings::default(), None);
+        assert!(
+            !app.state
+                .items
+                .iter()
+                .any(|item| item.role == crate::state::ChatItemRole::Status),
+            "a credentialed startup adds no status notice: {:?}",
+            app.state.items
+        );
     }
 }

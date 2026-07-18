@@ -23,6 +23,7 @@ pub mod credentials;
 pub mod diagnostics;
 pub mod events;
 mod fmt_util;
+pub mod login_required;
 pub mod oauth;
 pub mod oauth_anthropic;
 pub mod oauth_device;
@@ -58,6 +59,7 @@ pub use commands::{
     format_reload_summary,
 };
 pub use events::{CodingSessionEvent, SessionOwnEvent};
+pub use login_required::LoginRequiredProvider;
 pub use print_mode::{
     MemorySessionStorage, PrintModeConfig, SessionPrintModeConfig, run_print_mode,
     run_session_print_mode,

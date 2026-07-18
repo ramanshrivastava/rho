@@ -22,9 +22,11 @@ use rho_agent::session::storage::SessionStorage as _;
 use rho_ai::FakeProvider;
 use rho_coding::catalog_loader::user_catalog_path;
 use rho_coding::credentials::FileCredentialStore;
+use rho_coding::login_required::LoginRequiredProvider;
 use rho_coding::provider_config::{
     CredentialReader, DEFAULT_MODEL, DEFAULT_PROVIDER_NAME, OpenAICompatibleProviderConfig,
-    ProviderConfig, ProviderSettings, load_provider_settings, provider_kind,
+    ProviderConfig, ProviderConfigError, ProviderSelection, ProviderSettings,
+    load_provider_settings, provider_has_usable_credentials, provider_kind,
     resolve_provider_selection, save_provider_settings, upsert_openai_compatible_provider,
 };
 use rho_coding::provider_runtime::create_model_provider;
@@ -204,7 +206,7 @@ ignoring {} extension spec(s) for this session.",
         );
     }
 
-    let session = build_interactive_session(&cli).await?;
+    let (session, startup_message) = build_interactive_session(&cli).await?;
     let paths = rho_coding::paths::RhoPaths::default();
     // Malformed `tui.json` shouldn't be silently ignored: warn (so the user knows
     // why their theme/keybindings were dropped) and fall back to defaults.
@@ -215,7 +217,7 @@ ignoring {} extension spec(s) for this session.",
             rho_tui::TuiSettings::default()
         }
     };
-    Box::pin(rho_tui::app::run_tui(session, settings))
+    Box::pin(rho_tui::app::run_tui(session, settings, startup_message))
         .await
         .map_err(|err| format!("TUI error: {err}"))?;
     Ok(true)
@@ -225,7 +227,7 @@ ignoring {} extension spec(s) for this session.",
 /// resolving the provider like print mode and honoring `--resume`.
 async fn build_interactive_session(
     cli: &Cli,
-) -> Result<rho_coding::session::CodingSession, String> {
+) -> Result<(rho_coding::session::CodingSession, Option<String>), String> {
     use rho_coding::session::{CodingSession, CodingSessionConfig, jsonl_session_storage};
 
     let default_cwd = cli
@@ -237,6 +239,9 @@ async fn build_interactive_session(
     let use_fake = cli.fake || std::env::var("RHO_FAKE").is_ok_and(|v| v == "1");
     let mut provider_settings = None;
     let mut runtime_provider = None;
+    // A login-required notice to surface on launch (tau's startup warning),
+    // set only when we fall back to the `LoginRequiredProvider` placeholder.
+    let mut startup_message: Option<String> = None;
     let (provider, mut model, mut provider_name): (Arc<dyn ModelProvider>, String, String) =
         if use_fake {
             (
@@ -249,21 +254,47 @@ async fn build_interactive_session(
             let settings =
                 load_provider_settings(None, Some(&credentials as &dyn CredentialReader))
                     .map_err(|err| err.0)?;
-            let selection = resolve_provider_selection(
+            let selection = resolve_tui_startup_selection(
                 &settings,
                 cli.provider.as_deref(),
                 cli.model.as_deref(),
+                Some(&credentials as &dyn CredentialReader),
             )
             .map_err(|err| err.0)?;
-            let provider = create_model_provider(
+            let name = selection.provider.name().to_string();
+            // tau parity (`run_tui_app`): a missing credential must not abort the
+            // TUI. When `create_model_provider` fails *and* the provider has no
+            // usable credential, substitute a `LoginRequiredProvider` placeholder
+            // and carry a startup notice so the app still launches; the user then
+            // runs `/login` or picks a credentialed provider/model to swap in a
+            // real provider. A genuine config error (e.g. an invalid `--model`)
+            // still aborts, matching tau, which only catches the missing-key
+            // `RuntimeError` and lets `ProviderConfigError` propagate.
+            let provider: Arc<dyn ModelProvider> = match create_model_provider(
                 &selection.provider,
                 None,
                 Some(&selection.model),
                 Some(DEFAULT_THINKING_LEVEL),
-            )
-            .map_err(|err| err.0)?;
-            let name = selection.provider.name().to_string();
-            runtime_provider = Some(selection.provider.clone());
+            ) {
+                Ok(provider) => {
+                    runtime_provider = Some(selection.provider.clone());
+                    provider
+                }
+                Err(err) => {
+                    if provider_has_usable_credentials(
+                        &selection.provider,
+                        Some(&credentials as &dyn CredentialReader),
+                    ) {
+                        return Err(err.0);
+                    }
+                    let message = format!(
+                        "Login required. Run /login to choose a provider, \
+                         or /login {name} to continue with the current provider."
+                    );
+                    startup_message = Some(message.clone());
+                    Arc::new(LoginRequiredProvider::new(message))
+                }
+            };
             provider_settings = Some(settings);
             (provider, selection.model, name)
         };
@@ -299,9 +330,44 @@ async fn build_interactive_session(
     config.runtime_provider_config = runtime_provider;
     config.session_id = session_id;
     config.session_manager = Some(manager);
-    CodingSession::load(config)
+    let session = CodingSession::load(config)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    Ok((session, startup_message))
+}
+
+/// Resolve the provider/model to launch the interactive TUI with (tau
+/// `_resolve_tui_startup_selection`, non-resume path).
+///
+/// An explicit `--provider`/`--model` is honored verbatim. Otherwise the default
+/// selection is used when it has a usable credential; failing that, the first
+/// configured provider with a usable credential is chosen so a user who is
+/// logged into *some* provider still lands on a working one. When nothing is
+/// usable the default selection is returned unchanged and the caller substitutes
+/// the login-required placeholder.
+fn resolve_tui_startup_selection(
+    settings: &ProviderSettings,
+    provider_name: Option<&str>,
+    model: Option<&str>,
+    credentials: Option<&dyn CredentialReader>,
+) -> Result<ProviderSelection, ProviderConfigError> {
+    if provider_name.is_some() || model.is_some() {
+        return resolve_provider_selection(settings, provider_name, model);
+    }
+    let default_selection = resolve_provider_selection(settings, None, None)?;
+    if provider_has_usable_credentials(&default_selection.provider, credentials) {
+        return Ok(default_selection);
+    }
+    for provider in &settings.providers {
+        if provider_has_usable_credentials(provider, credentials) {
+            let model = provider.default_model().to_string();
+            return Ok(ProviderSelection {
+                provider: provider.clone(),
+                model,
+            });
+        }
+    }
+    Ok(default_selection)
 }
 
 async fn run_subcommand(command: Command) -> Result<bool, String> {
@@ -631,4 +697,60 @@ fn bash_args(command: &str) -> rho_agent::types::JsonMap {
         serde_json::Value::String(command.to_string()),
     );
     map
+}
+
+#[cfg(test)]
+mod startup_selection_tests {
+    use super::*;
+    use rho_coding::provider_config::builtin_provider_configs;
+    use std::collections::HashMap;
+
+    /// In-memory credential reader for hermetic selection tests.
+    struct MapCreds(HashMap<String, String>);
+
+    impl CredentialReader for MapCreds {
+        fn get(&self, name: &str) -> Option<String> {
+            self.0.get(name).cloned()
+        }
+        fn get_oauth(&self, _name: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn settings() -> ProviderSettings {
+        ProviderSettings {
+            default_provider: "openai".to_string(),
+            providers: builtin_provider_configs(),
+            scoped_models: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn explicit_provider_and_model_are_honored_verbatim() {
+        let settings = settings();
+        // Credentials are irrelevant on the explicit path (no fallback applies).
+        let selection =
+            resolve_tui_startup_selection(&settings, Some("openai"), Some("gpt-4o"), None).unwrap();
+        assert_eq!(selection.provider.name(), "openai");
+        assert_eq!(selection.model, "gpt-4o");
+    }
+
+    #[test]
+    fn default_selection_is_kept_when_it_has_a_usable_credential() {
+        let settings = settings();
+        let creds = MapCreds(HashMap::from([(
+            "openai".to_string(),
+            "sk-test".to_string(),
+        )]));
+        // A usable default is returned regardless of ambient env: no fallback.
+        let selection = resolve_tui_startup_selection(&settings, None, None, Some(&creds)).unwrap();
+        assert_eq!(selection.provider.name(), "openai");
+        assert_eq!(
+            selection.model,
+            settings
+                .get_provider(Some("openai"))
+                .unwrap()
+                .default_model()
+        );
+    }
 }

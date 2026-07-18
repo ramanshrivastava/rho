@@ -1454,6 +1454,7 @@ dependencies = [
  "rho-coding",
  "serde",
  "serde_json",
+ "tempfile",
  "textwrap",
  "thiserror",
  "tokio",
