@@ -173,6 +173,16 @@ wiring:
   host: per-call fuel metering (a `loop {}` tool traps — `runaway` fixture test)
   plus a `StoreLimits` memory ceiling, complementing the empty-`WasiCtx`
   capability sandbox.
+- **`/login` robustness.** Transactional credential persistence (roll back on a
+  failed provider upsert), OAuth account/org selection through the modal (no
+  silent first-pick), a bounded extension-UI channel, and `run_turn`
+  drains+cancels extension `ui.*` dialogs so a hook can never deadlock the turn.
+- **Sanctioned tau divergence:** `/logout` now removes **custom-provider**
+  credentials too (resolved from saved provider settings). tau's `_logout` only
+  enumerates the builtin catalog and has the same gap; rho deliberately improves
+  on it to close the security hole. This is a TUI action, not a wire/byte
+  surface, so it is not a byte-compat parity break — recorded here as an
+  intentional behavioral improvement over tau.
 
 ## Deferrals (with rationale)
 
