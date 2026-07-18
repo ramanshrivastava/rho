@@ -1,0 +1,16 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+
+
+
+              ┌ Proceed? ──────────────────────────────┐
+              │This will overwrite the file.           │
+              │                                        │
+              │   Yes   [ No ]                         │
+              │Y/N or ←→ then Enter · Escape cancels   │
+              └────────────────────────────────────────┘

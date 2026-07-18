@@ -1,0 +1,17 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+
+
+           ┌ Login: Anthropic (Claude Pro/Max) ────────────┐
+           │Complete login in your browser.                │
+           │                                               │
+           │https://claude.ai/oauth/authorize?client_id=dem│
+           │                                               │
+           │code:                                          │
+           │Enter submits · Escape goes back · Ctrl+D close│
+           └───────────────────────────────────────────────┘

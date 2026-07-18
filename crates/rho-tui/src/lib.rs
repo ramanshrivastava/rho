@@ -19,6 +19,8 @@
 pub mod adapter;
 pub mod app;
 pub mod autocomplete;
+pub mod ext_ui;
+pub mod login;
 pub mod modals;
 mod pystr;
 pub mod state;

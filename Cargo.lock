@@ -2322,6 +2322,7 @@ version = "0.0.0"
 dependencies = [
  "crossterm",
  "futures",
+ "indexmap",
  "insta",
  "ratatui",
  "rho-agent",

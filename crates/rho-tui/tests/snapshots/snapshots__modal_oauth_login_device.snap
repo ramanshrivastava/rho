@@ -1,0 +1,17 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+
+
+           ┌ Login: GitHub Copilot ────────────────────────┐
+           │Open the URL and enter code: ABCD-1234         │
+           │                                               │
+           │https://github.com/login/device                │
+           │                                               │
+           │code:                                          │
+           │Enter submits · Escape goes back · Ctrl+D close│
+           └───────────────────────────────────────────────┘
