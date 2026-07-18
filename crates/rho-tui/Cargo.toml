@@ -27,3 +27,4 @@ textwrap = "0.16"
 
 [dev-dependencies]
 insta = "1"
+tempfile = "3"

@@ -860,3 +860,72 @@ async fn failing_auto_compaction_records_a_diagnostic() {
         "diagnostic records the failing phase:\n{logged}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Login-required placeholder (tau parity): the TUI installs a
+// `LoginRequiredProvider` when no credential is available at launch; prompting
+// while locked surfaces the login message, and picking a credentialed
+// provider/model swaps in a real provider (the model-picker / login unlock).
+// ---------------------------------------------------------------------------
+
+const LOGIN_REQUIRED_MESSAGE: &str = "Login required. Run /login to choose a provider, \
+     or /login openai to continue with the current provider.";
+
+#[tokio::test]
+async fn login_required_placeholder_reports_the_login_message_when_prompted() {
+    use rho_agent::messages::AgentMessage;
+    use rho_coding::login_required::LoginRequiredProvider;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let provider: Arc<dyn ModelProvider> =
+        Arc::new(LoginRequiredProvider::new(LOGIN_REQUIRED_MESSAGE));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // Prompting while locked yields the polite login error in the transcript
+    // instead of crashing (tau parity).
+    drain(session.prompt("hello".to_string(), None)).await;
+    let has_login_error = session.messages().iter().any(|message| {
+        matches!(
+            message,
+            AgentMessage::Assistant(assistant)
+                if assistant.stop_reason == StopReason::Error
+                    && assistant.error_message.as_deref() == Some(LOGIN_REQUIRED_MESSAGE)
+        )
+    });
+    assert!(
+        has_login_error,
+        "the login-required message is surfaced as an assistant error: {:?}",
+        session.messages()
+    );
+}
+
+#[tokio::test]
+async fn login_required_placeholder_unlocks_after_provider_swap() {
+    use rho_coding::login_required::LoginRequiredProvider;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    // A usable credential for `openai` lives in the hermetic store, so swapping
+    // to it builds a real provider.
+    write_openai_credential(tmp.path());
+
+    let provider: Arc<dyn ModelProvider> =
+        Arc::new(LoginRequiredProvider::new(LOGIN_REQUIRED_MESSAGE));
+    let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
+    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    // Picking a credentialed provider/model swaps the placeholder for a real
+    // provider (the same path `/login` and the model picker drive).
+    session
+        .set_model_choice(&ModelChoice::new("openai", "gpt-4o"))
+        .expect("swapping to a credentialed provider/model succeeds");
+    assert_eq!(session.provider_name(), "openai");
+    assert_eq!(session.model(), "gpt-4o");
+}
