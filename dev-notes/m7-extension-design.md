@@ -179,3 +179,16 @@ the locked WASM approach**, adopting the two non-structural refinements in §4
 design more codex-like *behind* the WIT boundary without abandoning it.
 
 This conclusion is flagged to main before implementation, per the brief.
+
+## 7. Future work: a second transport beside WASM
+
+The `ExtensionHost` trait (§4.1) is the seam that makes this a *decision we can
+revisit* rather than a fork we're locked into. If rho ever wants what codex has —
+external, untrusted, or remote tool servers — the path is already carved: add a
+second `ExtensionHost` implementation (a process/stdio or streamable-HTTP MCP
+transport) beside `WasmExtensionHost`, and `CodingSession` does not change,
+because it depends on the trait, not on wasmtime. That is exactly codex's
+`TransportRecipe` / `StdioServerLauncher` design, and adopting the trait now is
+what keeps the option open for free. It is explicitly **out of scope for M7**
+(tau has no such surface, so it is not parity work), recorded here so a later
+milestone knows the seam was built with it in mind.
