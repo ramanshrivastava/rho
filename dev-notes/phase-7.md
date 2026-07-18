@@ -253,4 +253,22 @@ scratch dir; watch `~/.rho/credentials.json` (mode `0600`, sorted keys) and
    provider added to `providers.json` + catalog, credential stored, swapped.
 7. **Logout** — `/logout` lists only providers with stored credentials; select →
    credential removed. `/logout` with none stored shows the "no stored
-   credentials" notice.
+   credentials" notice. Also verify a **custom-provider** credential (from step 6)
+   appears in `/logout` and is removable.
+
+### Failure / cancel paths (verify each)
+
+- **Cancel mid-flow:** open `/login`, start any browser flow, then press
+  Escape / Ctrl+D before completing. Expect: the flow aborts, no partial
+  credential is written to `credentials.json`, and the session's live provider is
+  unchanged.
+- **Wrong / tampered code (CSRF):** in the OpenAI Codex "paste redirect URL"
+  path, paste a URL whose `state` differs from the one issued. Expect the
+  transcript shows `OAuth failed: OAuth state mismatch` and nothing is stored.
+- **Provider error:** trigger a token-endpoint failure (e.g. revoke access mid
+  flow, or use an expired device code for Copilot). Expect a **status-only**
+  error (`… failed (<status>)`) with **no token material** in the transcript, and
+  no credential written.
+- **Transactional rollback:** if a provider/settings write fails after the token
+  exchange, the credential is rolled back (no orphaned credential without its
+  provider entry).
