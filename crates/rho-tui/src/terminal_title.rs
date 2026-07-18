@@ -44,7 +44,7 @@ where
         return false;
     }
     let ci = get_env("CI").unwrap_or_default();
-    !(!ci.is_empty() && title_flag != "1")
+    ci.is_empty() || title_flag == "1"
 }
 
 /// Whether the process's real stdout supports title sequences.

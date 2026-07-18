@@ -78,6 +78,11 @@ struct Cli {
     #[arg(long = "fake")]
     fake: bool,
 
+    /// Load a WASM extension (repeatable). Parsed now; the extension runtime
+    /// lands in M7, so specifying one prints a notice and is otherwise ignored.
+    #[arg(long = "extension", short = 'x', value_name = "SPEC")]
+    extension: Vec<String>,
+
     /// Persist the session transcript to this JSONL path (resumable). Without
     /// it, print mode uses an in-memory session and leaves no files behind.
     #[arg(long = "session", value_name = "PATH")]
@@ -178,20 +183,117 @@ async fn run(cli: Cli) -> Result<bool, String> {
     }
 
     let Some(prompt) = cli.prompt.clone() else {
-        // Interactive TUI mode is M5.
-        if cli.resume.is_some() || cli.new_session {
-            return Err(
-                "--resume / --new-session require interactive mode, which is M5.".to_string(),
-            );
-        }
-        return Err(format!(
-            "rho {}: interactive mode is not implemented yet (M5). Use -p to run a prompt, or a \
-subcommand (sessions/providers/export/setup).",
-            env!("CARGO_PKG_VERSION")
-        ));
+        // No `-p` and no subcommand: launch the interactive ratatui TUI.
+        return Box::pin(run_tui_entry(cli)).await;
     };
 
     Box::pin(run_print(cli, prompt)).await
+}
+
+/// Launch the interactive TUI (the `rho` no-`-p`, no-subcommand entry point).
+async fn run_tui_entry(cli: Cli) -> Result<bool, String> {
+    // `--resume` and `--new-session` are mutually exclusive (tau `BadParameter`).
+    if cli.resume.is_some() && cli.new_session {
+        return Err("--resume and --new-session cannot be combined.".to_string());
+    }
+    if !cli.extension.is_empty() {
+        eprintln!(
+            "Note: --extension/-x is parsed but the WASM extension runtime lands in M7; \
+ignoring {} extension spec(s) for this session.",
+            cli.extension.len()
+        );
+    }
+
+    let session = build_interactive_session(&cli).await?;
+    let paths = rho_coding::paths::RhoPaths::default();
+    let settings = rho_tui::load_tui_settings(&paths).unwrap_or_default();
+    Box::pin(rho_tui::app::run_tui(session, settings))
+        .await
+        .map_err(|err| format!("TUI error: {err}"))?;
+    Ok(true)
+}
+
+/// Build a persistent, resumable [`CodingSession`] for interactive use,
+/// resolving the provider like print mode and honoring `--resume`.
+async fn build_interactive_session(
+    cli: &Cli,
+) -> Result<rho_coding::session::CodingSession, String> {
+    use rho_coding::session::{CodingSession, CodingSessionConfig, jsonl_session_storage};
+
+    let default_cwd = cli
+        .cwd
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let use_fake = cli.fake || std::env::var("RHO_FAKE").is_ok_and(|v| v == "1");
+    let mut provider_settings = None;
+    let mut runtime_provider = None;
+    let (provider, mut model, mut provider_name): (Arc<dyn ModelProvider>, String, String) =
+        if use_fake {
+            (
+                Arc::new(demo_fake_provider()),
+                cli.model.clone().unwrap_or_else(|| "fake".to_string()),
+                cli.provider.clone().unwrap_or_else(|| "fake".to_string()),
+            )
+        } else {
+            let credentials = FileCredentialStore::at_default();
+            let settings =
+                load_provider_settings(None, Some(&credentials as &dyn CredentialReader))
+                    .map_err(|err| err.0)?;
+            let selection = resolve_provider_selection(
+                &settings,
+                cli.provider.as_deref(),
+                cli.model.as_deref(),
+            )
+            .map_err(|err| err.0)?;
+            let provider = create_model_provider(
+                &selection.provider,
+                None,
+                Some(&selection.model),
+                Some(DEFAULT_THINKING_LEVEL),
+            )
+            .map_err(|err| err.0)?;
+            let name = selection.provider.name().to_string();
+            runtime_provider = Some(selection.provider.clone());
+            provider_settings = Some(settings);
+            (provider, selection.model, name)
+        };
+
+    let manager = SessionManager::new(rho_coding::paths::RhoPaths::default());
+    let (storage, cwd, session_id) = if let Some(resume_id) = &cli.resume {
+        let record = manager
+            .get_session(resume_id)
+            .map_err(|err| err.0)?
+            .ok_or_else(|| format!("Unknown session id: {resume_id}"))?;
+        // Resume adopts the stored session's cwd/model (and provider, if known).
+        model.clone_from(&record.model);
+        if let Some(name) = &record.provider_name {
+            provider_name.clone_from(name);
+        }
+        (
+            jsonl_session_storage(&record.path),
+            record.cwd.clone(),
+            Some(record.id),
+        )
+    } else {
+        let record = manager.create_session(&default_cwd, &model, Some(&provider_name), None, None);
+        (
+            jsonl_session_storage(&record.path),
+            record.cwd.clone(),
+            Some(record.id),
+        )
+    };
+
+    let mut config = CodingSessionConfig::new(provider, model, storage, cwd);
+    config.provider_name = provider_name;
+    config.provider_settings = provider_settings;
+    config.runtime_provider_config = runtime_provider;
+    config.session_id = session_id;
+    config.session_manager = Some(manager);
+    CodingSession::load(config)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 async fn run_subcommand(command: Command) -> Result<bool, String> {

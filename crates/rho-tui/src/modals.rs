@@ -14,7 +14,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
@@ -182,8 +182,13 @@ fn move_cursor(index: usize, len: usize, delta: i32) -> usize {
         return 0;
     }
     let max = len - 1;
-    let next = index as i32 + delta;
-    next.clamp(0, max as i32) as usize
+    let step = delta.unsigned_abs() as usize;
+    let next = if delta < 0 {
+        index.saturating_sub(step)
+    } else {
+        index.saturating_add(step)
+    };
+    next.min(max)
 }
 
 // --- session picker ---------------------------------------------------------
@@ -804,6 +809,9 @@ impl NoticeModal {
         )
     }
 
+    // `&mut self` is required to match the uniform `Modal::handle_key` dispatch,
+    // even though this notice modal ignores its own state.
+    #[allow(clippy::unused_self)]
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
         match key.code {
             KeyCode::Esc | KeyCode::Enter => ModalOutcome::Cancelled,

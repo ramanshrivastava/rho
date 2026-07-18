@@ -559,6 +559,8 @@ fn parse_compaction_summary_message(content: &str) -> Option<&str> {
 /// `format_elapsed`).
 #[must_use]
 pub fn format_elapsed(seconds: f64) -> String {
+    // Elapsed wall-clock seconds; intentionally truncate the fractional part.
+    #[allow(clippy::cast_possible_truncation)]
     let total = seconds as i64;
     if total < 60 {
         return format!("{total}s");
@@ -759,17 +761,15 @@ fn string_argument<'a>(arguments: &'a JsonMap, key: &str) -> Option<&'a str> {
 
 fn int_argument(arguments: &JsonMap, key: &str) -> Option<i64> {
     match arguments.get(key) {
-        Some(JsonValue::Bool(_)) => None,
+        Some(JsonValue::Bool(_)) | None => None,
         Some(value) => value.as_i64(),
-        None => None,
     }
 }
 
 fn number_argument(arguments: &JsonMap, key: &str) -> Option<f64> {
     match arguments.get(key) {
-        Some(JsonValue::Bool(_)) => None,
+        Some(JsonValue::Bool(_)) | None => None,
         Some(value) => value.as_f64(),
-        None => None,
     }
 }
 

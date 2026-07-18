@@ -171,8 +171,7 @@ fn tool_accent_style(item: &ChatItem, theme: &TuiTheme, body: Style) -> Style {
             parse_style(
                 &theme
                     .role_style("error")
-                    .map(|r| r.border.clone())
-                    .unwrap_or_else(|| "#b91c1c".into()),
+                    .map_or_else(|| "#b91c1c".into(), |r| r.border.clone()),
             )
         } else {
             parse_style("#ff4f4f on #000000")
@@ -362,9 +361,9 @@ fn render_patch_body(
     Some(lines)
 }
 
-/// `_render_fenced_body`: render well-formed ``` fences as code blocks with
-/// plain text between them. Returns `None` if the fences are malformed, so the
-/// caller falls back to plain text (matching tau).
+/// `_render_fenced_body`: render well-formed triple-backtick fences as code
+/// blocks with plain text between them. Returns `None` if the fences are
+/// malformed, so the caller falls back to plain text (matching tau).
 fn render_fenced_body(
     text: &str,
     theme: &TuiTheme,
@@ -378,13 +377,11 @@ fn render_fenced_body(
     let mut cursor: usize = 0;
     let bytes = text.as_bytes();
     while cursor < bytes.len() {
-        let fence_start = match text[cursor..].find("```") {
-            Some(offset) => cursor + offset,
-            None => {
-                append_plain(&mut lines, &text[cursor..], body_style, inner_width);
-                break;
-            }
+        let Some(offset) = text[cursor..].find("```") else {
+            append_plain(&mut lines, &text[cursor..], body_style, inner_width);
+            break;
         };
+        let fence_start = cursor + offset;
         // tau requires the fence to begin a line.
         let line_start = text[..fence_start].rfind('\n').map_or(0, |i| i + 1);
         if line_start != fence_start {
@@ -506,7 +503,7 @@ fn markdown_lines(
 
     for line in text.split_inclusive('\n') {
         let trimmed_end = line.trim_end_matches('\n');
-        if let Some(lang_and_rest) = trimmed_end.strip_prefix("```") {
+        if let Some(_lang_and_rest) = trimmed_end.strip_prefix("```") {
             if in_fenced.is_some() {
                 // closing fence
                 if let Some(block) = in_fenced.take() {
@@ -608,7 +605,7 @@ fn heading_rest(raw: &str) -> Option<&str> {
             break;
         }
     }
-    if hashes >= 1 && hashes <= 6 {
+    if (1..=6).contains(&hashes) {
         raw.get(hashes..)
             .and_then(|s| s.strip_prefix(' '))
             .map(str::trim_end)
@@ -647,36 +644,19 @@ fn inline_spans(text: &str, theme: &TuiTheme, body_style: Style) -> Vec<Span<'st
     let bold_style = body_style.add_modifier(ratatui::style::Modifier::BOLD);
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut rest = text;
-    while !rest.is_empty() {
-        // inline code: `...`
-        if let Some(code_end) = find_inline_code(rest) {
-            let (before, after_code) = rest.split_at(code_end);
-            let code_open = before.rfind('`').unwrap_or(before.len());
-            // `before` is everything up to the closing backtick; the opening is
-            // the last backtick in `before`... but we want the FIRST backtick.
-            // Re-find the opening backtick from the start.
-        }
-        break_simple_inline(
-            &mut spans,
-            &mut rest,
-            theme,
-            body_style,
-            inline_code_style,
-            link_style,
-            bold_style,
-        );
-        break;
-    }
+    break_simple_inline(
+        &mut spans,
+        &mut rest,
+        theme,
+        body_style,
+        inline_code_style,
+        link_style,
+        bold_style,
+    );
     if spans.is_empty() {
         spans.push(Span::styled(text.to_string(), body_style));
     }
     spans
-}
-
-fn find_inline_code(text: &str) -> Option<usize> {
-    // placeholder, replaced below
-    let _ = text;
-    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -694,7 +674,7 @@ fn break_simple_inline(
             return;
         }
         let next_code = rest.find('`').filter(|&i| {
-            rest[i + 1..].find('`').map_or(false, |close| {
+            rest[i + 1..].find('`').is_some_and(|close| {
                 let between = &rest[i + 1..i + 1 + close];
                 !between.is_empty()
             })
@@ -702,12 +682,12 @@ fn break_simple_inline(
         let next_bold = rest.find("**").filter(|&i| {
             rest[i + 2..]
                 .find("**")
-                .map_or(false, |j| i + 2 + j < rest.len())
+                .is_some_and(|j| i + 2 + j < rest.len())
         });
         let next_link = rest.find('[').filter(|&i| {
             rest[i..]
                 .find("](")
-                .map_or(false, |open| rest[i + open + 2..].find(')').is_some())
+                .is_some_and(|open| rest[i + open + 2..].find(')').is_some())
         });
 
         let earliest = [next_code, next_bold, next_link]
@@ -768,7 +748,7 @@ fn wrap_spans(
     let flush = |current: &mut Vec<Span<'static>>, rows: &mut Vec<Line<'static>>| {
         if !current.is_empty() {
             let mut spans = std::mem::take(current);
-            let style = spans.first().map(|s| s.style).unwrap_or(body_style);
+            let style = spans.first().map_or(body_style, |s| s.style);
             rows.push(Line::from(std::mem::take(&mut spans)).style(style));
         }
     };

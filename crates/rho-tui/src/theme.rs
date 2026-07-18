@@ -630,9 +630,8 @@ fn key_string(value: &Value, field: &str) -> Result<String, TuiConfigError> {
 }
 
 fn theme_name(value: Option<&Value>) -> Result<TuiThemeName, TuiConfigError> {
-    let raw = match value {
-        None => return Ok(TuiThemeName::TauDark),
-        Some(v) => v,
+    let Some(raw) = value else {
+        return Ok(TuiThemeName::TauDark);
     };
     let name = match raw.as_str() {
         Some(s) if !s.trim().is_empty() => s.trim(),

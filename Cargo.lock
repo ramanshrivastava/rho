@@ -1371,6 +1371,7 @@ dependencies = [
  "rho-agent",
  "rho-ai",
  "rho-coding",
+ "rho-tui",
  "serde_json",
  "tokio",
 ]

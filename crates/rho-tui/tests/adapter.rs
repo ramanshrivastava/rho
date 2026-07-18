@@ -21,6 +21,9 @@ use rho_coding::skills::{Skill, format_skill_invocation};
 use rho_tui::state::{format_tool_call_block, format_tool_result_block};
 use rho_tui::{ChatItemRole, TuiEventAdapter, TuiState};
 
+// Takes the event by value so call sites can pass a freshly-built event inline
+// (`apply(&mut state, agent(...))`); the adapter itself borrows it.
+#[allow(clippy::needless_pass_by_value)]
 fn apply(state: &mut TuiState, event: CodingSessionEvent) {
     TuiEventAdapter::new(state).apply(&event);
 }

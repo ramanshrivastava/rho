@@ -119,7 +119,7 @@ pub fn build_completion_lines(state: &CompletionState, theme: &TuiTheme) -> Vec<
                     description_style,
                 )));
             }
-            previous_category = item.category.clone();
+            previous_category.clone_from(&item.category);
         }
 
         let selected = index == state.selected_index;

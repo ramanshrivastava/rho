@@ -1,0 +1,19 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+       ┌ Reload ──────────────────────────────────────────────┐
+       │Reloaded 3 skills                                     │
+       │Reloaded 2 prompt templates                           │
+       │                                                      │
+       │                                                      │
+       │                                                      │
+       │                                                      │
+       │                                                      │
+       │                                                      │
+       │                                                      │
+       │Enter or Escape closes                                │
+       └──────────────────────────────────────────────────────┘

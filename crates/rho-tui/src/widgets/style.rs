@@ -42,16 +42,15 @@ pub fn parse_style(spec: &str) -> Style {
             "blink" | "slow_blink" => style = style.add_modifier(Modifier::SLOW_BLINK),
             "rapid_blink" => style = style.add_modifier(Modifier::RAPID_BLINK),
             "none" | "default" => {}
-            _ => match parse_color(token) {
-                Some(color) => {
+            _ => {
+                if let Some(color) = parse_color(token) {
                     if after_on {
                         style = style.bg(color);
                     } else {
                         style = style.fg(color);
                     }
                 }
-                None => {}
-            },
+            }
         }
     }
     style

@@ -17,6 +17,7 @@
 //! state/adapter consume). `rho-coding` does **not** depend on ratatui.
 
 pub mod adapter;
+pub mod app;
 pub mod autocomplete;
 pub mod modals;
 mod pystr;

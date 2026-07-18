@@ -1,0 +1,17 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+▌Summarize the project structure.
+
+▌→ read notes.md
+
+ ✓ read
+ # Notes
+ line one
+ line two
+
+▌The project has a notes file with two lines.
+
+ • one
+ • two
