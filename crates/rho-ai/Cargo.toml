@@ -25,3 +25,10 @@ tokio = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 mock-provider = { path = "../../tools/mock-provider" }
+criterion = { workspace = true }
+
+# SSE canonicalization micro-bench (M6, family c). Local via `just bench`; CI
+# compiles only (`cargo bench --no-run`).
+[[bench]]
+name = "sse_canonicalize"
+harness = false

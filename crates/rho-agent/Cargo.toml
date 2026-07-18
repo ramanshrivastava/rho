@@ -31,3 +31,17 @@ async-trait = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 futures = { workspace = true }
+criterion = { workspace = true }
+flate2 = { workspace = true }
+serde_json = { workspace = true }
+
+# Session-replay throughput (M6, family b). Runs locally via `just bench`;
+# CI only compiles it (`cargo bench --no-run`) — see dev-notes/phase-6.md.
+[[bench]]
+name = "session_replay"
+harness = false
+
+# Scripted 500-turn FakeProvider session for the RSS/memory benchmark (M6,
+# family d); driven under `/usr/bin/time -l` by tools/bench.
+[[example]]
+name = "rss_session"

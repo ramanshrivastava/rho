@@ -32,3 +32,14 @@ refresh-fixtures:
 # compare normalized event streams.
 crosscheck:
     TAU_CHECKOUT={{tau}} bash tools/crosscheck/run.sh
+
+# Run every M6 benchmark family (cold-start, session replay, SSE canonicalization,
+# memory) and regenerate dev-notes/benchmarks.md + benchmarks.json. Serial by
+# design; needs hyperfine + uv on PATH. See dev-notes/benchmarks.md for method.
+bench:
+    TAU_CHECKOUT={{tau}} bash tools/bench/run_all.sh
+
+# Compile every benchmark harness without running it (what CI enforces).
+bench-check:
+    cargo bench --workspace --no-run
+    cargo build --workspace --examples
