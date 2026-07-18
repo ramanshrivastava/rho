@@ -18,8 +18,7 @@ pub const OSC_TERMINATOR: char = '\u{7}';
 /// The rho title mark (tau uses `τ`; see the module rebrand note).
 pub const RHO_TITLE_MARK: &str = "ρ";
 /// Spinner frames shown while the agent is running.
-pub const RUNNING_TITLE_FRAMES: [&str; 10] =
-    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub const RUNNING_TITLE_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Environment variable gating title emission (tau: `TAU_TERMINAL_TITLE`).
 pub const TITLE_ENV_VAR: &str = "RHO_TERMINAL_TITLE";
 
@@ -164,7 +163,9 @@ impl TerminalTitleController {
     }
 
     fn write(&mut self, sequence: &str) -> bool {
-        if let Ok(()) = (self.writer)(sequence) { true } else {
+        if let Ok(()) = (self.writer)(sequence) {
+            true
+        } else {
             self.enabled = false;
             false
         }
@@ -202,7 +203,10 @@ mod tests {
 
     #[test]
     fn build_terminal_title_uses_session_name_and_running_frame() {
-        assert_eq!(build_terminal_title(Some("build notes"), false, 0), "ρ | build notes");
+        assert_eq!(
+            build_terminal_title(Some("build notes"), false, 0),
+            "ρ | build notes"
+        );
         assert_eq!(
             build_terminal_title(Some("build notes"), true, 1),
             "⠙ ρ | build notes"
@@ -212,7 +216,10 @@ mod tests {
     #[test]
     fn build_terminal_title_falls_back_for_unnamed_sessions() {
         assert_eq!(build_terminal_title(None, false, 0), "ρ");
-        assert_eq!(build_terminal_title(Some(" Untitled session "), true, 0), "⠋ ρ");
+        assert_eq!(
+            build_terminal_title(Some(" Untitled session "), true, 0),
+            "⠋ ρ"
+        );
     }
 
     #[test]
@@ -233,12 +240,18 @@ mod tests {
 
     #[test]
     fn terminal_title_supported_requires_tty_and_allows_opt_out() {
-        assert!(terminal_title_supported(env(&[("TERM", "xterm-256color")]), true));
+        assert!(terminal_title_supported(
+            env(&[("TERM", "xterm-256color")]),
+            true
+        ));
         assert!(terminal_title_supported(
             env(&[("TERM", "xterm-256color"), ("NO_COLOR", "1")]),
             true
         ));
-        assert!(!terminal_title_supported(env(&[("TERM", "xterm-256color")]), false));
+        assert!(!terminal_title_supported(
+            env(&[("TERM", "xterm-256color")]),
+            false
+        ));
         assert!(!terminal_title_supported(
             env(&[("TERM", "xterm-256color"), ("RHO_TERMINAL_TITLE", "0")]),
             true

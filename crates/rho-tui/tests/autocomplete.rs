@@ -103,7 +103,10 @@ fn matches_search_terms_with_canonical_replacement() {
 #[test]
 fn prioritizes_direct_matches_over_search_terms() {
     let state = build("/res", &CompletionInputs::default());
-    assert_eq!(displays(&state)[..2], ["/resume".to_string(), "/new".to_string()]);
+    assert_eq!(
+        displays(&state)[..2],
+        ["/resume".to_string(), "/new".to_string()]
+    );
     assert_eq!(state.selected().unwrap().apply("/res"), "/resume");
 }
 
@@ -153,11 +156,18 @@ fn custom_prompt_hides_after_completed_command_space() {
 
 #[test]
 fn builtin_command_hides_after_completed_command_space() {
-    assert!(build("/compact ", &CompletionInputs::default()).items.is_empty());
     assert!(
-        build("/compact summarize old context", &CompletionInputs::default())
+        build("/compact ", &CompletionInputs::default())
             .items
             .is_empty()
+    );
+    assert!(
+        build(
+            "/compact summarize old context",
+            &CompletionInputs::default()
+        )
+        .items
+        .is_empty()
     );
 }
 
@@ -197,7 +207,10 @@ fn custom_prompt_reappears_when_deleting_back_to_command_token() {
 fn selection_wraps() {
     let state = build("/s", &CompletionInputs::default());
     assert!(state.items.len() > 1);
-    assert_eq!(state.select_previous().selected_index, state.items.len() - 1);
+    assert_eq!(
+        state.select_previous().selected_index,
+        state.items.len() - 1
+    );
     assert_eq!(state.select_next().selected_index, 1);
 }
 
@@ -233,7 +246,10 @@ fn login_argument_uses_available_providers() {
         provider_names: &providers,
         ..Default::default()
     };
-    assert_eq!(displays(&build("/login op", &inputs)), vec!["openai", "openrouter"]);
+    assert_eq!(
+        displays(&build("/login op", &inputs)),
+        vec!["openai", "openrouter"]
+    );
 }
 
 #[test]
@@ -256,7 +272,10 @@ fn logout_argument_uses_available_providers() {
         provider_names: &providers,
         ..Default::default()
     };
-    assert_eq!(displays(&build("/logout op", &inputs)), vec!["openai", "openrouter"]);
+    assert_eq!(
+        displays(&build("/logout op", &inputs)),
+        vec!["openai", "openrouter"]
+    );
 }
 
 #[test]
@@ -278,7 +297,10 @@ fn theme_argument_uses_theme_names() {
     };
     let state = build("/theme tau-", &inputs);
     assert_eq!(displays(&state), vec!["tau-dark", "tau-light"]);
-    assert_eq!(state.selected().unwrap().apply("/theme tau-"), "/theme tau-dark");
+    assert_eq!(
+        state.selected().unwrap().apply("/theme tau-"),
+        "/theme tau-dark"
+    );
 }
 
 #[test]
@@ -290,7 +312,10 @@ fn resume_argument_uses_session_ids() {
     };
     let state = build("/resume sess", &inputs);
     assert_eq!(displays(&state), vec!["session-1"]);
-    assert_eq!(state.selected().unwrap().apply("/resume sess"), "/resume session-1");
+    assert_eq!(
+        state.selected().unwrap().apply("/resume sess"),
+        "/resume session-1"
+    );
 }
 
 #[test]
@@ -366,7 +391,10 @@ fn shell_path_preserves_bang_prefix() {
     };
     let state = build("!cat READ", &inputs);
     assert_eq!(displays(&state), vec!["README.md"]);
-    assert_eq!(state.selected().unwrap().apply("!cat READ"), "!cat README.md");
+    assert_eq!(
+        state.selected().unwrap().apply("!cat READ"),
+        "!cat README.md"
+    );
 }
 
 #[test]
@@ -378,7 +406,10 @@ fn shell_path_preserves_double_bang_prefix() {
     };
     let state = build("!!cat READ", &inputs);
     assert_eq!(displays(&state), vec!["README.md"]);
-    assert_eq!(state.selected().unwrap().apply("!!cat READ"), "!!cat README.md");
+    assert_eq!(
+        state.selected().unwrap().apply("!!cat READ"),
+        "!!cat README.md"
+    );
 }
 
 #[test]
@@ -392,7 +423,10 @@ fn shell_path_matches_relative_paths() {
     };
     let state = build("!cat src/ma", &inputs);
     assert_eq!(displays(&state), vec!["src/main.py"]);
-    assert_eq!(state.selected().unwrap().apply("!cat src/ma"), "!cat src/main.py");
+    assert_eq!(
+        state.selected().unwrap().apply("!cat src/ma"),
+        "!cat src/main.py"
+    );
 }
 
 #[test]
@@ -406,7 +440,10 @@ fn shell_path_adds_trailing_slash_for_directories() {
     };
     let directory_state = build("!cat sr", &inputs);
     assert_eq!(displays(&directory_state), vec!["src/"]);
-    assert_eq!(directory_state.selected().unwrap().apply("!cat sr"), "!cat src/");
+    assert_eq!(
+        directory_state.selected().unwrap().apply("!cat sr"),
+        "!cat src/"
+    );
 
     let child_state = build("!cat src/", &inputs);
     assert_eq!(displays(&child_state), vec!["src/main.py"]);

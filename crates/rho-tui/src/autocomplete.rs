@@ -77,7 +77,12 @@ impl CompletionItem {
     /// Apply this completion to input text (tau `apply`).
     #[must_use]
     pub fn apply(&self, text: &str) -> String {
-        format!("{}{}{}", &text[..self.start], self.replacement, &text[self.end..])
+        format!(
+            "{}{}{}",
+            &text[..self.start],
+            self.replacement,
+            &text[self.end..]
+        )
     }
 }
 
@@ -263,11 +268,16 @@ fn command_alias_completions(
         if !name.starts_with(prefix) {
             continue;
         }
-        let is_name_or_alias =
-            name == command.name || command.aliases.iter().any(|a| a == name);
-        let replacement_name = if is_name_or_alias { name } else { command.name.as_str() };
-        let (mut display, mut replacement) =
-            (format!("/{replacement_name}"), format!("/{replacement_name}"));
+        let is_name_or_alias = name == command.name || command.aliases.iter().any(|a| a == name);
+        let replacement_name = if is_name_or_alias {
+            name
+        } else {
+            command.name.as_str()
+        };
+        let (mut display, mut replacement) = (
+            format!("/{replacement_name}"),
+            format!("/{replacement_name}"),
+        );
         if command.name == "skill" && replacement_name == command.name {
             display = "/skill:".to_string();
             replacement = "/skill:".to_string();
@@ -446,10 +456,10 @@ fn file_reference_completions(text: &str, cwd: &Path) -> Vec<CompletionItem> {
 
 fn active_file_reference_token(text: &str) -> Option<(usize, usize)> {
     let cursor = text.len();
-    let token_start = text[..cursor]
-        .rfind([' ', '\n'])
-        .map_or(0, |i| i + 1);
-    let at_index = text[token_start..cursor].rfind('@').map(|i| token_start + i)?;
+    let token_start = text[..cursor].rfind([' ', '\n']).map_or(0, |i| i + 1);
+    let at_index = text[token_start..cursor]
+        .rfind('@')
+        .map(|i| token_start + i)?;
     Some((at_index, cursor))
 }
 
@@ -463,7 +473,8 @@ fn iter_file_reference_paths(cwd: &Path) -> Vec<(PathBuf, bool)> {
         let Ok(read_dir) = std::fs::read_dir(&directory) else {
             continue;
         };
-        let mut children: Vec<PathBuf> = read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        let mut children: Vec<PathBuf> =
+            read_dir.filter_map(|e| e.ok().map(|e| e.path())).collect();
         children.sort_by_key(|p| {
             p.file_name()
                 .map(|n| n.to_string_lossy().to_lowercase())

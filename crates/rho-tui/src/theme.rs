@@ -21,8 +21,7 @@ pub struct TuiConfigError(pub String);
 pub const BUILTIN_TUI_THEME_NAMES: [&str; 3] = ["tau-dark", "tau-light", "high-contrast"];
 
 /// A built-in theme name (tau `TuiThemeName`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TuiThemeName {
     /// The default dark theme.
     #[default]
@@ -55,7 +54,6 @@ impl TuiThemeName {
         }
     }
 }
-
 
 /// The 13 configurable keybinding action names, in tau's `to_json` order.
 pub const KEYBINDING_FIELDS: [&str; 13] = [
@@ -171,7 +169,10 @@ impl TuiKeybindings {
     pub fn to_json(&self) -> Map<String, Value> {
         let mut map = Map::new();
         for field in KEYBINDING_FIELDS {
-            map.insert(field.to_string(), Value::String(self.get(field).to_string()));
+            map.insert(
+                field.to_string(),
+                Value::String(self.get(field).to_string()),
+            );
         }
         map
     }
@@ -490,13 +491,22 @@ impl TuiSettings {
     #[must_use]
     pub fn to_json(&self) -> Map<String, Value> {
         let mut map = Map::new();
-        map.insert("auto_copy_selection".into(), Value::Bool(self.auto_copy_selection));
-        map.insert("keybindings".into(), Value::Object(self.keybindings.to_json()));
+        map.insert(
+            "auto_copy_selection".into(),
+            Value::Bool(self.auto_copy_selection),
+        );
+        map.insert(
+            "keybindings".into(),
+            Value::Object(self.keybindings.to_json()),
+        );
         map.insert(
             "sidebar_position".into(),
             Value::String(self.sidebar_position.as_str().to_string()),
         );
-        map.insert("theme".into(), Value::String(self.theme.as_str().to_string()));
+        map.insert(
+            "theme".into(),
+            Value::String(self.theme.as_str().to_string()),
+        );
         map
     }
 }
@@ -524,7 +534,10 @@ pub fn load_tui_settings(paths: &RhoPaths) -> Result<TuiSettings, TuiConfigError
 }
 
 /// Persist durable TUI settings and return the written path (tau `save_tui_settings`).
-pub fn save_tui_settings(settings: &TuiSettings, paths: &RhoPaths) -> Result<PathBuf, TuiConfigError> {
+pub fn save_tui_settings(
+    settings: &TuiSettings,
+    paths: &RhoPaths,
+) -> Result<PathBuf, TuiConfigError> {
     let path = tui_settings_path(paths);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -539,15 +552,26 @@ pub fn save_tui_settings(settings: &TuiSettings, paths: &RhoPaths) -> Result<Pat
 
 /// Parse TUI settings from JSON-compatible data (tau `tui_settings_from_json`).
 pub fn tui_settings_from_json(data: &Map<String, Value>) -> Result<TuiSettings, TuiConfigError> {
-    let allowed = ["auto_copy_selection", "keybindings", "sidebar_position", "theme"];
+    let allowed = [
+        "auto_copy_selection",
+        "keybindings",
+        "sidebar_position",
+        "theme",
+    ];
     if let Some(field) = first_unknown(data.keys(), &allowed, &[]) {
-        return Err(TuiConfigError(format!("Unknown TUI settings field: {field}")));
+        return Err(TuiConfigError(format!(
+            "Unknown TUI settings field: {field}"
+        )));
     }
 
     let keybindings_data = match data.get("keybindings") {
         None => Map::new(),
         Some(Value::Object(map)) => map.clone(),
-        Some(_) => return Err(TuiConfigError("TUI keybindings must be a JSON object".into())),
+        Some(_) => {
+            return Err(TuiConfigError(
+                "TUI keybindings must be a JSON object".into(),
+            ));
+        }
     };
 
     let raw_sidebar = data
@@ -576,7 +600,9 @@ fn bool_setting(value: Option<&Value>, field: &str) -> Result<bool, TuiConfigErr
     match value {
         None => Ok(false),
         Some(Value::Bool(b)) => Ok(*b),
-        Some(_) => Err(TuiConfigError(format!("TUI setting must be a boolean: {field}"))),
+        Some(_) => Err(TuiConfigError(format!(
+            "TUI setting must be a boolean: {field}"
+        ))),
     }
 }
 
@@ -610,7 +636,11 @@ fn theme_name(value: Option<&Value>) -> Result<TuiThemeName, TuiConfigError> {
     };
     let name = match raw.as_str() {
         Some(s) if !s.trim().is_empty() => s.trim(),
-        _ => return Err(TuiConfigError("TUI theme must be a non-empty string".into())),
+        _ => {
+            return Err(TuiConfigError(
+                "TUI theme must be a non-empty string".into(),
+            ));
+        }
     };
     TuiThemeName::parse(name).ok_or_else(|| TuiConfigError(format!("Unknown TUI theme: {name}")))
 }
@@ -699,14 +729,18 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields_and_theme() {
-        assert!(tui_settings_from_json(&obj(serde_json::json!({"palette": {}})))
-            .unwrap_err()
-            .0
-            .contains("Unknown TUI settings field"));
-        assert!(tui_settings_from_json(&obj(serde_json::json!({"theme": "solarized"})))
-            .unwrap_err()
-            .0
-            .contains("Unknown TUI theme"));
+        assert!(
+            tui_settings_from_json(&obj(serde_json::json!({"palette": {}})))
+                .unwrap_err()
+                .0
+                .contains("Unknown TUI settings field")
+        );
+        assert!(
+            tui_settings_from_json(&obj(serde_json::json!({"theme": "solarized"})))
+                .unwrap_err()
+                .0
+                .contains("Unknown TUI theme")
+        );
     }
 
     #[test]
@@ -720,7 +754,8 @@ mod tests {
 
     #[test]
     fn accepts_light_theme() {
-        let settings = tui_settings_from_json(&obj(serde_json::json!({"theme": "tau-light"}))).unwrap();
+        let settings =
+            tui_settings_from_json(&obj(serde_json::json!({"theme": "tau-light"}))).unwrap();
         assert_eq!(settings.theme, TuiThemeName::TauLight);
         assert_eq!(settings.resolved_theme().screen_background, "#ffffff");
         assert_eq!(settings.resolved_theme().syntax_theme, "ansi_light");
@@ -742,7 +777,15 @@ mod tests {
     fn keybindings_serialize_in_order() {
         let json = TuiSettings::default().to_json();
         let keys: Vec<&String> = json.keys().collect();
-        assert_eq!(keys, vec!["auto_copy_selection", "keybindings", "sidebar_position", "theme"]);
+        assert_eq!(
+            keys,
+            vec![
+                "auto_copy_selection",
+                "keybindings",
+                "sidebar_position",
+                "theme"
+            ]
+        );
         let kb = &json["keybindings"];
         assert_eq!(kb["command_palette"], Value::String("ctrl+k".into()));
         assert_eq!(kb["toggle_tool_results"], Value::String("ctrl+o".into()));
@@ -750,26 +793,43 @@ mod tests {
 
     #[test]
     fn get_theme_returns_builtin() {
-        assert_eq!(get_tui_theme(TuiThemeName::HighContrast).prompt_border, "#00ff66");
-        assert_eq!(get_tui_theme(TuiThemeName::TauLight).prompt_border, "#2563eb");
-        assert_eq!(get_tui_theme(TuiThemeName::TauDark).screen_background, "#000000");
+        assert_eq!(
+            get_tui_theme(TuiThemeName::HighContrast).prompt_border,
+            "#00ff66"
+        );
+        assert_eq!(
+            get_tui_theme(TuiThemeName::TauLight).prompt_border,
+            "#2563eb"
+        );
+        assert_eq!(
+            get_tui_theme(TuiThemeName::TauDark).screen_background,
+            "#000000"
+        );
     }
 
     #[test]
     fn sidebar_position_roundtrips_and_rejects_invalid() {
         for value in ["left", "right", "off"] {
             let settings =
-                tui_settings_from_json(&obj(serde_json::json!({"sidebar_position": value}))).unwrap();
+                tui_settings_from_json(&obj(serde_json::json!({"sidebar_position": value})))
+                    .unwrap();
             assert_eq!(settings.sidebar_position.as_str(), value);
-            assert_eq!(settings.to_json()["sidebar_position"], Value::String(value.into()));
+            assert_eq!(
+                settings.to_json()["sidebar_position"],
+                Value::String(value.into())
+            );
         }
-        assert!(tui_settings_from_json(&obj(serde_json::json!({"sidebar_position": "top"})))
-            .unwrap_err()
-            .0
-            .contains("sidebar_position"));
-        assert!(tui_settings_from_json(&obj(serde_json::json!({"sidebar_position": 123})))
-            .unwrap_err()
-            .0
-            .contains("sidebar_position"));
+        assert!(
+            tui_settings_from_json(&obj(serde_json::json!({"sidebar_position": "top"})))
+                .unwrap_err()
+                .0
+                .contains("sidebar_position")
+        );
+        assert!(
+            tui_settings_from_json(&obj(serde_json::json!({"sidebar_position": 123})))
+                .unwrap_err()
+                .0
+                .contains("sidebar_position")
+        );
     }
 }

@@ -22,6 +22,7 @@ mod pystr;
 pub mod state;
 pub mod terminal_title;
 pub mod theme;
+pub mod widgets;
 
 pub use adapter::TuiEventAdapter;
 pub use autocomplete::{

@@ -30,7 +30,10 @@ fn agent(event: AgentEvent) -> CodingSessionEvent {
 }
 
 fn args(pairs: &[(&str, JsonValue)]) -> JsonMap {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect()
 }
 
 fn assistant_text(text: &str) -> AssistantMessage {
@@ -42,7 +45,11 @@ fn tool_result(text: &str) -> AgentToolResult {
 }
 
 fn roles_and_text(state: &TuiState) -> Vec<(ChatItemRole, String)> {
-    state.items.iter().map(|i| (i.role, i.text.clone())).collect()
+    state
+        .items
+        .iter()
+        .map(|i| (i.role, i.text.clone()))
+        .collect()
 }
 
 fn review_skill() -> Skill {
@@ -57,9 +64,15 @@ fn review_skill() -> Skill {
 #[test]
 fn tracks_running_state() {
     let mut state = TuiState::new();
-    apply(&mut state, agent(AgentEvent::AgentStart(AgentStartEvent::new())));
+    apply(
+        &mut state,
+        agent(AgentEvent::AgentStart(AgentStartEvent::new())),
+    );
     assert!(state.running);
-    apply(&mut state, agent(AgentEvent::AgentEnd(AgentEndEvent::new(vec![]))));
+    apply(
+        &mut state,
+        agent(AgentEvent::AgentEnd(AgentEndEvent::new(vec![]))),
+    );
     assert!(!state.running);
 }
 
@@ -158,20 +171,24 @@ fn records_tool_progress_and_result() {
     let mut state = TuiState::new();
     apply(
         &mut state,
-        agent(AgentEvent::ToolExecutionStart(ToolExecutionStartEvent::new(
-            "call-1",
-            "read",
-            args(&[("path", JsonValue::from("notes.md"))]),
-        ))),
+        agent(AgentEvent::ToolExecutionStart(
+            ToolExecutionStartEvent::new(
+                "call-1",
+                "read",
+                args(&[("path", JsonValue::from("notes.md"))]),
+            ),
+        )),
     );
     apply(
         &mut state,
-        agent(AgentEvent::ToolExecutionUpdate(ToolExecutionUpdateEvent::new(
-            "call-1",
-            "read",
-            args(&[("path", JsonValue::from("notes.md"))]),
-            tool_result("reading"),
-        ))),
+        agent(AgentEvent::ToolExecutionUpdate(
+            ToolExecutionUpdateEvent::new(
+                "call-1",
+                "read",
+                args(&[("path", JsonValue::from("notes.md"))]),
+                tool_result("reading"),
+            ),
+        )),
     );
     apply(
         &mut state,
@@ -198,11 +215,13 @@ fn renders_skill_file_reads_with_skill_style() {
 
     apply(
         &mut state,
-        agent(AgentEvent::ToolExecutionStart(ToolExecutionStartEvent::new(
-            "call-1",
-            "read",
-            args(&[("path", JsonValue::from("/workspace/.tau/skills/review.md"))]),
-        ))),
+        agent(AgentEvent::ToolExecutionStart(
+            ToolExecutionStartEvent::new(
+                "call-1",
+                "read",
+                args(&[("path", JsonValue::from("/workspace/.tau/skills/review.md"))]),
+            ),
+        )),
     );
     apply(
         &mut state,

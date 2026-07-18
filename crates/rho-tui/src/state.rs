@@ -76,8 +76,7 @@ pub const TOOL_RESULT_PREVIEW_CHARS: usize = 2_000;
 /// Line cap on an input-bar terminal command's visible output.
 pub const TERMINAL_COMMAND_OUTPUT_PREVIEW_LINES: usize = 120;
 /// Braille spinner frames shown on an executing tool row.
-pub const TOOL_SPINNER_FRAMES: [&str; 10] =
-    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub const TOOL_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Static invocation markers the spinner stands in for while a tool runs.
 const INVOCATION_MARKERS: [&str; 2] = ["→ ", "▸ "];
 /// Show the live elapsed timer once a tool stops being instant.
@@ -123,7 +122,7 @@ pub struct ChatItem {
 }
 
 impl ChatItem {
-    fn new(role: ChatItemRole, text: String) -> Self {
+    pub(crate) fn new(role: ChatItemRole, text: String) -> Self {
         Self {
             role,
             text,
@@ -238,7 +237,10 @@ impl TuiState {
         }
         let mut line: Option<String> = None;
         if let (Some(name), Some(renderer)) = (&item.tool_name, &self.tool_call_renderer) {
-            line = renderer(name, item.tool_arguments.as_ref().unwrap_or(&JsonMap::new()));
+            line = renderer(
+                name,
+                item.tool_arguments.as_ref().unwrap_or(&JsonMap::new()),
+            );
         }
         if let Some(frame) = &self.tool_spinner {
             if item.tool_result_text.is_none() {
@@ -336,7 +338,10 @@ impl TuiState {
         match parse_skill_invocation(content) {
             None => self.add_item(ChatItemRole::User, content),
             Some(invocation) => {
-                self.add_item(ChatItemRole::Skill, format!("Using skill: {}", invocation.name));
+                self.add_item(
+                    ChatItemRole::Skill,
+                    format!("Using skill: {}", invocation.name),
+                );
                 if let Some(extra) = invocation.additional_instructions {
                     if !extra.is_empty() {
                         self.add_item(ChatItemRole::User, extra);
@@ -537,7 +542,10 @@ impl TuiState {
 fn parse_branch_summary_message(content: &str) -> Option<&str> {
     let prefix = "The following is a summary of a branch that this conversation came back from:\n<summary>\n";
     let suffix = "\n</summary>";
-    if content.starts_with(prefix) && content.ends_with(suffix) && content.len() >= prefix.len() + suffix.len() {
+    if content.starts_with(prefix)
+        && content.ends_with(suffix)
+        && content.len() >= prefix.len() + suffix.len()
+    {
         return Some(&content[prefix.len()..content.len() - suffix.len()]);
     }
     None
@@ -681,7 +689,11 @@ pub fn format_tool_result_block(
 /// Format an input-bar terminal command result for the TUI (tau
 /// `format_terminal_command_result_block`).
 #[must_use]
-pub fn format_terminal_command_result_block(ok: bool, added_to_context: bool, output: &str) -> String {
+pub fn format_terminal_command_result_block(
+    ok: bool,
+    added_to_context: bool,
+    output: &str,
+) -> String {
     let status = if ok { "✓" } else { "✗" };
     let suffix = if added_to_context {
         " · added to context"
@@ -785,7 +797,11 @@ fn format_g(value: f64) -> String {
 fn python_repr_map(map: &JsonMap) -> String {
     let mut parts = Vec::with_capacity(map.len());
     for (key, value) in map {
-        parts.push(format!("{}: {}", python_repr_str(key), python_repr_value(value)));
+        parts.push(format!(
+            "{}: {}",
+            python_repr_str(key),
+            python_repr_value(value)
+        ));
     }
     format!("{{{}}}", parts.join(", "))
 }
