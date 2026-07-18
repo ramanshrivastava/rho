@@ -373,3 +373,72 @@ theme vocabulary is not a parity surface.
 The idle prompt glyph `ρ` and the `ρ`/`RHO_TERMINAL_TITLE` terminal title were
 already rho's (prior commits); this milestone extends the identity to the theme,
 the running spinner, the empty state, and the help text.
+
+## M5.6 — TUI delight pass v2 (owner-sanctioned, actively art-directed)
+
+Task #45. Everything below is **look/feel only** and confined to `rho-tui` +
+the binary's TUI wiring; no wire/session/CLI byte, golden, or crosscheck is
+touched (`cargo test --workspace` + `clippy -D warnings` + `fmt` all green).
+The owner explicitly sanctioned rho's TUI diverging from tau in look/feel and
+performance for personality; the pieces:
+
+- **First-message latency fix (a real bug).** `App::submit_prompt` now renders
+  the user's message **optimistically** (`TuiState::add_optimistic_user_echo`)
+  the instant Enter is pressed, before `session.prompt()`'s stream echoes it
+  back. On the *first* message that stream does durable-session create +
+  `ensure_session_indexed` + turn assembly *before* emitting the user echo, so
+  the message appeared to lag. The adapter reconciles the real user `MessageEnd`
+  against the pending `optimistic_echo` marker (exact-text match) so nothing
+  double-renders; a mismatch falls back to a normal add (never wrong). Covered
+  by `optimistic_echo_reconciles_without_double_render` +
+  `optimistic_echo_mismatch_still_renders_the_real_message`.
+- **Full-pane splash background (the "half-screen theme" bug).** `render_splash`
+  now paints the theme background across the **entire** transcript pane (a
+  `Block` fill) before centering its content, killing the black seam above the
+  block. Guarded by `splash_fills_entire_pane_with_theme_background` (asserts
+  every cell's bg == the theme bg at 4 terminal sizes).
+- **The working-state signature.** A new pure motion module (`motion.rs`) with
+  two reusable, deterministic primitives driven by the 150 ms activity frame
+  (so every animated frame is snapshot-testable at a fixed frame):
+  - **throb** — a sine brightness pulse along a rust-oxide ramp (dim terracotta ↔
+    `#b3391f` ↔ hot gold): heated iron cooling and reheating, *not* a spinner.
+  - **shimmer** — a travelling cosine light-sweep band (a port of Codex's
+    `shimmer.rs`, half-width ~5, ~2 s period) blended over the oxide ramp rather
+    than grey→white.
+
+  Applied: the composer-prefix **ρ throbs** while running (fixing the
+  static-while-running parity gap — the π→τ→ρ frame cycle moved to the splash);
+  a shimmering **forge-verb** rotates one-per-turn (`Forging`, `Oxidizing`,
+  `Tempering`, … `Reticulating`) on the status row while running, reading
+  `Tempering…  ·  2m 14s  ·  esc to interrupt` (Codex-format elapsed timer); and
+  the composer **cursor breathes** a quiet oxide throb while idle. All degrade to
+  a static dim ρ + plain verb + default cursor under non-truecolor or reduced
+  motion (`MotionCaps::from_env`: `COLORTERM`, `NO_COLOR`, `TERM=dumb`,
+  `RHO_REDUCED_MOTION`).
+- **Idle animation heartbeat.** The idle event loop gains a ~150 ms ticker that
+  advances the frame counter **only** on a motion-capable terminal (a 1-hour
+  dormant interval otherwise), so the splash lineage, breathing cursor, and
+  rotating placeholder animate while idle without ever waking a plain terminal.
+- **Heritage splash + bench brag + welcome tips.** The splash centerpiece is the
+  animated π→τ→ρ lineage with language labels (`π Pi·TypeScript → τ tau·Python →
+  ρ rho·Rust`); the active glyph oxidizes/brightens marching π→τ→ρ (settles on ρ
+  under no-motion). A **benchmark brag** line pulls REAL numbers from the
+  committed `dev-notes/benchmarks.json` (baked in via `include_str!`, parsed at
+  runtime, degrades to no line on malformed data): `ρ · ~302× faster cold start
+  than τ · ~21× lighter` (cold-start = `version-direct` variant tau/rho; memory =
+  `memory_rss` turns=1 tau/rho). Plus a one-line pitch ("a Rust coding agent,
+  oxidized"), a hints row (`/ commands · Ctrl+P model · Ctrl+R sessions · !cmd
+  shell · Ctrl+D quit`), and a rotating "· did you know" heritage fact. A
+  rotating composer placeholder ("Explain this repo", "Add a test…", "Fix this
+  stack trace") cycles while idle.
+- **Note on the signature's layout.** The throbbing ρ lives in the composer
+  prefix (its natural home, by the input) and the forge-verb + timer + interrupt
+  hint on the status row directly below, so the eye reads `ρ / Tempering… · 2m
+  14s · esc to interrupt` top-to-bottom rather than as one literal row. This is
+  the one deliberate deviation from the spec's single-line mock, chosen so the
+  animated glyph stays adjacent to the input and the status row keeps a natural
+  home for the verb/timer/hint.
+
+Snapshots: `rho_splash` (regenerated), `working_status_line` (new). The prior
+`RHO_SPINNER_FRAMES` (π→τ→ρ composer cycle) is retired; the composer prefix is
+now always the ρ glyph, animated by color, and the lineage cycle is the splash's.

@@ -345,3 +345,55 @@ fn uses_canonical_result_details_for_patch() {
             .contains("Patch:\n--- a.py\n+++ a.py")
     );
 }
+
+// --- optimistic first-message echo (task #45 latency fix) -------------------
+
+#[test]
+fn optimistic_echo_reconciles_without_double_render() {
+    // The submit path renders the user's message optimistically (so it appears on
+    // the next frame, before prompt()'s stream echoes it back). When the turn's
+    // real user MessageEnd arrives with the same text, it must reconcile — not
+    // render a duplicate — and clear the pending marker.
+    let mut state = TuiState::new();
+    state.add_optimistic_user_echo("hello world");
+    assert_eq!(
+        roles_and_text(&state),
+        vec![(ChatItemRole::User, "hello world".into())]
+    );
+    assert_eq!(state.optimistic_echo.as_deref(), Some("hello world"));
+
+    apply(
+        &mut state,
+        agent(AgentEvent::MessageEnd(MessageEndEvent::new(
+            AgentMessage::User(UserMessage::new("hello world")),
+        ))),
+    );
+    assert_eq!(
+        roles_and_text(&state),
+        vec![(ChatItemRole::User, "hello world".into())],
+        "the real echo must reconcile, not duplicate"
+    );
+    assert_eq!(state.optimistic_echo, None);
+}
+
+#[test]
+fn optimistic_echo_mismatch_still_renders_the_real_message() {
+    // Safety net: if the streamed user message does not match the optimistic
+    // echo, it is still rendered (the transcript is never wrong — worst case it
+    // is the pre-optimistic behavior).
+    let mut state = TuiState::new();
+    state.add_optimistic_user_echo("first");
+    apply(
+        &mut state,
+        agent(AgentEvent::MessageEnd(MessageEndEvent::new(
+            AgentMessage::User(UserMessage::new("second")),
+        ))),
+    );
+    assert_eq!(
+        roles_and_text(&state),
+        vec![
+            (ChatItemRole::User, "first".into()),
+            (ChatItemRole::User, "second".into()),
+        ]
+    );
+}

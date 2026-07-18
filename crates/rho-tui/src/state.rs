@@ -169,6 +169,18 @@ pub struct TuiState {
     pub tool_result_renderer: Option<ToolResultMarkup>,
     /// The current spinner frame while a tool runs.
     pub tool_spinner: Option<String>,
+    /// When the current turn started, driving the working-state elapsed timer.
+    /// `None` while idle.
+    pub turn_started_at: Option<Instant>,
+    /// Monotonic count of turns started this session, used to rotate the
+    /// forge/blacksmith working verb one-per-turn (the working-state signature).
+    pub turn_index: usize,
+    /// The raw text of a user message rendered *optimistically* on submit, before
+    /// `prompt()`'s stream echoes it back. The adapter reconciles the real user
+    /// `MessageEnd` against this so the message renders on the very next frame
+    /// (decoupled from durable-session persistence + provider init) without
+    /// double-rendering. See `App::submit_prompt`.
+    pub optimistic_echo: Option<String>,
 }
 
 impl std::fmt::Debug for TuiState {
@@ -453,6 +465,24 @@ impl TuiState {
         self.items.clear();
         self.assistant_buffer.clear();
         self.error = None;
+    }
+
+    /// Optimistically render a just-submitted user message and remember its raw
+    /// text, so the running turn's real user `MessageEnd` reconciles against it
+    /// (see [`crate::adapter::TuiEventAdapter`]) instead of rendering a duplicate.
+    /// This is what makes the *first* message appear on the next frame rather than
+    /// after the durable-session create + `ensure_session_indexed` + turn assembly
+    /// that precede the stream's user echo.
+    pub fn add_optimistic_user_echo(&mut self, text: &str) {
+        self.add_user_message(text, None, None);
+        self.optimistic_echo = Some(text.to_string());
+    }
+
+    /// Elapsed whole seconds since the current turn began (0 when idle).
+    #[must_use]
+    pub fn working_elapsed_secs(&self) -> u64 {
+        self.turn_started_at
+            .map_or(0, |started| started.elapsed().as_secs())
     }
 
     /// Replace loaded skill metadata (tau `set_skills`).

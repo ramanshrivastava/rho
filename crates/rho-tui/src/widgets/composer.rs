@@ -7,51 +7,89 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::autocomplete::CompletionState;
+use crate::motion::{self, MotionCaps};
 use crate::theme::TuiTheme;
 use crate::widgets::style::parse_style;
 
-/// The rho prompt-prefix "spinner": the Greek lineage π → τ → ρ cycled as an
-/// oxidized activity mark while a turn runs. This is rho *chrome* — a sanctioned
-/// look/feel divergence — and is deliberately DISTINCT from the transcript's
-/// tool spinner (`state::TOOL_SPINNER_FRAMES`, the braille frames that stay
-/// byte-identical to tau). The extra tail frames give the cycle a gentle beat.
-pub const RHO_SPINNER_FRAMES: [&str; 6] = ["π", "τ", "ρ", "ρ", "τ", "π"];
-
-/// The prompt-prefix glyph shown left of the composer.
+/// The rho prompt-prefix glyph — always the rho mark `ρ`.
 ///
-/// tau animates a 3-row bouncing square while running and shows `τ` idle. rho
-/// collapses that to a single animated cell: the rho glyph `ρ` when idle, and a
-/// Greek-lineage spinner ([`RHO_SPINNER_FRAMES`]) while running — rho's own
-/// identity, not tau's `τ`.
+/// tau animates a 3-row bouncing square while running and shows `τ` idle. rho's
+/// prefix is a single cell that is always the `ρ` glyph; its *motion* lives in
+/// the color: a settled dim ρ when idle, and a throbbing ember ρ while a turn
+/// runs (heated-iron breathing along the oxide ramp — see [`crate::motion`]).
+/// The π→τ→ρ lineage cycle now lives, animated, in the heritage splash.
 #[must_use]
-pub fn prompt_prefix(running: bool, frame_idx: usize) -> String {
-    if running {
-        RHO_SPINNER_FRAMES[frame_idx % RHO_SPINNER_FRAMES.len()].to_string()
-    } else {
-        "ρ".to_string()
-    }
+pub const fn prompt_prefix() -> &'static str {
+    "ρ"
 }
 
-/// Render the prompt-prefix cell into `area` (single column).
+/// Render the prompt-prefix cell into `area` (single column): the `ρ` glyph,
+/// throbbing along the oxide ramp while `running` (static dim when idle, or when
+/// motion is unavailable). This is the working-state "spinner" equivalent —
+/// rho's answer to tau's animated activity indicator, and the fix for the
+/// static-while-running parity gap.
 pub fn render_prompt_prefix(
     frame: &mut Frame,
     area: Rect,
     running: bool,
     frame_idx: usize,
+    caps: MotionCaps,
+) {
+    let style = motion::ember_throb_style(caps, frame_idx, running);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(prompt_prefix(), style))),
+        area,
+    );
+}
+
+/// Build the working-state signature line shown below the composer while a turn
+/// runs: `⟨shimmering forge-verb⟩…  ·  ⟨elapsed⟩  ·  ⟨interrupt⟩ to interrupt`,
+/// e.g. `Tempering…  ·  2m 14s  ·  esc to interrupt`. The verb shimmers along the
+/// oxide ramp (Codex's light-sweep, oxidized); the whole line degrades to plain
+/// oxide + muted text under reduced-motion / non-truecolor.
+#[must_use]
+pub fn build_working_status_line(
+    verb: &str,
+    elapsed_secs: u64,
+    frame_idx: usize,
+    interrupt_key: &str,
+    caps: MotionCaps,
+    theme: &TuiTheme,
+) -> Line<'static> {
+    let muted = parse_style(&theme.muted_text);
+    let mut spans = motion::shimmer_spans(verb, caps, frame_idx);
+    spans.push(Span::styled("…", muted));
+    spans.push(Span::styled("  ·  ", muted));
+    spans.push(Span::styled(
+        motion::format_working_elapsed(elapsed_secs),
+        parse_style(&theme.accent),
+    ));
+    spans.push(Span::styled("  ·  ", muted));
+    spans.push(Span::styled(format!("{interrupt_key} to interrupt"), muted));
+    Line::from(spans)
+}
+
+/// Render the working-state signature line into `area` (see
+/// [`build_working_status_line`]).
+#[allow(clippy::too_many_arguments)]
+pub fn render_working_status(
+    frame: &mut Frame,
+    area: Rect,
+    verb: &str,
+    elapsed_secs: u64,
+    frame_idx: usize,
+    interrupt_key: &str,
+    caps: MotionCaps,
     theme: &TuiTheme,
 ) {
-    let style = if running {
-        parse_style(&theme.accent).add_modifier(Modifier::BOLD)
-    } else {
-        parse_style(&theme.prompt_text).add_modifier(Modifier::BOLD)
-    };
-    let glyph = prompt_prefix(running, frame_idx);
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(glyph, style))), area);
+    let bg = parse_style(&theme.chrome_background);
+    let line = build_working_status_line(verb, elapsed_secs, frame_idx, interrupt_key, caps, theme);
+    frame.render_widget(Paragraph::new(line).style(bg), area);
 }
 
 /// The first line of a queued message (tau `_queued_message_preview`).
@@ -182,17 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn prompt_prefix_switches_on_running() {
-        // Idle shows the rho glyph; running cycles the Greek-lineage spinner
-        // (distinct from the tau-parity transcript tool spinner).
-        assert_eq!(prompt_prefix(false, 0), "ρ");
-        assert_eq!(prompt_prefix(true, 0), RHO_SPINNER_FRAMES[0]);
-        assert_eq!(
-            prompt_prefix(true, 7),
-            RHO_SPINNER_FRAMES[7 % RHO_SPINNER_FRAMES.len()]
-        );
-        // The chrome spinner must NOT be tau's braille transcript spinner.
-        assert_ne!(prompt_prefix(true, 0), crate::state::TOOL_SPINNER_FRAMES[0]);
+    fn prompt_prefix_is_the_rho_glyph() {
+        // The prefix glyph is always the rho mark; its motion is in the color
+        // (throbbing ember while running, static dim when idle), not the glyph.
+        assert_eq!(prompt_prefix(), "ρ");
+        // The glyph must NOT be tau's braille transcript tool spinner.
+        assert_ne!(prompt_prefix(), crate::state::TOOL_SPINNER_FRAMES[0]);
+    }
+
+    #[test]
+    fn working_status_line_reads_verb_timer_and_interrupt() {
+        let theme = get_tui_theme(TuiThemeName::Rho);
+        // Plain caps → the verb is a single span, so the whole line reads cleanly.
+        let line =
+            build_working_status_line("Tempering", 134, 0, "esc", MotionCaps::plain(), &theme);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Tempering…  ·  2m 14s  ·  esc to interrupt");
     }
 
     #[test]

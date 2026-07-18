@@ -103,7 +103,19 @@ impl<'a> TuiEventAdapter<'a> {
 
     fn apply_message_end(&mut self, message: &AgentMessage) {
         match message {
-            AgentMessage::User(m) => self.state.add_user_message(&m.text(), None, None),
+            AgentMessage::User(m) => {
+                let text = m.text();
+                // Reconcile against an optimistic echo: if the submit path already
+                // rendered this exact user message on the frame the user pressed
+                // Enter, consume the pending marker instead of adding a duplicate.
+                // Any mismatch falls through to a normal add, so the transcript is
+                // never wrong — worst case it is the pre-optimistic behavior.
+                if self.state.optimistic_echo.as_deref() == Some(text.as_str()) {
+                    self.state.optimistic_echo = None;
+                } else {
+                    self.state.add_user_message(&text, None, None);
+                }
+            }
             AgentMessage::Custom(m) => {
                 let details = match &m.details {
                     Some(serde_json::Value::Object(_)) => m.details.clone(),

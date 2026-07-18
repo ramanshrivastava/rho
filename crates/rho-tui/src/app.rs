@@ -61,12 +61,14 @@ use crate::modals::{
     LoginProviderItem, LoginProviderPickerModal, Modal, ModalOutcome, ModelPickerKind,
     ModelPickerModal, OAuthLoginModal, ProviderPickerPurpose, SessionPickerModal, ThemePickerModal,
 };
+use crate::motion::{self, MotionCaps};
 use crate::state::TuiState;
 use crate::theme::{TuiKeybindings, TuiSettings, TuiTheme};
 use crate::widgets::status::git_branch;
 use crate::widgets::{
     FooterMode, SidebarInfo, StatusInfo, render_compact_session_info, render_completion_popup,
     render_footer, render_prompt_prefix, render_queued_messages, render_sidebar,
+    render_working_status,
 };
 
 /// A snapshot of session-derived chrome, captured so the render layer never
@@ -92,6 +94,8 @@ pub struct App {
     chrome: ChromeSnapshot,
     prompt_history: Vec<String>,
     activity_frame: usize,
+    /// Terminal motion capabilities (truecolor + reduced-motion), resolved once.
+    motion: MotionCaps,
     should_quit: bool,
     cwd: PathBuf,
     /// The one-shot responder for an in-flight extension UI dialog, if any.
@@ -104,6 +108,18 @@ pub struct App {
     /// `RefCell` so the immutable-borrow render path can refresh it in place.
     transcript_cache: RefCell<crate::widgets::TranscriptCache>,
 }
+
+/// Rotating empty-composer placeholder suggestions (Codex-style), cycled while
+/// idle on a motion-capable terminal. The first entry is the durable default so a
+/// plain terminal (and the very first frame) reads the same as before.
+const PLACEHOLDER_PROMPTS: [&str; 4] = [
+    "Type a message, /command, or !shell",
+    "Explain this repo",
+    "Add a test for this function",
+    "Fix this stack trace",
+];
+/// Frames each placeholder suggestion holds before rotating (~6 s at 150 ms).
+const PLACEHOLDER_STEP_FRAMES: usize = 40;
 
 /// The responder awaiting the result of the open extension UI modal.
 enum PendingUiResponder {
@@ -147,6 +163,7 @@ impl App {
             chrome,
             prompt_history: Vec::new(),
             activity_frame: 0,
+            motion: MotionCaps::from_env(),
             should_quit: false,
             cwd,
             session,
@@ -226,6 +243,20 @@ impl App {
         }
     }
 
+    /// Apply the per-frame idle motion to the composer: a breathing oxide cursor
+    /// (quiet throb while typing) and a slowly-rotating placeholder suggestion.
+    /// A no-op on plain / reduced-motion terminals, where the composer keeps a
+    /// static cursor and its default placeholder.
+    fn apply_idle_motion(&mut self) {
+        if !self.motion.animated() {
+            return;
+        }
+        self.textarea
+            .set_cursor_style(motion::cursor_throb_style(self.motion, self.activity_frame));
+        let idx = (self.activity_frame / PLACEHOLDER_STEP_FRAMES) % PLACEHOLDER_PROMPTS.len();
+        self.textarea.set_placeholder_text(PLACEHOLDER_PROMPTS[idx]);
+    }
+
     /// The current render context (borrows only non-session fields).
     fn render_ctx(&self) -> RenderCtx<'_> {
         RenderCtx {
@@ -238,6 +269,7 @@ impl App {
             keybindings: &self.settings.keybindings,
             modal: self.modal.as_ref(),
             activity_frame: self.activity_frame,
+            motion: self.motion,
             footer_mode: self.footer_mode(),
             transcript_cache: &self.transcript_cache,
         }
@@ -255,6 +287,7 @@ struct RenderCtx<'a> {
     keybindings: &'a TuiKeybindings,
     modal: Option<&'a Modal>,
     activity_frame: usize,
+    motion: MotionCaps,
     footer_mode: FooterMode,
     transcript_cache: &'a RefCell<crate::widgets::TranscriptCache>,
 }
@@ -301,7 +334,15 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
         ])
         .split(main_area);
 
-    render_transcript_scrolled(frame, rows[0], ctx.state, ctx.theme, ctx.transcript_cache);
+    render_transcript_scrolled(
+        frame,
+        rows[0],
+        ctx.state,
+        ctx.theme,
+        ctx.activity_frame,
+        ctx.motion,
+        ctx.transcript_cache,
+    );
     if queued_h > 0 {
         render_queued_messages(
             frame,
@@ -312,7 +353,25 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
         );
     }
     render_prompt_row(frame, rows[2], ctx);
-    render_compact_session_info(frame, rows[3], ctx.status, ctx.theme);
+    // While a turn runs, the status row hosts the working-state signature (the
+    // shimmering forge-verb + elapsed timer + interrupt hint); when idle it shows
+    // the compact session info. The throbbing ρ sits directly above, in the
+    // composer prefix, so the eye reads `ρ / Tempering… · 2m 14s · esc to
+    // interrupt` top-to-bottom.
+    if ctx.state.running {
+        render_working_status(
+            frame,
+            rows[3],
+            motion::working_verb(ctx.state.turn_index),
+            ctx.state.working_elapsed_secs(),
+            ctx.activity_frame,
+            &interrupt_key_label(ctx.keybindings),
+            ctx.motion,
+            ctx.theme,
+        );
+    } else {
+        render_compact_session_info(frame, rows[3], ctx.status, ctx.theme);
+    }
     if completion_h > 0 {
         render_completion_popup(frame, rows[4], ctx.completion, ctx.theme);
     }
@@ -351,9 +410,19 @@ fn render_prompt_row(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
         cols[0],
         ctx.state.running,
         ctx.activity_frame,
-        ctx.theme,
+        ctx.motion,
     );
     frame.render_widget(ctx.textarea, cols[1]);
+}
+
+/// The interrupt-hint key label for the working-state line: `esc` for the
+/// default escape cancel, else the capitalized binding.
+fn interrupt_key_label(kb: &TuiKeybindings) -> String {
+    if kb.cancel == "escape" {
+        "esc".to_string()
+    } else {
+        crate::widgets::footer::key_hint(&kb.cancel)
+    }
 }
 
 /// Render the transcript, following the bottom when it overflows the viewport so
@@ -364,12 +433,14 @@ fn render_transcript_scrolled(
     area: Rect,
     state: &TuiState,
     theme: &TuiTheme,
+    activity_frame: usize,
+    motion: MotionCaps,
     cache: &RefCell<crate::widgets::TranscriptCache>,
 ) {
     // A fresh, idle session shows the rho welcome splash instead of a blank pane
     // (suppressed the moment a turn is pending — see `should_show_splash`).
     if crate::widgets::should_show_splash(state) {
-        crate::widgets::render_splash(frame, area, theme);
+        crate::widgets::render_splash(frame, area, theme, activity_frame, motion);
         return;
     }
     let mut cache = cache.borrow_mut();
@@ -516,7 +587,20 @@ impl App {
         // Own the extension-UI channel for the loop's lifetime so the `select!`
         // below borrows a local (not `self`, which the event branch also touches).
         let mut ext_ui = self.ext_ui_channel.take();
+        // Idle animation heartbeat: on a truecolor, motion-on terminal we advance
+        // the frame counter ~every 150 ms so the splash lineage, the breathing
+        // composer cursor, and the rotating placeholder animate while idle. On a
+        // plain / reduced-motion terminal the interval is effectively dormant, so
+        // an idle rho never wakes the CPU to redraw an unchanging frame.
+        let idle_period = if self.motion.animated() {
+            Duration::from_millis(150)
+        } else {
+            Duration::from_secs(3600)
+        };
+        let mut idle_ticker = tokio::time::interval(idle_period);
+        idle_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
+            self.apply_idle_motion();
             terminal.draw(|f| render(f, &self.render_ctx()))?;
             if self.should_quit {
                 return Ok(());
@@ -525,6 +609,11 @@ impl App {
             // (a modal or an already-pending dialog owns the overlay first).
             let accept_ext_ui = self.modal.is_none() && self.pending_ext_ui.is_none();
             tokio::select! {
+                _ = idle_ticker.tick() => {
+                    if self.motion.animated() {
+                        self.activity_frame = self.activity_frame.wrapping_add(1);
+                    }
+                }
                 maybe_request = recv_ext_ui(&mut ext_ui), if accept_ext_ui => {
                     match maybe_request {
                         Some(request) => self.handle_ext_ui_request(request),
@@ -929,6 +1018,13 @@ impl App {
                 .update_queue(queue_texts(&control, true), queue_texts(&control, false));
             return Ok(());
         }
+        // Optimistic echo: render the user's message on the very next frame, before
+        // `prompt()`'s stream echoes it back (on the first turn the stream does
+        // lazy session-file creation + indexing + turn assembly *before* emitting
+        // the user message, which made the first message appear to lag). The
+        // adapter reconciles the real user `MessageEnd` against this marker so the
+        // line is never double-rendered.
+        self.state.add_optimistic_user_echo(&text);
         self.run_turn(text, terminal, events, ext_ui).await
     }
 
@@ -1315,6 +1411,9 @@ impl App {
         // like auto-compaction) would keep showing the empty-session splash after
         // the user already submitted, as if the submit were ignored.
         self.state.running = true;
+        // Stamp the turn start so the working-state line's elapsed timer runs from
+        // the moment of submit (cleared in `finish_turn`).
+        self.state.turn_started_at = Some(std::time::Instant::now());
         // Scope the disjoint field borrows (and the `session`-borrowing stream)
         // so they all drop before we touch `self` again after the turn. The block
         // yields whether the user asked to quit mid-turn.
@@ -1328,6 +1427,7 @@ impl App {
                 chrome,
                 settings,
                 activity_frame,
+                motion,
                 transcript_cache,
                 ..
             } = &mut *self;
@@ -1348,6 +1448,7 @@ impl App {
                         keybindings: &settings.keybindings,
                         modal: None,
                         activity_frame: *activity_frame,
+                        motion: *motion,
                         footer_mode: FooterMode::Running,
                         transcript_cache,
                     };
@@ -1440,6 +1541,12 @@ impl App {
         // stream ended without a settle event (the adapter clears it on settle /
         // error, but a bare stream close would otherwise leave it stuck true).
         self.state.running = false;
+        // Retire the working-state timer, drop any unreconciled optimistic echo
+        // marker (the item stays; only the reconcile flag clears), and advance the
+        // turn counter so the next turn rotates to the next forge-verb.
+        self.state.turn_started_at = None;
+        self.state.optimistic_echo = None;
+        self.state.turn_index = self.state.turn_index.wrapping_add(1);
         if let Some(error) = self.session.take_run_error() {
             self.state.error = Some(error.clone());
             self.state

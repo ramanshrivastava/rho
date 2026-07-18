@@ -22,6 +22,7 @@ pub mod autocomplete;
 pub mod ext_ui;
 pub mod login;
 pub mod modals;
+pub mod motion;
 mod pystr;
 pub mod state;
 pub mod terminal_title;
