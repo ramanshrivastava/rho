@@ -329,6 +329,11 @@ fn render_transcript_scrolled(
     theme: &TuiTheme,
     cache: &RefCell<crate::widgets::TranscriptCache>,
 ) {
+    // A fresh session shows the rho welcome splash instead of a blank pane.
+    if crate::widgets::transcript_is_empty(state) {
+        crate::widgets::render_splash(frame, area, theme);
+        return;
+    }
     let mut cache = cache.borrow_mut();
     let lines = cache.lines(state, theme, area.width);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);

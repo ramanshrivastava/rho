@@ -899,12 +899,13 @@ mod tests {
     #[test]
     fn theme_picker_preselects_current_and_returns_choice() {
         let mut modal = ThemePickerModal::new(TuiThemeName::HighContrast);
-        // high-contrast is index 2 in BUILTIN_TUI_THEME_NAMES.
-        assert_eq!(modal.index, 2);
+        // high-contrast is index 3 in BUILTIN_TUI_THEME_NAMES (["rho","tau-dark",
+        // "tau-light","high-contrast"]).
+        assert_eq!(modal.index, 3);
         modal.handle_key(key(KeyCode::Up));
-        assert_eq!(modal.index, 1);
+        assert_eq!(modal.index, 2);
         match modal.handle_key(key(KeyCode::Enter)) {
-            ModalOutcome::Theme(name) => assert_eq!(name.as_str(), BUILTIN_TUI_THEME_NAMES[1]),
+            ModalOutcome::Theme(name) => assert_eq!(name.as_str(), BUILTIN_TUI_THEME_NAMES[2]),
             other => panic!("expected theme, got {other:?}"),
         }
     }

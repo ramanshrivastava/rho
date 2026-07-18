@@ -25,8 +25,13 @@ use crate::skills::Skill;
 use crate::system_prompt::ProjectContextFile;
 use crate::thinking::normalize_thinking_level;
 
-/// Built-in TUI theme names (tau `BUILTIN_TUI_THEME_NAMES`).
-pub const BUILTIN_TUI_THEME_NAMES: [&str; 3] = ["tau-dark", "tau-light", "high-contrast"];
+/// Built-in TUI theme names. `rho` is rho's own default identity theme
+/// (rust-oxide accents, warm neutrals — an owner-sanctioned look/feel divergence
+/// from tau, see `dev-notes/phase-5.md`); the three `tau-*` themes stay
+/// selectable for byte-for-byte tau parity. rho's `tui.json` is rho-local (tau
+/// never reads it), so extending this vocabulary does not touch wire/session
+/// parity.
+pub const BUILTIN_TUI_THEME_NAMES: [&str; 4] = ["rho", "tau-dark", "tau-light", "high-contrast"];
 
 /// Login-provider aliases in insertion order (tau `LOGIN_PROVIDER_ALIASES`).
 ///

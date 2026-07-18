@@ -148,6 +148,53 @@ pub fn build_transcript_lines(
     lines
 }
 
+/// Whether the transcript is empty (no items, nothing streaming) — the cue to
+/// show the rho welcome splash instead of a blank pane.
+#[must_use]
+pub fn transcript_is_empty(state: &TuiState) -> bool {
+    state.items.is_empty() && state.assistant_buffer.is_empty()
+}
+
+/// Render the rho welcome splash into `area`, vertically + horizontally centered:
+/// the ρ mark, the π → τ → ρ lineage, and a one-line hint. A sanctioned identity
+/// divergence (tau shows a blank transcript on a fresh session).
+pub fn render_splash(frame: &mut Frame, area: ratatui::layout::Rect, theme: &TuiTheme) {
+    let accent = parse_style(&theme.accent).add_modifier(ratatui::style::Modifier::BOLD);
+    let muted = parse_style(&theme.muted_text);
+    let bg = parse_color(&theme.transcript_background)
+        .map_or_else(Style::default, |color| Style::default().bg(color));
+
+    let lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled("ρ", accent)),
+        Line::default(),
+        Line::from(Span::styled("π → τ → ρ", muted)),
+        Line::default(),
+        Line::from(Span::styled("rho", accent)),
+        Line::from(Span::styled("a Rust port of tau", muted)),
+        Line::default(),
+        Line::from(Span::styled(
+            "Type a message, /command, or !shell to begin.",
+            muted,
+        )),
+    ];
+
+    // Vertically center: pad the top by half the slack (clamped so a short pane
+    // still shows the mark from the top).
+    let slack = (area.height as usize).saturating_sub(lines.len());
+    let top_pad = u16::try_from(slack / 2).unwrap_or(0);
+    let inner = ratatui::layout::Rect {
+        y: area.y.saturating_add(top_pad),
+        height: area.height.saturating_sub(top_pad),
+        ..area
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(bg),
+        inner,
+    );
+}
+
 /// Render the whole transcript into `area` from the top (no scroll), clipped by
 /// the area. The app layer owns scroll/follow behavior.
 pub fn render_transcript(
