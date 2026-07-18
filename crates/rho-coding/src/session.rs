@@ -448,7 +448,7 @@ impl CodingSession {
         let extension_runtime = if let Some(runtime) = config.extension_runtime.take() {
             runtime
         } else {
-            let mut runtime = ExtensionRuntime::new();
+            let mut runtime = ExtensionRuntime::for_session();
             if config.extensions_enabled || !config.extension_paths.is_empty() {
                 runtime
                     .load(

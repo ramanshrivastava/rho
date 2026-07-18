@@ -188,7 +188,6 @@ impl WasmExtensionHost {
             guidelines: collector.guidelines,
             message_renderers: collector.message_renderers,
             subscriptions: collector.subscriptions,
-            registers_key_interceptor: false,
         };
 
         Ok((

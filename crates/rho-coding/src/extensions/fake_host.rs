@@ -210,7 +210,6 @@ impl FakeExtension {
             guidelines: self.guidelines.clone(),
             message_renderers: self.renderers.keys().cloned().collect(),
             subscriptions: self.subscriptions(),
-            registers_key_interceptor: false,
         }
     }
 }

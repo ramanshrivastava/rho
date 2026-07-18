@@ -16,6 +16,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Build the `rho` binary with the real WASM extension runtime. Off by default so
+# the shipped default build stays lean; `cargo build -p rho --features wasmtime`
+# (or `--features rho/wasmtime`) links wasmtime and loads `-x` extensions.
+default = []
+wasmtime = ["rho-coding/wasmtime"]
+
 [dependencies]
 clap = { workspace = true }
 tokio = { workspace = true }

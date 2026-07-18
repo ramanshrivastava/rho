@@ -85,6 +85,9 @@ pub struct SessionPrintModeConfig {
     /// `~/.rho` index; tests inject a temp-dir manager. Ignored when
     /// `session_path` is set.
     pub session_manager: Option<SessionManager>,
+    /// Explicit extension component paths (the `-x/--extension` flag). Loaded on
+    /// top of directory discovery. tau's extensions run in print mode too.
+    pub extension_paths: Vec<PathBuf>,
 }
 
 impl SessionPrintModeConfig {
@@ -110,7 +113,15 @@ impl SessionPrintModeConfig {
             runtime_provider_config: None,
             session_path: None,
             session_manager: None,
+            extension_paths: Vec::new(),
         }
+    }
+
+    /// Set explicit extension component paths (`-x/--extension`).
+    #[must_use]
+    pub fn with_extension_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.extension_paths = paths;
+        self
     }
 
     /// Set the output mode.
@@ -174,6 +185,7 @@ pub async fn run_session_print_mode(config: SessionPrintModeConfig) -> bool {
     session_config.runtime_provider_config = config.runtime_provider_config;
     session_config.session_id = session_id;
     session_config.session_manager = session_manager;
+    session_config.extension_paths = config.extension_paths;
 
     let mut session = match CodingSession::load(session_config).await {
         Ok(session) => session,

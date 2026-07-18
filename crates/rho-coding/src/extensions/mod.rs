@@ -422,6 +422,28 @@ impl ExtensionRuntime {
         Self::with_host(Arc::new(NoopExtensionHost))
     }
 
+    /// The runtime a live session uses: backed by the real
+    /// [`WasmExtensionHost`](rho_ext_host::wasm::WasmExtensionHost) when the
+    /// `wasmtime` feature is on, and by [`NoopExtensionHost`] otherwise.
+    ///
+    /// When the wasmtime engine cannot be constructed (a build/platform
+    /// problem), this falls back to the no-op host rather than failing session
+    /// startup — extensions become inert, which the diagnostics surface.
+    #[must_use]
+    pub fn for_session() -> Self {
+        #[cfg(feature = "wasmtime")]
+        {
+            match rho_ext_host::wasm::WasmExtensionHost::new() {
+                Ok(host) => Self::with_host(Arc::new(host)),
+                Err(_) => Self::with_host(Arc::new(NoopExtensionHost)),
+            }
+        }
+        #[cfg(not(feature = "wasmtime"))]
+        {
+            Self::with_host(Arc::new(NoopExtensionHost))
+        }
+    }
+
     /// A runtime backed by an explicit host (the wasmtime host, or a test double).
     #[must_use]
     pub fn with_host(host: Arc<dyn ExtensionHost>) -> Self {

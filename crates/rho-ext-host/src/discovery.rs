@@ -64,7 +64,10 @@ pub fn discover_extensions(
     let mut add = |entry: ExtensionSpec,
                    discovered: &mut Vec<ExtensionSpec>,
                    diagnostics: &mut Vec<HostDiagnostic>| {
-        let resolved = entry.path.canonicalize().unwrap_or_else(|_| entry.path.clone());
+        let resolved = entry
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path.clone());
         if seen_paths.contains(&resolved) {
             return;
         }
@@ -97,7 +100,10 @@ pub fn discover_extensions(
             if entry_file.is_file() {
                 let name = dir_name(&expanded);
                 add(
-                    ExtensionSpec { name, path: entry_file },
+                    ExtensionSpec {
+                        name,
+                        path: entry_file,
+                    },
                     &mut discovered,
                     &mut diagnostics,
                 );

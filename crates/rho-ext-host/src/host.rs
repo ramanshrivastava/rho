@@ -43,8 +43,6 @@ pub struct LoadedExtension {
     pub message_renderers: Vec<String>,
     /// Hook/agent-event names the extension subscribed to (tau's `on(...)`).
     pub subscriptions: Vec<String>,
-    /// Whether the extension registered a key interceptor.
-    pub registers_key_interceptor: bool,
 }
 
 /// A non-fatal problem surfaced while loading or running an extension. Mirrors
