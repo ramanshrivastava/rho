@@ -40,6 +40,10 @@ pub const WORKING_VERBS: [&str; 10] = [
 pub const THROB_PERIOD_FRAMES: usize = 10;
 /// Frames per shimmer sweep at the 150 ms activity tick (~2.1 s, Codex-like).
 pub const SHIMMER_PERIOD_FRAMES: usize = 14;
+/// Half-period (in 150 ms frames) of the resting-cursor blink: 4 frames ≈ 600 ms
+/// on / 600 ms off (~1.2 s full cycle), a natural terminal-cursor cadence near
+/// the classic ~530 ms blink.
+pub const CURSOR_BLINK_HALF_FRAMES: usize = 4;
 /// Half-width (in cells) of the shimmer light band (Codex uses ~5).
 const SHIMMER_HALF_WIDTH: f32 = 5.0;
 
@@ -218,16 +222,24 @@ pub fn cursor_throb_style(caps: MotionCaps, frame: usize) -> Style {
 /// oxide underline instead of the bright reversed block, so no glowing cell
 /// floats over the placeholder with no text behind it (the "stray block" fix).
 ///
-/// Animated: a quiet oxide underline. Static: the terminal's own default cursor
-/// (no styling), which reads as an ordinary caret inside the bordered composer.
+/// Animated: the oxide underline BLINKS like a normal terminal cursor — on for
+/// `CURSOR_BLINK_HALF_FRAMES`, then off (bare cell, underline vanishes), on a
+/// ~530 ms terminal cadence. Reduced-motion: a STEADY (non-blinking) oxide
+/// underline, so there is always a visible caret inside the bordered composer.
 #[must_use]
-pub fn cursor_rest_style(caps: MotionCaps) -> Style {
-    if !caps.animated() {
-        return Style::default();
-    }
-    Style::default()
+pub fn cursor_rest_style(caps: MotionCaps, frame: usize) -> Style {
+    let underline = Style::default()
         .fg(oxide_ramp(0.5))
-        .add_modifier(Modifier::UNDERLINED)
+        .add_modifier(Modifier::UNDERLINED);
+    if !caps.animated() {
+        // Steady underline: a visible caret with no blink (never `Style::default()`,
+        // which would leave the resting composer with no cursor at all).
+        return underline;
+    }
+    // Blink the underline on a terminal-cursor cadence: `on` half-cycle shows the
+    // oxide underline, `off` half-cycle a bare cell so the underline disappears.
+    let on = (frame / CURSOR_BLINK_HALF_FRAMES) % 2 == 0;
+    if on { underline } else { Style::default() }
 }
 
 // --- shimmer (travelling light sweep) ---------------------------------------
@@ -340,6 +352,43 @@ mod tests {
         let peak = ember_throb_style(caps, THROB_PERIOD_FRAMES / 4, true); // sin peak
         let trough = ember_throb_style(caps, 3 * THROB_PERIOD_FRAMES / 4, true); // sin trough
         assert_ne!(peak.fg, trough.fg, "throb must vary brightness");
+    }
+
+    #[test]
+    fn resting_cursor_blinks_when_animated() {
+        let caps = MotionCaps::animated_caps();
+        let underline = Style::default()
+            .fg(oxide_ramp(0.5))
+            .add_modifier(Modifier::UNDERLINED);
+        // Frame 0 is the start of an "on" half-cycle: the oxide underline shows.
+        let on = cursor_rest_style(caps, 0);
+        assert_eq!(on, underline, "on-frame shows the oxide underline");
+        assert!(on.add_modifier.contains(Modifier::UNDERLINED));
+        // One half-period later the blink is "off": a bare cell, underline gone.
+        let off = cursor_rest_style(caps, CURSOR_BLINK_HALF_FRAMES);
+        assert_eq!(off, Style::default(), "off-frame clears the underline");
+        assert!(!off.add_modifier.contains(Modifier::UNDERLINED));
+        // The blink toggles with the frame (on ≠ off).
+        assert_ne!(on, off, "the resting cursor must blink");
+        // A full period returns to "on" (periodic).
+        assert_eq!(
+            cursor_rest_style(caps, 2 * CURSOR_BLINK_HALF_FRAMES),
+            underline
+        );
+    }
+
+    #[test]
+    fn resting_cursor_is_steady_underline_under_reduced_motion() {
+        let underline = Style::default()
+            .fg(oxide_ramp(0.5))
+            .add_modifier(Modifier::UNDERLINED);
+        // Reduced-motion: a visible, non-blinking underline on every frame —
+        // never `Style::default()` (which would leave no caret).
+        for frame in [0, CURSOR_BLINK_HALF_FRAMES, 2 * CURSOR_BLINK_HALF_FRAMES, 7] {
+            let style = cursor_rest_style(MotionCaps::plain(), frame);
+            assert_eq!(style, underline, "steady underline at frame {frame}");
+            assert_ne!(style, Style::default(), "must keep a visible caret");
+        }
     }
 
     #[test]

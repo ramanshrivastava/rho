@@ -258,7 +258,7 @@ impl App {
         // reading as a stray floating block. Use the soft resting underline there;
         // keep the ember-throb block only once the user is actually typing.
         let cursor_style = if self.prompt_text().is_empty() {
-            motion::cursor_rest_style(self.motion)
+            motion::cursor_rest_style(self.motion, self.activity_frame)
         } else {
             motion::cursor_throb_style(self.motion, self.activity_frame)
         };
