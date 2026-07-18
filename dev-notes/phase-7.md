@@ -106,10 +106,113 @@ M7 was built as a spine plus three worktree-isolated clusters forked from it:
 - **tui-login**: the `/login` OAuth wiring, the Login/Method picker modals, and
   the extension UI screens (task #34).
 
-<!-- TODO(integration): fill in per-cluster outcomes, the final ExtensionRuntime
-     public API, the scope ledger (every brief item → landed / deferral-rationale),
-     the DoD checklist, and the /login manual checklist once the clusters merge. -->
+All three clusters merged onto `m7-extensions`, then the parent wired the pieces
+together (the wasmtime feature end to end, the live agent-event fan-out) and
+verified the whole stack.
+
+## The `ExtensionRuntime` public API (the session's seam)
+
+`new()` (Noop) · `for_session()` (Wasm under the feature, Noop otherwise) ·
+`with_host(Arc<dyn ExtensionHost>)` (inject a host / test double) · `set_bridge`
+· `rebind` · `load(paths, extra_paths, include_resource_dirs, include_project_dir)`
+· `load_discovered(Vec<ExtensionSpec>)` · `reset_for_reload` · `compose_tools`
+· `build_command_registry` · `prompt_guidelines` · `run_input_hooks`
+· `emit_session_start/shutdown` · `emit_event` · `on_agent_event(&mut, &AgentEvent)`
+· `render_custom_message` · `diagnostics` · `extension_names` · `extension_tools`
+· `has_extensions`. `CodingSession` exposes `extension_runtime[_mut]()`.
+
+## Definition of done
+
+| DoD item | Status |
+|---|---|
+| Hook parity tests vs `test_extensions.py` semantics | ✅ 41 `ExtensionRuntime` tests (FakeExtensionHost) |
+| Hot-reload integration test | ✅ `hot_reload_reinstantiates` (host) + `reload_picks_up_changes` (runtime) |
+| Sandbox-denial test (FS/net fails cleanly) | ✅ `sandbox_denies_filesystem_and_network` |
+| Both example guests work in TUI **and** print mode | ✅ `-x` wired into both paths; `wasm_extension.rs` proves the `CodingSession`→WASM path; featured binary smoke-tested in print mode |
+| Live agent-event fan-out to extensions | ✅ inline dispatch + `agent_events_reach_..._session_run` |
+| `/login` flows compile + mocked-token tests + manual checklist | ✅ modals + wiring + credential-store tests; checklist below |
+| `cargo test --workspace` green (goldens/crosscheck intact) | ✅ 40 test groups, system-prompt + crosscheck goldens unperturbed |
+| clippy `-D warnings`, fmt | ✅ default + `--features wasmtime` clean |
+| wasmtime feature-gated; default build lean | ✅ default `cargo build` compiles **0** wasmtime crates |
 
 ## Scope ledger
 
-<!-- TODO(integration): one row per brief item. -->
+| Brief item | Outcome |
+|---|---|
+| `rho-ext-host` (wasmtime host, feature-gated) | ✅ `WasmExtensionHost` (wasmtime 46, component model, async) |
+| `rho-ext-api` (guest authoring crate, wit-bindgen) | ✅ ergonomic `Setup`/`Extension`/`export_extension!` over wit-bindgen 0.46 |
+| WIT world `rho:extension` (guest exports + host imports) | ✅ `crates/rho-ext-api/wit/rho-extension.wit` |
+| Pi-shaped `(event, context)` hooks + tau result types | ✅ input / tool_call / tool_result / lifecycle / agent-event |
+| Renderers return markup **strings** | ✅ `render-message` → `option<string>` |
+| `async_support(true)` + `func_wrap_async`; init-phase-only registration | ✅ `in_init` flag enforces it |
+| Hooks dispatched strictly sequentially per extension | ✅ runtime iterates subscribers in load order |
+| Capability sandbox (no ambient FS/net) | ✅ empty `WasiCtx`; sandbox-denial test |
+| Discovery from `~/.rho/extensions/` + `-x` | ✅ `discovery.rs`; simpler than tau (one-file component) |
+| Hot reload (re-instantiation, `/reload` parity) | ✅ `load` replaces the instance set; reload tests |
+| Port `hello_tool` + `permission_gate` as Rust guests | ✅ under `examples/extensions/` (+ `sandbox_probe` fixture) |
+| Task #34: interactive `/login` OAuth in the TUI | ✅ pickers + browser/device flows + credential store + provider swap |
+| Unstub extension TUI screens (Select/Confirm/Input) | ✅ modals + `ExtensionUiHandle` (see deferral on live wiring) |
+
+## Deferrals (with rationale)
+
+- **Live session-context reads + interactive UI *during hooks*.** The
+  `ExtensionUiHandle` + Select/Confirm/Input modals exist and are unit-tested,
+  and the `HostBridge` trait is defined, but a guest calling `ctx.ui.*` or
+  `ctx.model` *mid-hook* is not yet wired to the live session. Rationale: the
+  runtime is owned by `CodingSession` (not `Arc`-shared), so a `HostBridge`
+  retained by the host cannot hold a back-reference to its owner without a cycle;
+  a faithful wiring needs a shared session snapshot the session updates. The two
+  shipped example guests use neither, so this does not gate M7. The seam is in
+  place (`set_bridge`); connecting it is a follow-up.
+- **`session_start`/`session_shutdown` emission from the session lifecycle.**
+  `emit_session_start/shutdown` exist and are unit-tested; calling them at the
+  real startup/quit points is deferred with the same ownership rationale.
+- **Extension slash-command *execution*.** Registration, layering onto the
+  default registry, and shadow-builtin rejection are ported and tested; the WIT
+  has no `call-command` export and rho's `CommandHandler` is a bare `fn` pointer
+  that cannot carry per-extension state, so a registered command currently
+  reports it is not executable. Adding a `call-command` guest export + a boxed
+  handler type is the follow-up.
+- **Generation-staleness of a captured API handle across `/reload`.** Largely
+  **N/A by construction**: a WASM guest instance is dropped on `teardown`, so
+  there is no long-lived host-side API object a guest could misuse across a
+  reload (tau's `ExtensionGeneration` guards a Python object that outlives the
+  reload; rho has no such object). The observable behavior — reload replaces the
+  registration set — is implemented and tested.
+- **Python-package/manifest discovery tests** (`test_manifest_*`,
+  relative-import, `sys.modules` namespacing, async-`setup` rejection): N/A — a
+  WASM component is one self-contained file.
+- **Tool `render_call`/`render_result` resolvers**: N/A — rho's M2 `AgentTool`
+  carries no render hooks (only the custom-message renderer applies, and it is
+  ported).
+
+## `/login` manual verification checklist (task #34 — live, human-run)
+
+The OAuth handshakes open a browser and bind local sockets, so they cannot run in
+CI; the non-interactive machinery is unit-tested (see
+`dev-notes/oauth-manual-checklist.md`). Build the interactive binary and run in a
+scratch dir; watch `~/.rho/credentials.json` (mode `0600`, sorted keys) and
+`~/.rho/providers.json`.
+
+1. **Picker flow** — `/login` shows the method picker (Subscription / API key /
+   Custom); arrows wrap, Enter selects, Esc/Ctrl+D close.
+2. **Anthropic (Claude Pro/Max)** — `/login` → Subscription → Anthropic. Browser
+   opens `https://claude.ai/oauth/authorize?…`; callback on `:53692`. Expect a
+   modal-shown URL, then "Saved login for Anthropic…", an `anthropic` OAuth
+   credential (`account_id` null), and the provider swapped.
+3. **OpenAI Codex (ChatGPT)** — `/login` → Subscription → OpenAI Codex. Browser
+   opens `https://auth.openai.com/oauth/authorize?…`; callback on `:1455`.
+   Another machine: paste the full redirect URL into the modal's `code:` field
+   (a `state` mismatch must show "OAuth failed: OAuth state mismatch"). Expect an
+   `openai-codex` credential with access/refresh + `account_id`.
+4. **GitHub Copilot (device flow)** — `/login` → Subscription → GitHub Copilot.
+   Prompts for an Enterprise domain (Enter = github.com), shows the verification
+   URL + `XXXX-XXXX` code; authorize in browser; expect a `github-copilot`
+   credential and provider swap.
+5. **API-key login** — `/login openai` (or via the picker) → masked field →
+   paste + Enter → `openai` API-key credential + "Saved login for OpenAI."
+6. **Custom provider** — `/login custom` → fill id / base URL / models / key →
+   provider added to `providers.json` + catalog, credential stored, swapped.
+7. **Logout** — `/logout` lists only providers with stored credentials; select →
+   credential removed. `/logout` with none stored shows the "no stored
+   credentials" notice.
