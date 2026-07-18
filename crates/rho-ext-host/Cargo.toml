@@ -6,9 +6,31 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "WASM extension host (wasmtime) — loads and sandboxes rho extensions. Stub until M7."
+description = "Extension host: the ExtensionHost trait + a feature-gated wasmtime component runtime for rho extensions."
 
 [lints]
 workspace = true
 
+[features]
+# Off by default so `cargo build` never compiles wasmtime; enable to link the
+# real component runtime (`WasmExtensionHost`).
+default = []
+wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
 [dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+wasmtime = { version = "36", optional = true, features = [
+    "async",
+    "component-model",
+    "cranelift",
+    "runtime",
+] }
+wasmtime-wasi = { version = "36", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
