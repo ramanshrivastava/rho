@@ -71,6 +71,92 @@ impl QueuedMessages {
     }
 }
 
+/// A cheap, cloneable control surface over a harness's shared run state.
+///
+/// Built by [`AgentHarness::control`]. All methods take `&self` and act through
+/// cloned `Arc` handles, so the interactive TUI can cancel the run or queue
+/// steering/follow-up messages while the borrowing event stream is still being
+/// drained. Mirrors the subset of [`AgentHarness`]'s control API the UI needs;
+/// the queue/cancel semantics are identical (same underlying `Arc`s).
+#[derive(Clone)]
+pub struct HarnessControl {
+    current_signal: Arc<Mutex<Option<Arc<SimpleCancellationToken>>>>,
+    running: Arc<AtomicBool>,
+    steering_queue: Arc<Mutex<VecDeque<AgentMessage>>>,
+    follow_up_queue: Arc<Mutex<VecDeque<AgentMessage>>>,
+    clock: Arc<dyn Clock>,
+}
+
+impl HarnessControl {
+    /// Whether a run is currently in progress (tau `AgentHarness.is_running`).
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    /// Cancel the in-flight run, if any (tau `AgentHarness.cancel`).
+    pub fn cancel(&self) {
+        if let Some(signal) = self.current_signal.lock().expect("signal lock").as_ref() {
+            signal.cancel();
+        }
+    }
+
+    fn user_message(&self, content: &str) -> UserMessage {
+        let mut m = UserMessage::new(content);
+        m.timestamp = self.clock.now_ms();
+        m
+    }
+
+    /// Queue a steering message from a string (tau `steer`).
+    pub fn steer(&self, content: &str) -> QueuedMessages {
+        self.steer_message(AgentMessage::User(self.user_message(content)))
+    }
+
+    /// Queue a steering message (tau `steer_message`).
+    pub fn steer_message(&self, message: AgentMessage) -> QueuedMessages {
+        self.steering_queue
+            .lock()
+            .expect("steering lock")
+            .push_back(message);
+        self.queued_messages()
+    }
+
+    /// Queue a follow-up message from a string (tau `follow_up`).
+    pub fn follow_up(&self, content: &str) -> QueuedMessages {
+        self.follow_up_message(AgentMessage::User(self.user_message(content)))
+    }
+
+    /// Queue a follow-up message (tau `follow_up_message`).
+    pub fn follow_up_message(&self, message: AgentMessage) -> QueuedMessages {
+        self.follow_up_queue
+            .lock()
+            .expect("follow_up lock")
+            .push_back(message);
+        self.queued_messages()
+    }
+
+    /// A snapshot of both queues (tau `AgentHarness.queued_messages`).
+    #[must_use]
+    pub fn queued_messages(&self) -> QueuedMessages {
+        QueuedMessages {
+            steering: self
+                .steering_queue
+                .lock()
+                .expect("steering lock")
+                .iter()
+                .cloned()
+                .collect(),
+            follow_up: self
+                .follow_up_queue
+                .lock()
+                .expect("follow_up lock")
+                .iter()
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 /// The harness raised its already-running guard (tau `RuntimeError`).
 #[derive(Debug, thiserror::Error)]
 pub enum HarnessError {
@@ -197,6 +283,27 @@ impl AgentHarness {
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    /// A cheap, cloneable control handle over this harness's shared state.
+    ///
+    /// The event stream returned by [`Self::prompt`]/[`Self::continue_`] borrows
+    /// the harness for its whole lifetime, so an interactive frontend cannot call
+    /// `&self` methods like [`Self::cancel`]/[`Self::steer`] on the same harness
+    /// while draining a run. This handle clones the underlying `Arc` state
+    /// (cancel signal, running flag, queues, clock) so cancellation and
+    /// steering/follow-up queueing work *concurrently* with an in-flight run.
+    /// (tau gets this for free from Textual's workers + the GIL; rho makes the
+    /// shared-state seam explicit.)
+    #[must_use]
+    pub fn control(&self) -> HarnessControl {
+        HarnessControl {
+            current_signal: self.current_signal.clone(),
+            running: self.running.clone(),
+            steering_queue: self.steering_queue.clone(),
+            follow_up_queue: self.follow_up_queue.clone(),
+            clock: self.config.clock.clone(),
+        }
     }
 
     /// A snapshot of both queues.
