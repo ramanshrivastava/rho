@@ -102,12 +102,22 @@ pub struct BuildSystemPromptOptions {
     pub current_date: Option<Date>,
     /// Extra guidelines to fold in.
     pub extra_guidelines: Vec<String>,
+    /// Harness name rendered in the default preamble ("operating inside
+    /// {brand}"). Defaults to `"rho"` — real users are told they run inside rho.
+    ///
+    /// This is rho's **one sanctioned identity seam**: the tau byte-parity
+    /// golden (`fixtures/system-prompt/default_coding_tools.txt`) sets
+    /// `brand = "Tau"` so the assembled prompt stays byte-identical to tau,
+    /// while the production default introduces rho as itself. See
+    /// `dev-notes/identity-vs-parity.md`.
+    pub brand: Option<String>,
 }
 
 /// Build a deterministic Pi-style system prompt (tau `build_system_prompt`).
 #[must_use]
 pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
     let current_date = options.current_date.unwrap_or_else(Date::today);
+    let brand = options.brand.as_deref().unwrap_or("rho");
     let cwd = format_path(&options.cwd);
     let append_section = options
         .append_system_prompt
@@ -118,7 +128,7 @@ pub fn build_system_prompt(options: &BuildSystemPromptOptions) -> String {
         custom.clone()
     } else {
         format!(
-            "You are an expert coding assistant operating inside Tau, a coding agent harness. \
+            "You are an expert coding assistant operating inside {brand}, a coding agent harness. \
 You help users by reading files, executing commands, editing code, and writing new files.\
 \n\nAvailable tools:\n{}\
 \n\nIn addition to the tools above, you may have access to other custom tools depending on the \
@@ -303,7 +313,9 @@ mod tests {
             ..Default::default()
         });
 
-        assert!(prompt.contains("You are an expert coding assistant operating inside Tau"));
+        // Default brand is rho: real users are told they run inside rho, never Tau.
+        assert!(prompt.contains("You are an expert coding assistant operating inside rho"));
+        assert!(!prompt.contains("operating inside Tau"));
         assert!(prompt.contains("Available tools:\n- read: Read file contents"));
         assert!(prompt.contains("- Use bash for file operations like ls, rg, find"));
         assert!(prompt.contains("- Use read to examine files instead of cat or sed."));
@@ -311,6 +323,33 @@ mod tests {
             "Current date: 2026-06-17\nCurrent working directory: {}",
             dir.path().display()
         )));
+    }
+
+    #[test]
+    fn brand_seam_swaps_only_the_harness_name() {
+        // The identity seam: the same builder produces "rho" for real users and
+        // "Tau" for the tau byte-parity golden — nothing else changes.
+        let dir = tempfile::tempdir().unwrap();
+        let opts = |brand: Option<String>| BuildSystemPromptOptions {
+            cwd: dir.path().to_path_buf(),
+            tools: create_coding_tools(dir.path(), None),
+            current_date: Some(Date::new(2026, 6, 17)),
+            brand,
+            ..Default::default()
+        };
+
+        let default_prompt = build_system_prompt(&opts(None));
+        let rho_prompt = build_system_prompt(&opts(Some("rho".into())));
+        let tau_prompt = build_system_prompt(&opts(Some("Tau".into())));
+
+        assert_eq!(default_prompt, rho_prompt, "default brand must be rho");
+        assert!(tau_prompt.contains("operating inside Tau"));
+        assert!(!tau_prompt.contains("operating inside rho"));
+        // The two prompts differ only by the harness-name token.
+        assert_eq!(
+            tau_prompt.replacen("inside Tau", "inside rho", 1),
+            rho_prompt
+        );
     }
 
     #[test]

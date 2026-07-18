@@ -20,6 +20,11 @@ fn default_coding_tools_prompt_matches_tau_golden() {
         cwd,
         tools,
         current_date: Some(Date::new(2026, 6, 17)),
+        // The sanctioned identity seam: parity mode assembles the prompt with
+        // brand = "Tau" so it stays byte-identical to tau. The production
+        // default is "rho" (see `system_prompt::BuildSystemPromptOptions::brand`
+        // and `dev-notes/identity-vs-parity.md`). Never edit the fixture.
+        brand: Some("Tau".into()),
         ..Default::default()
     });
 

@@ -8,9 +8,10 @@
 //!
 //! rho reproduces tau's on-disk bytes exactly: sorted keys, 2-space indent,
 //! `ensure_ascii` string escaping, a trailing newline, and the same
-//! `OAuthCredential.to_json` field ordering. Validation error messages are kept
-//! verbatim (tau's literal "Tau ..." prose), matching how other rho ports keep
-//! tau's exact user-facing strings for byte-parity.
+//! `OAuthCredential.to_json` field ordering. That byte-parity covers the
+//! credential *file*, not the validation-error prose: those messages are
+//! user-facing and are branded "Rho ..." (they are not a wire, fixture, or
+//! crosscheck surface). See `dev-notes/identity-vs-parity.md`.
 
 // This module is dense with Python/JSON identifiers in prose.
 #![allow(clippy::doc_markdown)]
@@ -241,7 +242,7 @@ impl FileCredentialStore {
             .map_err(|error| CredentialStoreError::new(error.to_string()))?;
         let Value::Object(object) = raw else {
             return Err(CredentialStoreError::new(
-                "Tau credentials must be a JSON object",
+                "Rho credentials must be a JSON object",
             ));
         };
         let mut credentials = CredentialMap::new();
@@ -357,7 +358,7 @@ fn credential_from_json(value: &Value) -> Result<StoredCredential, CredentialSto
     }
     let Value::Object(object) = value else {
         return Err(CredentialStoreError::new(
-            "Tau credential values must be strings or objects",
+            "Rho credential values must be strings or objects",
         ));
     };
 
@@ -369,14 +370,14 @@ fn credential_from_json(value: &Value) -> Result<StoredCredential, CredentialSto
         }
         Some("oauth") => {
             let expires = positive_integer(object.get("expires")).ok_or_else(|| {
-                CredentialStoreError::new("Tau oauth credential expires must be a positive integer")
+                CredentialStoreError::new("Rho oauth credential expires must be a positive integer")
             })?;
             let account_id = match object.get("account_id") {
                 None | Some(Value::Null) => None,
                 Some(Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
                 Some(_) => {
                     return Err(CredentialStoreError::new(
-                        "Tau oauth credential account_id must be a non-empty string",
+                        "Rho oauth credential account_id must be a non-empty string",
                     ));
                 }
             };
@@ -385,7 +386,7 @@ fn credential_from_json(value: &Value) -> Result<StoredCredential, CredentialSto
                 Some(Value::Object(map)) => map.clone(),
                 Some(_) => {
                     return Err(CredentialStoreError::new(
-                        "Tau oauth credential metadata must be an object",
+                        "Rho oauth credential metadata must be an object",
                     ));
                 }
             };
@@ -399,7 +400,7 @@ fn credential_from_json(value: &Value) -> Result<StoredCredential, CredentialSto
             }))
         }
         _ => Err(CredentialStoreError::new(
-            "Tau credential object type must be api_key or oauth",
+            "Rho credential object type must be api_key or oauth",
         )),
     }
 }
@@ -426,7 +427,7 @@ fn validate_oauth_metadata(metadata: &JsonMap) -> Result<(), CredentialStoreErro
     for key in metadata.keys() {
         if key.trim().is_empty() {
             return Err(CredentialStoreError::new(
-                "Tau oauth credential metadata keys must be strings",
+                "Rho oauth credential metadata keys must be strings",
             ));
         }
     }
@@ -441,7 +442,7 @@ fn string_field(
     match object.get(field_name).and_then(Value::as_str) {
         Some(text) if !text.trim().is_empty() => Ok(text.trim().to_string()),
         _ => Err(CredentialStoreError::new(format!(
-            "Tau {credential_type} credential field must be a non-empty string: {field_name}"
+            "Rho {credential_type} credential field must be a non-empty string: {field_name}"
         ))),
     }
 }
@@ -682,7 +683,7 @@ mod tests {
         let (_dir, store) = temp_store();
         fs::write(&store.path, "[]").unwrap();
         let error = store.get("x").unwrap_err();
-        assert_eq!(error.to_string(), "Tau credentials must be a JSON object");
+        assert_eq!(error.to_string(), "Rho credentials must be a JSON object");
     }
 
     #[test]

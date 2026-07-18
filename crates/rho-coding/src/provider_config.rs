@@ -2602,7 +2602,7 @@ pub fn provider_thinking_unavailable_reason(
         }
         if matches!(provider, ProviderConfig::OpenAICodex(_)) {
             return Some(
-                "OpenAI Codex subscription can stream reasoning output, but Tau does \
+                "OpenAI Codex subscription can stream reasoning output, but rho does \
                  not have a validated Codex transport mapping for changing reasoning \
                  effort yet"
                     .to_string(),

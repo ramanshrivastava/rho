@@ -650,7 +650,7 @@ fn resolve_export_source(session_ref: &str) -> Result<(PathBuf, String), String>
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        return Ok((candidate, format!("Tau session {stem}")));
+        return Ok((candidate, format!("Rho session {stem}")));
     }
     let manager = SessionManager::new(rho_coding::paths::RhoPaths::default());
     let record = manager
@@ -660,7 +660,7 @@ fn resolve_export_source(session_ref: &str) -> Result<(PathBuf, String), String>
     let title = record
         .title
         .clone()
-        .unwrap_or_else(|| format!("Tau session {}", record.id));
+        .unwrap_or_else(|| format!("Rho session {}", record.id));
     Ok((record.path, title))
 }
 
