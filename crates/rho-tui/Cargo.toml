@@ -28,3 +28,8 @@ textwrap = "0.16"
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
+criterion = { workspace = true }
+
+[[bench]]
+name = "transcript_render"
+harness = false

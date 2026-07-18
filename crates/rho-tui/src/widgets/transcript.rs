@@ -15,6 +15,8 @@
 //! code blocks render with tau's `markdown_code_block_background` only. See
 //! `dev-notes/phase-5.md` for the deferral ledger.
 
+use std::hash::{Hash, Hasher};
+
 use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -26,6 +28,59 @@ use crate::widgets::style::{RoleStyles, chat_role_styles, parse_color, parse_sty
 
 /// The left gutter marker tau renders beside each transcript block.
 const GUTTER_BAR: &str = "▌";
+
+/// A memo over [`build_transcript_lines`], keyed by a cheap fingerprint of every
+/// input that affects the rendered output (item contents, the toggles, the
+/// active spinner, the theme, and the width). The transcript is otherwise
+/// rebuilt from scratch on *every* frame — each 150 ms spinner tick during a run
+/// and each keystroke while composing — which is O(transcript) markdown parsing
+/// and word wrapping (tens of milliseconds on a long history, per the
+/// `transcript_render` bench). With the cache a frame that changed nothing (idle
+/// typing, an idle tick between deltas) reuses the prior render for the cost of
+/// one hash. Correctness comes entirely from the fingerprint: whenever the
+/// output could differ, one hashed input differs, so there is no manual
+/// invalidation to drift out of sync.
+#[derive(Default)]
+pub struct TranscriptCache {
+    key: Option<u64>,
+    lines: Vec<Line<'static>>,
+}
+
+impl TranscriptCache {
+    /// The rendered transcript lines for the current state, rebuilding only when
+    /// the fingerprint changed since the last call.
+    pub fn lines(&mut self, state: &TuiState, theme: &TuiTheme, width: u16) -> &[Line<'static>] {
+        let key = transcript_fingerprint(state, theme, width);
+        if self.key != Some(key) {
+            self.lines = build_transcript_lines(state, theme, width);
+            self.key = Some(key);
+        }
+        &self.lines
+    }
+}
+
+/// Hash every input `build_transcript_lines` reads. The per-item fields mirror
+/// the branches in [`build_chat_item_lines`] / [`visible_chat_text`]; the global
+/// `tool_spinner` covers the live spinner + elapsed timer applied to any
+/// still-executing tool row (so an executing turn correctly re-renders each
+/// tick), and `theme.name` stands in for the whole palette (name ↔ colors 1:1).
+fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    width.hash(&mut h);
+    theme.name.as_str().hash(&mut h);
+    state.show_tool_results.hash(&mut h);
+    state.show_thinking.hash(&mut h);
+    state.assistant_buffer.hash(&mut h);
+    state.tool_spinner.hash(&mut h);
+    for item in &state.items {
+        std::mem::discriminant(&item.role).hash(&mut h);
+        item.text.hash(&mut h);
+        item.tool_result_text.hash(&mut h);
+        item.update_text.hash(&mut h);
+        item.always_show_tool_result.hash(&mut h);
+    }
+    h.finish()
+}
 
 /// Placeholder shown in place of a hidden thinking block (tau
 /// `_HIDDEN_THINKING_PLACEHOLDER`). Consecutive hidden thinking blocks collapse
@@ -990,6 +1045,45 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn transcript_cache_never_returns_stale_content() {
+        // The memo must always equal a fresh build across every input that
+        // affects the render: content, the thinking toggle (placeholder
+        // collapse), and width. (A hit is a perf property; correctness is that
+        // the cached bytes are never stale.)
+        let theme = crate::theme::tau_dark_theme();
+        let mut cache = crate::widgets::TranscriptCache::default();
+        let mut state = TuiState::new();
+        state.show_thinking = true;
+        state.add_item(ChatItemRole::User, "hi".to_string());
+        state.add_item(ChatItemRole::Thinking, "a thought".to_string());
+
+        let a = cache.lines(&state, &theme, 60).to_vec();
+        assert_eq!(a, build_transcript_lines(&state, &theme, 60));
+
+        // Repeated call with no change: identical output (the hit path).
+        assert_eq!(cache.lines(&state, &theme, 60), a.as_slice());
+
+        // Toggling thinking flips to the collapsed placeholder — must invalidate.
+        state.show_thinking = false;
+        let b = cache.lines(&state, &theme, 60).to_vec();
+        assert_eq!(b, build_transcript_lines(&state, &theme, 60));
+        assert_ne!(a, b);
+
+        // New content invalidates.
+        state.add_item(ChatItemRole::Assistant, "answer".to_string());
+        assert_eq!(
+            cache.lines(&state, &theme, 60),
+            build_transcript_lines(&state, &theme, 60).as_slice()
+        );
+
+        // A width change invalidates (wrapping differs).
+        assert_eq!(
+            cache.lines(&state, &theme, 20),
+            build_transcript_lines(&state, &theme, 20).as_slice()
+        );
     }
 
     #[test]

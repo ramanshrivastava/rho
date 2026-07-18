@@ -17,6 +17,7 @@
 //! `session`. Idle input (model/thinking cycles, pickers, resume) runs with full
 //! `&mut session` access between turns.
 
+use std::cell::RefCell;
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,7 +30,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -80,6 +81,9 @@ pub struct App {
     activity_frame: usize,
     should_quit: bool,
     cwd: PathBuf,
+    /// Memoized transcript render (rebuilt only when its fingerprint changes).
+    /// `RefCell` so the immutable-borrow render path can refresh it in place.
+    transcript_cache: RefCell<crate::widgets::TranscriptCache>,
 }
 
 impl App {
@@ -120,6 +124,7 @@ impl App {
             should_quit: false,
             cwd,
             session,
+            transcript_cache: RefCell::new(crate::widgets::TranscriptCache::default()),
         }
     }
 
@@ -197,6 +202,7 @@ impl App {
             modal: self.modal.as_ref(),
             activity_frame: self.activity_frame,
             footer_mode: self.footer_mode(),
+            transcript_cache: &self.transcript_cache,
         }
     }
 }
@@ -213,6 +219,7 @@ struct RenderCtx<'a> {
     modal: Option<&'a Modal>,
     activity_frame: usize,
     footer_mode: FooterMode,
+    transcript_cache: &'a RefCell<crate::widgets::TranscriptCache>,
 }
 
 /// Render one frame from a [`RenderCtx`] (immediate-mode; called every tick).
@@ -257,7 +264,7 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
         ])
         .split(main_area);
 
-    render_transcript_scrolled(frame, rows[0], ctx.state, ctx.theme);
+    render_transcript_scrolled(frame, rows[0], ctx.state, ctx.theme, ctx.transcript_cache);
     if queued_h > 0 {
         render_queued_messages(
             frame,
@@ -315,13 +322,23 @@ fn render_prompt_row(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
 /// Render the transcript, following the bottom when it overflows the viewport so
 /// the newest turns and streaming output stay visible (tau auto-scrolls to the
 /// tail on new content).
-fn render_transcript_scrolled(frame: &mut Frame, area: Rect, state: &TuiState, theme: &TuiTheme) {
-    let lines = crate::widgets::build_transcript_lines(state, theme, area.width);
+fn render_transcript_scrolled(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TuiState,
+    theme: &TuiTheme,
+    cache: &RefCell<crate::widgets::TranscriptCache>,
+) {
+    let mut cache = cache.borrow_mut();
+    let lines = cache.lines(state, theme, area.width);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let offset = total.saturating_sub(area.height);
     let bg = crate::widgets::parse_color(&theme.transcript_background)
         .map_or_else(Style::default, |color| Style::default().bg(color));
-    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)).style(bg), area);
+    frame.render_widget(
+        Paragraph::new(lines.to_vec()).scroll((offset, 0)).style(bg),
+        area,
+    );
 }
 
 fn seed_transcript(state: &mut TuiState, session: &CodingSession) {
@@ -869,6 +886,7 @@ impl App {
                 chrome,
                 settings,
                 activity_frame,
+                transcript_cache,
                 ..
             } = &mut *self;
             let stream = session.prompt(text, Some(StreamingBehavior::Steer));
@@ -876,7 +894,7 @@ impl App {
             let mut ticker = tokio::time::interval(Duration::from_millis(150));
             let mut quit_requested = false;
 
-            loop {
+            'turn: loop {
                 {
                     let ctx = RenderCtx {
                         state,
@@ -889,6 +907,7 @@ impl App {
                         modal: None,
                         activity_frame: *activity_frame,
                         footer_mode: FooterMode::Running,
+                        transcript_cache,
                     };
                     terminal.draw(|f| render(f, &ctx))?;
                 }
@@ -896,7 +915,26 @@ impl App {
                 tokio::select! {
                     maybe_event = stream.next() => {
                         match maybe_event {
-                            Some(event) => TuiEventAdapter::new(state).apply(&event),
+                            Some(event) => {
+                                TuiEventAdapter::new(state).apply(&event);
+                                // Coalesce a burst of stream deltas into ONE redraw:
+                                // drain every event that is already ready this frame
+                                // (`now_or_never` polls without awaiting) before the
+                                // next `terminal.draw`. A fast token stream would
+                                // otherwise redraw once per delta; now the whole
+                                // batch costs a single (cache-fingerprinted) render.
+                                loop {
+                                    match stream.next().now_or_never() {
+                                        Some(Some(event)) => {
+                                            TuiEventAdapter::new(state).apply(&event);
+                                        }
+                                        // Stream ended mid-drain: finish the turn.
+                                        Some(None) => break 'turn,
+                                        // Nothing more ready right now: draw the batch.
+                                        None => break,
+                                    }
+                                }
+                            }
                             None => break,
                         }
                     }

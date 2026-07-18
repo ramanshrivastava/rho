@@ -26,4 +26,4 @@ pub use footer::{FooterMode, footer_hints, render_footer};
 pub use sidebar::{SidebarInfo, render_sidebar};
 pub use status::{StatusInfo, build_compact_session_info, render_compact_session_info};
 pub use style::{RoleStyles, chat_role_styles, parse_color, parse_style, role_styles};
-pub use transcript::{build_transcript_lines, render_transcript};
+pub use transcript::{TranscriptCache, build_transcript_lines, render_transcript};
