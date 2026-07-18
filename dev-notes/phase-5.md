@@ -254,6 +254,13 @@ No M5 test is implicated and no reproducible pre-existing test failure was found
 there is nothing to fix and no actionable flake to file. Tracked here; if CI ever
 surfaces a named failure it should be revisited with that name.
 
+- **Named failure surfaced (2026-07): `tools::tests::bash_tool_timeout_kills_shell_children`.**
+  A timing-margin test (`duration < 0.5s` bound after a 0.01s timeout) that fails only
+  under full `cargo test --workspace` CPU contention; passes 3/3 in isolation. Filed as
+  [#11](https://github.com/ramanshrivastava/rho/issues/11) (widen the margin / serialize
+  the process-group-kill timing tests); not fixed in the login-required PR, whose diff
+  does not touch `tools`.
+
 _Original template retained below._
 
 _To be filled at PR: each Codex + CodeRabbit thread with FIX-with-SHA or
