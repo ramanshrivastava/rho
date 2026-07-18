@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_utc": "2026-07-18 11:55:50Z",
+    "generated_utc": "2026-07-18 12:07:27Z",
     "machine": "Mac16,7",
     "cpu": "Apple M4 Pro",
     "ncpu": "14",
@@ -10,7 +10,7 @@
     "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
     "uv": "uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)",
     "tau_rev": "81de4f8896a94ed6861bd77b0c486c33eebd3f8d",
-    "rho_rev": "f376b42",
+    "rho_rev": "b25c96d",
     "anthropic_key_present": false
   },
   "records": [

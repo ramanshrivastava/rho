@@ -166,15 +166,14 @@ def build_records() -> tuple[list[dict], dict]:
     for r in (load_json(RESULTS / "memory_rss.json") or []):
         records.append(r)
 
-    meta = collect_meta(records)
+    meta = collect_meta()
     return records, meta
 
 
-def collect_meta(records: list[dict]) -> dict:
+def collect_meta() -> dict:
     tau_rev = (REPO_ROOT / "fixtures" / "TAU_REV").read_text().strip() if (
         REPO_ROOT / "fixtures" / "TAU_REV"
     ).exists() else "unknown"
-    # iteration counts actually used (for honesty about variance)
     return {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
         "machine": _run(["sysctl", "-n", "hw.model"]) or platform.machine(),
@@ -279,11 +278,13 @@ def render_md(records: list[dict], meta: dict) -> str:
         a("| Dataset | entries | rho | tau | rho entries/s | tau entries/s | tau/rho |")
         a("|---|--:|--:|--:|--:|--:|--:|")
         for v in sorted(sr_rho, key=lambda k: (k.rsplit("-", 1)[0], _size_key(k))):
-            r, t = sr_rho.get(v), sr_tau.get(v)
-            a(f"| {v} | {r['n_entries']} | {fmt_ms(r['mean_ms'])} | "
-              f"{fmt_ms(t['mean_ms']) if t else '—'} | {fmt_rate(r['entries_per_sec'])} | "
-              f"{fmt_rate(t['entries_per_sec']) if t else '—'} | "
-              f"{speedup(t['mean_ms'] if t else 0, r['mean_ms'])} |")
+            r = sr_rho[v]
+            t = sr_tau.get(v)
+            tau_ms = fmt_ms(t["mean_ms"]) if t else "—"
+            tau_rate = fmt_rate(t["entries_per_sec"]) if t else "—"
+            ratio = speedup(t["mean_ms"], r["mean_ms"]) if t else "—"
+            a(f"| {v} | {r['n_entries']} | {fmt_ms(r['mean_ms'])} | {tau_ms} | "
+              f"{fmt_rate(r['entries_per_sec'])} | {tau_rate} | {ratio} |")
         a("")
         a("**Parse dominates on both sides** (replay of a linear log is trivially "
           "O(n)); the gap is entirely in decode. tau pays a pydantic `TypeAdapter` "
@@ -316,13 +317,13 @@ def render_md(records: list[dict], meta: dict) -> str:
         a("| Deltas | rho ns/delta | tau ns/delta | rho deltas/s | tau deltas/s | tau/rho |")
         a("|--:|--:|--:|--:|--:|--:|")
         for v in sorted(c_rho, key=lambda k: int(k)):
-            r, t = c_rho.get(v), c_tau.get(v)
-            a(f"| {v} | {r['ns_per_delta']:.0f} | "
-              f"{t['ns_per_delta']:.0f} | {fmt_rate(r['deltas_per_sec'])} | "
-              f"{fmt_rate(t['deltas_per_sec']) if t else '—'} | "
-              f"{speedup(t['mean_ms'] if t else 0, r['mean_ms'])} |"
-              if t else
-              f"| {v} | {r['ns_per_delta']:.0f} | — | {fmt_rate(r['deltas_per_sec'])} | — | — |")
+            r = c_rho[v]
+            t = c_tau.get(v)
+            tau_nspd = f"{t['ns_per_delta']:.0f}" if t else "—"
+            tau_rate = fmt_rate(t["deltas_per_sec"]) if t else "—"
+            ratio = speedup(t["mean_ms"], r["mean_ms"]) if t else "—"
+            a(f"| {v} | {r['ns_per_delta']:.0f} | {tau_nspd} | "
+              f"{fmt_rate(r['deltas_per_sec'])} | {tau_rate} | {ratio} |")
         a("")
         a("Both maintain a running partial message and snapshot it into each event. "
           "tau deep-copies a pydantic model per event; rho clones one working "

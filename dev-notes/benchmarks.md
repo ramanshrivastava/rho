@@ -7,8 +7,8 @@
 - **Machine**: Mac16,7 — Apple M4 Pro (14 cores), 48 GiB RAM, Darwin 26.5.1
 - **Toolchain**: rustc 1.97.1 (8bab26f4f 2026-07-14); cargo 1.97.1 (c980f4866 2026-06-30); uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)
 - **tau**: pinned at rev `81de4f8896a9` (fixtures/TAU_REV), run via `uv run --project <tau>`
-- **rho**: `f376b42` on branch m6-bench, `--release` builds throughout
-- **Generated**: 2026-07-18 11:55:50Z
+- **rho**: `b25c96d` on branch m6-bench, `--release` builds throughout
+- **Generated**: 2026-07-18 12:07:27Z
 - **Measurement engines**: rho micro-benches use Criterion (self-tuned sample counts, reports mean ± σ); tau timers use `time.perf_counter` with warmup + measured iterations; cold-start uses hyperfine; RSS uses `/usr/bin/time -l`.
 - **Determinism**: session/canonicalization inputs are the pinned `fixtures/` (extracted by tau's own serializer); the mock provider replays a fixed SSE body; the FakeProvider is fully scripted. No network, no clock, no RNG in families (b)–(d).
 - **Variance caveat**: this is a developer laptop, not an isolated bench rig. Absolute numbers move ±10–30% between runs under background load; the *ratios* between rho and tau are the durable result, and they span orders of magnitude, not percentages.
