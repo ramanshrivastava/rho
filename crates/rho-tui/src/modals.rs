@@ -724,6 +724,10 @@ pub struct CommandOutputModal {
     title: String,
     lines: Vec<String>,
     scroll: u16,
+    /// The last-rendered body viewport height, so `handle_key` can clamp the
+    /// scroll offset to the final page instead of drifting into blank space
+    /// (tau's `CommandOutputScreen` uses a scroll container that clamps).
+    viewport_height: std::cell::Cell<u16>,
 }
 
 impl CommandOutputModal {
@@ -735,7 +739,15 @@ impl CommandOutputModal {
             title: title.into(),
             lines: body.lines().map(str::to_string).collect(),
             scroll: 0,
+            viewport_height: std::cell::Cell::new(0),
         }
+    }
+
+    /// The largest scroll offset that still keeps content on screen: the line
+    /// count minus the visible viewport height (0 when everything fits).
+    fn max_scroll(&self) -> u16 {
+        let lines = u16::try_from(self.lines.len()).unwrap_or(u16::MAX);
+        lines.saturating_sub(self.viewport_height.get())
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
@@ -746,7 +758,7 @@ impl CommandOutputModal {
                 ModalOutcome::Consumed
             }
             KeyCode::Down => {
-                self.scroll = self.scroll.saturating_add(1);
+                self.scroll = self.scroll.saturating_add(1).min(self.max_scroll());
                 ModalOutcome::Consumed
             }
             _ => ModalOutcome::Consumed,
@@ -763,6 +775,7 @@ impl CommandOutputModal {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
+        self.viewport_height.set(chunks[0].height);
         let body: Vec<Line<'static>> = self
             .lines
             .iter()
@@ -1023,6 +1036,21 @@ mod tests {
             modal.handle_key(key(KeyCode::Enter)),
             ModalOutcome::Cancelled
         );
+    }
+
+    #[test]
+    fn command_output_scroll_clamps_to_last_page() {
+        // Over-scrolling must not drift past the content into blank space: with a
+        // 2-row viewport over 5 lines, the max offset is 3 (lines - viewport).
+        let mut modal = CommandOutputModal::new("Output", "l1\nl2\nl3\nl4\nl5");
+        modal.viewport_height.set(2);
+        for _ in 0..50 {
+            modal.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(modal.scroll, 3, "scroll clamps to lines - viewport");
+        // And scrolling back up still works from the clamped position.
+        modal.handle_key(key(KeyCode::Up));
+        assert_eq!(modal.scroll, 2);
     }
 
     #[test]

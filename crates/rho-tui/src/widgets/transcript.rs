@@ -27,6 +27,11 @@ use crate::widgets::style::{RoleStyles, chat_role_styles, parse_color, parse_sty
 /// The left gutter marker tau renders beside each transcript block.
 const GUTTER_BAR: &str = "▌";
 
+/// Placeholder shown in place of a hidden thinking block (tau
+/// `_HIDDEN_THINKING_PLACEHOLDER`). Consecutive hidden thinking blocks collapse
+/// to a single placeholder.
+pub const HIDDEN_THINKING_PLACEHOLDER: &str = "Thinking… Press Ctrl+T to show thinking tokens.";
+
 /// Build every transcript line for the current state at `width` columns.
 ///
 /// The returned lines include each item's colored gutter and wrapped body,
@@ -41,15 +46,42 @@ pub fn build_transcript_lines(
 ) -> Vec<Line<'static>> {
     let inner_width = inner_text_width(width);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, item) in state.items.iter().enumerate() {
-        if index > 0 {
+    let mut rendered_any = false;
+    // tau `TranscriptView.render_state`: when thinking is hidden, a run of
+    // consecutive thinking items collapses to a SINGLE placeholder block
+    // (`_HIDDEN_THINKING_PLACEHOLDER`); any non-thinking item resets the run.
+    let mut hidden_thinking_placeholder = false;
+    for item in &state.items {
+        if item.role == ChatItemRole::Thinking && !state.show_thinking {
+            if !hidden_thinking_placeholder {
+                if rendered_any {
+                    lines.push(Line::default());
+                }
+                let placeholder = ChatItem::new(
+                    ChatItemRole::Thinking,
+                    HIDDEN_THINKING_PLACEHOLDER.to_string(),
+                );
+                lines.extend(build_chat_item_lines(
+                    &placeholder,
+                    state,
+                    theme,
+                    inner_width,
+                ));
+                rendered_any = true;
+                hidden_thinking_placeholder = true;
+            }
+            continue;
+        }
+        hidden_thinking_placeholder = false;
+        if rendered_any {
             lines.push(Line::default());
         }
         let mut block = build_chat_item_lines(item, state, theme, inner_width);
         lines.append(&mut block);
+        rendered_any = true;
     }
     if !state.assistant_buffer.is_empty() {
-        if !lines.is_empty() {
+        if rendered_any {
             lines.push(Line::default());
         }
         let mut item = ChatItem::new(ChatItemRole::Assistant, state.assistant_buffer.clone());
@@ -951,6 +983,58 @@ mod tests {
         let mut state = TuiState::new();
         state.show_tool_results = true;
         let _ = build_chat_item_lines(&tool, &state, &theme, 40);
+    }
+
+    fn joined(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn hidden_thinking_collapses_to_single_placeholder() {
+        // tau parity: with show_thinking=false a run of thinking items collapses
+        // to ONE placeholder; visible thinking shows the real text.
+        let theme = crate::theme::tau_dark_theme();
+        let mut state = TuiState::new();
+        state.add_item(ChatItemRole::User, "hi".to_string());
+        state.add_item(ChatItemRole::Thinking, "first thought".to_string());
+        state.add_item(ChatItemRole::Thinking, "second thought".to_string());
+        state.add_item(ChatItemRole::Assistant, "answer".to_string());
+
+        // Shown: real thinking text appears, no placeholder.
+        state.show_thinking = true;
+        let shown = joined(&build_transcript_lines(&state, &theme, 60));
+        assert!(
+            shown.iter().any(|l| l.contains("first thought")),
+            "{shown:?}"
+        );
+        assert!(
+            !shown
+                .iter()
+                .any(|l| l.contains(HIDDEN_THINKING_PLACEHOLDER)),
+            "{shown:?}"
+        );
+
+        // Hidden: exactly one placeholder replaces the whole thinking run; the
+        // real thinking text is gone; user + assistant survive.
+        state.show_thinking = false;
+        let hidden = joined(&build_transcript_lines(&state, &theme, 60));
+        let placeholders = hidden
+            .iter()
+            .filter(|l| l.contains(HIDDEN_THINKING_PLACEHOLDER))
+            .count();
+        assert_eq!(placeholders, 1, "{hidden:?}");
+        assert!(
+            !hidden.iter().any(|l| l.contains("first thought")),
+            "{hidden:?}"
+        );
+        assert!(
+            !hidden.iter().any(|l| l.contains("second thought")),
+            "{hidden:?}"
+        );
+        assert!(hidden.iter().any(|l| l.contains("answer")), "{hidden:?}");
     }
 
     #[test]

@@ -500,9 +500,17 @@ impl App {
             self.completion = self.completion.select_next();
             return Ok(());
         }
-        if matches_binding(&key, &kb.completion_previous) && !self.completion.items.is_empty() {
-            self.completion = self.completion.select_previous();
-            return Ok(());
+        if matches_binding(&key, &kb.completion_previous) {
+            if !self.completion.items.is_empty() {
+                self.completion = self.completion.select_previous();
+                return Ok(());
+            }
+            // No completions open: tau maps Up (`action_recall_previous_prompt`)
+            // to recalling the last submitted prompt into an EMPTY composer,
+            // before falling through to a plain cursor-up.
+            if self.recall_previous_prompt() {
+                return Ok(());
+            }
         }
         if matches_binding(&key, &kb.quit) {
             self.should_quit = true;
@@ -542,6 +550,22 @@ impl App {
         self.textarea.input(Event::Key(key));
         self.rebuild_completion();
         Ok(())
+    }
+
+    /// Recall the most recently submitted prompt into an EMPTY composer (tau
+    /// `action_recall_previous_prompt`). Only fires when the composer is blank so
+    /// an accidental Up never clobbers a prompt the user is still writing.
+    /// Returns whether a prompt was recalled.
+    fn recall_previous_prompt(&mut self) -> bool {
+        if !self.prompt_text().trim().is_empty() {
+            return false;
+        }
+        let Some(previous) = self.prompt_history.last().cloned() else {
+            return false;
+        };
+        self.set_prompt_text(&previous);
+        self.rebuild_completion();
+        true
     }
 
     fn accept_completion(&mut self) {
@@ -1205,6 +1229,28 @@ mod tests {
             "the startup message is seeded as a status notice: {:?}",
             app.state.items
         );
+    }
+
+    #[tokio::test]
+    async fn up_recalls_previous_prompt_only_into_empty_composer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = login_required_session(tmp.path()).await;
+        let mut app = App::new(session, TuiSettings::default(), None);
+
+        // No history yet → nothing to recall.
+        assert!(!app.recall_previous_prompt());
+
+        app.prompt_history.push("first prompt".to_string());
+        app.prompt_history.push("second prompt".to_string());
+
+        // Empty composer → recalls the most recent submission.
+        assert!(app.recall_previous_prompt());
+        assert_eq!(app.prompt_text(), "second prompt");
+
+        // Non-empty composer → never clobbers what the user is writing.
+        app.set_prompt_text("half-written");
+        assert!(!app.recall_previous_prompt());
+        assert_eq!(app.prompt_text(), "half-written");
     }
 
     #[tokio::test]
