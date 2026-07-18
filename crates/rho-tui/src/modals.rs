@@ -1286,6 +1286,11 @@ pub struct OAuthLoginModal {
     detail: Option<String>,
     field: TextField,
     prompt_allows_empty: bool,
+    /// The `(id, label)` options of a provider selection prompt; empty unless the
+    /// modal is in selection mode.
+    select_options: Vec<(String, String)>,
+    /// The highlighted option while in selection mode.
+    select_index: usize,
 }
 
 impl OAuthLoginModal {
@@ -1298,6 +1303,8 @@ impl OAuthLoginModal {
             detail: None,
             field: TextField::masked(false),
             prompt_allows_empty: false,
+            select_options: Vec::new(),
+            select_index: 0,
         }
     }
 
@@ -1326,7 +1333,20 @@ impl OAuthLoginModal {
         self.prompt_allows_empty = allow_empty;
     }
 
+    /// Enter selection mode: show `options` (`(id, label)`) for the user to choose
+    /// the account/organization to authenticate. The chosen id flows back out via
+    /// [`ModalOutcome::OAuthManualCode`], reusing the code channel.
+    pub fn set_select(&mut self, message: String, options: Vec<(String, String)>) {
+        self.help = message;
+        self.select_options = options;
+        self.select_index = 0;
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        // Selection mode: arrow keys move the highlight, Enter returns the chosen id.
+        if !self.select_options.is_empty() {
+            return self.handle_select_key(key);
+        }
         match key.code {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 ModalOutcome::Cancelled
@@ -1353,6 +1373,36 @@ impl OAuthLoginModal {
         }
     }
 
+    fn handle_select_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ModalOutcome::Cancelled
+            }
+            KeyCode::Esc => ModalOutcome::LoginBack,
+            KeyCode::Up => {
+                if self.select_index == 0 {
+                    self.select_index = self.select_options.len() - 1;
+                } else {
+                    self.select_index -= 1;
+                }
+                ModalOutcome::Consumed
+            }
+            KeyCode::Down => {
+                self.select_index = (self.select_index + 1) % self.select_options.len();
+                ModalOutcome::Consumed
+            }
+            KeyCode::Enter => {
+                let id = self.select_options[self.select_index].0.clone();
+                // Leave selection mode; the id travels the code channel like a
+                // manual-code entry so the awaiting login flow resumes.
+                self.select_options.clear();
+                self.select_index = 0;
+                ModalOutcome::OAuthManualCode(id)
+            }
+            _ => ModalOutcome::Consumed,
+        }
+    }
+
     fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
         let area = centered_rect(70, 40, area);
         let mut rows = vec![Line::from(Span::styled(
@@ -1367,18 +1417,37 @@ impl OAuthLoginModal {
             )));
         }
         rows.push(Line::default());
-        rows.push(Line::from(vec![
-            Span::styled("code: ".to_string(), parse_style(&theme.muted_text)),
-            Span::styled(self.field.display(), parse_style(&theme.prompt_text)),
-        ]));
-        render_list_modal(
-            frame,
-            area,
-            &format!("Login: {}", self.display_name),
-            &rows,
-            "Enter submits · Escape goes back · Ctrl+D closes",
-            theme,
-        );
+        if self.select_options.is_empty() {
+            rows.push(Line::from(vec![
+                Span::styled("code: ".to_string(), parse_style(&theme.muted_text)),
+                Span::styled(self.field.display(), parse_style(&theme.prompt_text)),
+            ]));
+            render_list_modal(
+                frame,
+                area,
+                &format!("Login: {}", self.display_name),
+                &rows,
+                "Enter submits · Escape goes back · Ctrl+D closes",
+                theme,
+            );
+        } else {
+            for (index, (_, label)) in self.select_options.iter().enumerate() {
+                let (marker, style) = if index == self.select_index {
+                    ("> ", parse_style(&theme.accent))
+                } else {
+                    ("  ", parse_style(&theme.prompt_text))
+                };
+                rows.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
+            }
+            render_list_modal(
+                frame,
+                area,
+                &format!("Login: {}", self.display_name),
+                &rows,
+                "↑/↓ selects · Enter confirms · Escape goes back · Ctrl+D closes",
+                theme,
+            );
+        }
     }
 }
 
@@ -2094,6 +2163,46 @@ mod tests {
             modal.handle_key(key(KeyCode::Enter)),
             ModalOutcome::OAuthManualCode(String::new())
         );
+    }
+
+    #[test]
+    fn oauth_login_select_returns_highlighted_option_id() {
+        let mut modal = OAuthLoginModal::new("Anthropic");
+        modal.set_select(
+            "Choose an organization".to_string(),
+            vec![
+                ("org-a".to_string(), "Org A".to_string()),
+                ("org-b".to_string(), "Org B".to_string()),
+                ("org-c".to_string(), "Org C".to_string()),
+            ],
+        );
+        // Move down twice (to Org C), wrap up once (back to Org B).
+        assert_eq!(modal.handle_key(key(KeyCode::Down)), ModalOutcome::Consumed);
+        assert_eq!(modal.handle_key(key(KeyCode::Down)), ModalOutcome::Consumed);
+        assert_eq!(modal.handle_key(key(KeyCode::Up)), ModalOutcome::Consumed);
+        // Enter returns the highlighted option's id (not its label).
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::OAuthManualCode("org-b".to_string())
+        );
+        // Selection mode ends; a stray Enter is now treated as the text prompt.
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Consumed
+        );
+    }
+
+    #[test]
+    fn oauth_login_select_escape_navigates_back() {
+        let mut modal = OAuthLoginModal::new("Anthropic");
+        modal.set_select(
+            "Choose".to_string(),
+            vec![
+                ("a".to_string(), "A".to_string()),
+                ("b".to_string(), "B".to_string()),
+            ],
+        );
+        assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::LoginBack);
     }
 
     #[test]

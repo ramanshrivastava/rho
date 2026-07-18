@@ -52,7 +52,7 @@ use crate::autocomplete::{CompletionInputs, CompletionState, build_completion_st
 use crate::ext_ui::{ExtensionUiChannel, UiRequest};
 use crate::login::{
     OAuthUpdate, logout_provider as remove_credentials, oauth_login_kind, persist_api_key_login,
-    persist_custom_provider, persist_oauth_login, spawn_oauth_login,
+    persist_custom_provider, persist_oauth_login, spawn_oauth_login, stored_credential_providers,
 };
 use crate::modals::{
     ApiKeyLoginModal, CustomProviderDraft, CustomProviderLoginModal, ExtensionConfirmModal,
@@ -515,7 +515,7 @@ impl App {
                             if key.kind == KeyEventKind::Release {
                                 continue;
                             }
-                            self.handle_key_idle(key, terminal, &mut events).await?;
+                            self.handle_key_idle(key, terminal, &mut events, &mut ext_ui).await?;
                         }
                         Some(Ok(_)) => {} // resize / mouse / paste — redraw next iteration.
                         Some(Err(err)) => return Err(err),
@@ -534,6 +534,7 @@ impl App {
         key: KeyEvent,
         terminal: &mut Terminal<Backend>,
         events: &mut EventStream,
+        ext_ui: &mut Option<ExtensionUiChannel>,
     ) -> io::Result<()> {
         // Modal overlay gets keys first.
         if self.modal.is_some() {
@@ -543,7 +544,7 @@ impl App {
         let kb = self.settings.keybindings.clone();
         // Enter submits (unless a completion is pending); Shift+Enter is newline.
         if key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT) {
-            self.submit_prompt(terminal, events).await?;
+            self.submit_prompt(terminal, events, ext_ui).await?;
             return Ok(());
         }
         if matches_binding(&key, &kb.accept_completion) {
@@ -814,6 +815,7 @@ impl App {
         &mut self,
         terminal: &mut Terminal<Backend>,
         events: &mut EventStream,
+        ext_ui: &mut Option<ExtensionUiChannel>,
     ) -> io::Result<()> {
         // First Enter accepts a pending completion instead of submitting.
         if let Some(item) = self.completion.selected() {
@@ -880,7 +882,7 @@ impl App {
                 .update_queue(queue_texts(&control, true), queue_texts(&control, false));
             return Ok(());
         }
-        self.run_turn(text, terminal, events).await
+        self.run_turn(text, terminal, events, ext_ui).await
     }
 
     /// Apply a handled slash-command result: the picker/toggle/exit effects that
@@ -1061,7 +1063,7 @@ impl App {
             return;
         };
         let store = FileCredentialStore::at_default();
-        match persist_api_key_login(&store, &entry, api_key) {
+        match persist_api_key_login(&store, &entry, api_key, None) {
             Ok(display) => self.finish_login_swap(&entry.name, &display),
             Err(err) => self.notice("Login", format!("Could not save login: {err}")),
         }
@@ -1071,7 +1073,7 @@ impl App {
     /// `_handle_custom_provider_login_result`).
     fn handle_custom_provider(&mut self, draft: &CustomProviderDraft) {
         let store = FileCredentialStore::at_default();
-        match persist_custom_provider(&store, draft) {
+        match persist_custom_provider(&store, draft, None) {
             Ok(name) => {
                 let display = draft.display_name.clone();
                 self.finish_login_swap(&name, &display);
@@ -1094,25 +1096,30 @@ impl App {
         )));
     }
 
-    /// Remove a provider's stored credentials (tau `_logout`).
+    /// Remove a provider's stored credentials (tau `_logout`). Handles both
+    /// built-in providers and saved custom providers (whose credential is keyed
+    /// by the provider id, not the built-in catalog).
     fn handle_logout(&mut self, provider: &str) {
-        let Some(entry) = builtin_provider_entry(provider) else {
-            self.notice("Logout", format!("Unknown provider: {provider}"));
-            return;
-        };
         let store = FileCredentialStore::at_default();
-        match remove_credentials(&store, provider) {
+        match remove_credentials(&store, provider, None) {
             Ok(false) => self.notice("Logout", NO_STORED_CREDENTIALS_MESSAGE),
             Ok(true) => {
                 let _ = self.session.reload_provider_settings();
-                let message = if entry.kind == "openai-codex" {
-                    format!("Logged out of {}.", entry.display_name)
-                } else {
-                    format!(
+                // Built-ins carry a display name + a codex-specific message; a custom
+                // provider falls back to its id and the generic API-key wording.
+                let message = match builtin_provider_entry(provider) {
+                    Some(entry) if entry.kind == "openai-codex" => {
+                        format!("Logged out of {}.", entry.display_name)
+                    }
+                    Some(entry) => format!(
                         "Removed stored API key for {}. Environment variables and \
                          providers.json config are unchanged.",
                         entry.display_name
-                    )
+                    ),
+                    None => format!(
+                        "Removed stored API key for {provider}. Environment variables and \
+                         providers.json config are unchanged."
+                    ),
                 };
                 self.notice("Logout", message);
                 self.refresh_chrome();
@@ -1225,7 +1232,7 @@ impl App {
         match outcome {
             Some(Ok(credential)) => {
                 let store = FileCredentialStore::at_default();
-                match persist_oauth_login(&store, &entry, &credential) {
+                match persist_oauth_login(&store, &entry, &credential, None) {
                     Ok(display) => self.finish_login_swap(&entry.name, &display),
                     Err(err) => self.notice("Login", format!("Could not save login: {err}")),
                 }
@@ -1248,6 +1255,7 @@ impl App {
         text: String,
         terminal: &mut Terminal<Backend>,
         events: &mut EventStream,
+        ext_ui: &mut Option<ExtensionUiChannel>,
     ) -> io::Result<()> {
         // Acquire the control handle from the CURRENT harness: a model/provider
         // switch or a branch can rebuild the harness, so a handle captured earlier
@@ -1296,6 +1304,19 @@ impl App {
                         match maybe_event {
                             Some(event) => TuiEventAdapter::new(state).apply(&event),
                             None => break,
+                        }
+                    }
+                    // Drain the extension-UI channel during the turn. A hook that
+                    // calls `context.ui.*` blocks the agent stream (and thus this
+                    // loop) until its one-shot is answered; without this branch that
+                    // is a deadlock. Interactive dialogs can't open mid-turn (the
+                    // running footer owns the overlay), so answer them with a cancel
+                    // and surface a status line — the idle loop handles full dialogs.
+                    maybe_ui = recv_ext_ui(ext_ui) => {
+                        match maybe_ui {
+                            Some(request) => answer_ext_ui_during_turn(state, request),
+                            // All handles dropped: stop polling the dead channel.
+                            None => *ext_ui = None,
                         }
                     }
                     _ = ticker.tick() => {
@@ -1467,18 +1488,13 @@ fn login_provider_items(method: LoginMethod) -> Vec<LoginProviderItem> {
         .collect()
 }
 
-/// The providers with stored credentials (tau `_stored_credential_providers`).
+/// The providers with stored credentials (tau `_stored_credential_providers`),
+/// including saved custom providers so custom logins can be logged out.
 fn stored_credential_provider_items() -> Vec<LoginProviderItem> {
     let store = FileCredentialStore::at_default();
-    BUILTIN_PROVIDER_CATALOG
-        .iter()
-        .filter(|entry| {
-            entry.credential_name.as_deref().is_some_and(|name| {
-                store.get(name).ok().flatten().is_some()
-                    || store.get_oauth(name).ok().flatten().is_some()
-            })
-        })
-        .map(|entry| LoginProviderItem::new(entry.name.clone(), entry.display_name.clone()))
+    stored_credential_providers(&store, None)
+        .into_iter()
+        .map(|provider| LoginProviderItem::new(provider.name, provider.display_name))
         .collect()
 }
 
@@ -1495,6 +1511,7 @@ fn apply_oauth_update(modal: &mut OAuthLoginModal, update: OAuthUpdate) {
             message,
             allow_empty,
         } => modal.set_prompt(message, allow_empty),
+        OAuthUpdate::Select { message, options } => modal.set_select(message, options),
     }
 }
 
@@ -1504,6 +1521,52 @@ async fn recv_ext_ui(channel: &mut Option<ExtensionUiChannel>) -> Option<UiReque
     match channel {
         Some(chan) => chan.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// Answer an extension UI request received while a turn is streaming. A running
+/// turn owns the terminal overlay (the footer, not a modal), so an interactive
+/// dialog can't be shown here; instead the awaiting `context.ui.*` call is
+/// resolved with a cancel so the agent stream is never deadlocked, and a status
+/// line records what happened. Full interactive dialogs are handled by the idle
+/// loop ([`App::handle_ext_ui_request`]) between turns.
+fn answer_ext_ui_during_turn(state: &mut TuiState, request: UiRequest) {
+    match request {
+        UiRequest::Notify { message, level } => {
+            let role = if level == "error" {
+                crate::state::ChatItemRole::Error
+            } else {
+                crate::state::ChatItemRole::Status
+            };
+            state.add_item(role, message);
+        }
+        UiRequest::Select {
+            title, responder, ..
+        } => {
+            let _ = responder.send(None);
+            state.add_item(
+                crate::state::ChatItemRole::Status,
+                format!("Extension dialog \"{title}\" was dismissed during an active turn."),
+            );
+        }
+        UiRequest::Input {
+            title, responder, ..
+        } => {
+            let _ = responder.send(None);
+            state.add_item(
+                crate::state::ChatItemRole::Status,
+                format!("Extension prompt \"{title}\" was dismissed during an active turn."),
+            );
+        }
+        UiRequest::Confirm {
+            title, responder, ..
+        } => {
+            let _ = responder.send(false);
+            state.add_item(
+                crate::state::ChatItemRole::Status,
+                format!("Extension dialog \"{title}\" was declined during an active turn."),
+            );
+        }
     }
 }
 
@@ -1597,6 +1660,37 @@ mod tests {
         // The real guard's Drop must also be panic-safe on a non-tty (no double panic).
         let guard = TerminalGuard;
         drop(guard);
+    }
+
+    #[tokio::test]
+    async fn ext_ui_dialog_during_turn_is_answered_not_deadlocked() {
+        use crate::ext_ui::extension_ui_pair;
+        // A dialog request arriving mid-turn must be answered (with a cancel) so the
+        // extension's awaiting call resolves instead of blocking the agent stream.
+        let (handle, mut channel) = extension_ui_pair();
+        let mut state = TuiState::new();
+        let confirm = tokio::spawn(async move { handle.confirm("Delete?", "Sure?").await });
+        let request = channel.recv().await.expect("request");
+        answer_ext_ui_during_turn(&mut state, request);
+        // The confirm resolves to `false` (cancel) rather than hanging forever.
+        assert!(!confirm.await.expect("join"));
+        assert!(
+            state
+                .items
+                .iter()
+                .any(|item| item.role == crate::state::ChatItemRole::Status)
+        );
+    }
+
+    #[tokio::test]
+    async fn ext_ui_notify_during_turn_appends_status_line() {
+        use crate::ext_ui::extension_ui_pair;
+        let (handle, mut channel) = extension_ui_pair();
+        let mut state = TuiState::new();
+        handle.notify("build finished", "info");
+        let request = channel.recv().await.expect("request");
+        answer_ext_ui_during_turn(&mut state, request);
+        assert!(state.items.iter().any(|item| item.text == "build finished"));
     }
 
     #[test]
