@@ -1,0 +1,5 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+Enter Submit  Shift+Enter Newline  Ctrl+K Commands  Ctrl+R Sessions  Shift+Tab T

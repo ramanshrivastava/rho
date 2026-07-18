@@ -1,0 +1,17 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+
+
+                  ┌ Theme ──────────────────────────┐
+                  │› tau-dark ✓                     │
+                  │  tau-light                      │
+                  │  high-contrast                  │
+                  │                                 │
+                  │                                 │
+                  │Enter selects · Escape closes    │
+                  └─────────────────────────────────┘

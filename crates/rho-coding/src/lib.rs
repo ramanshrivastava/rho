@@ -37,6 +37,10 @@ pub mod provider_catalog;
 pub mod provider_config;
 pub mod provider_runtime;
 mod pystr;
+/// Python `repr()`-compatible rendering of a JSON value (`str(dict)` parity) —
+/// the single canonical implementation, reused by `rho-tui`'s fallback tool-call
+/// invocation so it never diverges from the session/branch-summary rendering.
+pub use pystr::python_repr;
 pub mod reload;
 pub mod rendering;
 pub mod resources;

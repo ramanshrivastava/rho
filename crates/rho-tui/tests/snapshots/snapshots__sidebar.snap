@@ -1,0 +1,24 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+ρ
+
+ session
+ provider anthropic
+ model claude
+ thinking medium
+ tools 2
+ skills 1
+
+ context
+ • AGENTS.md
+
+ tools
+ • bash
+ • read
+
+ skills
+ • review
+
+ prompts

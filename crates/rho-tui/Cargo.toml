@@ -13,3 +13,17 @@ workspace = true
 
 [dependencies]
 rho-coding = { path = "../rho-coding" }
+rho-agent = { path = "../rho-agent" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tui-textarea = "0.7"
+unicode-width = "0.2"
+textwrap = "0.16"
+
+[dev-dependencies]
+insta = "1"

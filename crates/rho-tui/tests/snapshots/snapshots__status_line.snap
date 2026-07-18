@@ -1,0 +1,5 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+/work/project (main)       12k/128k context  anthropic:claude (medium)

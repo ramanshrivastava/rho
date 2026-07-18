@@ -704,6 +704,16 @@ impl CodingSession {
         self.harness.cancel();
     }
 
+    /// A cheap, cloneable control handle (cancel / steer / follow-up / queue
+    /// snapshot) that works *while* a [`Self::prompt`]/[`Self::continue_`] stream
+    /// is being drained. The stream borrows `&mut self`, so the interactive TUI
+    /// drives cancellation and steering through this `Arc`-backed handle instead
+    /// of calling `&self` methods on the borrowed session.
+    #[must_use]
+    pub fn control(&self) -> rho_agent::harness::HarnessControl {
+        self.harness.control()
+    }
+
     /// Build the `queue_update` snapshot event.
     #[must_use]
     pub fn queue_update_event(&self) -> QueueUpdateEvent {
