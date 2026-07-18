@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 ratatui = "0.29"
+indexmap = { workspace = true }
 crossterm = { version = "0.28", features = ["event-stream"] }
 tui-textarea = "0.7"
 unicode-width = "0.2"

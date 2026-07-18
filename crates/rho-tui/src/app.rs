@@ -39,13 +39,26 @@ use tui_textarea::TextArea;
 
 use rho_agent::harness::HarnessControl;
 use rho_coding::commands::{CommandRegistry, create_default_command_registry};
+use rho_coding::credentials::FileCredentialStore;
+use rho_coding::oauth_registry::oauth_provider_ids;
+use rho_coding::provider_catalog::{
+    BUILTIN_PROVIDER_CATALOG, ProviderCatalogEntry, builtin_provider_entry,
+};
 use rho_coding::session::{CodingSession, StreamingBehavior};
 use rho_coding::session_manager::SessionManager;
 
 use crate::adapter::TuiEventAdapter;
 use crate::autocomplete::{CompletionInputs, CompletionState, build_completion_state};
+use crate::ext_ui::{ExtensionUiChannel, UiRequest};
+use crate::login::{
+    OAuthUpdate, logout_provider as remove_credentials, oauth_login_kind, persist_api_key_login,
+    persist_custom_provider, persist_oauth_login, spawn_oauth_login,
+};
 use crate::modals::{
-    Modal, ModalOutcome, ModelPickerKind, ModelPickerModal, SessionPickerModal, ThemePickerModal,
+    ApiKeyLoginModal, CustomProviderDraft, CustomProviderLoginModal, ExtensionConfirmModal,
+    ExtensionInputModal, ExtensionSelectModal, LoginMethod, LoginMethodPickerModal,
+    LoginProviderItem, LoginProviderPickerModal, Modal, ModalOutcome, ModelPickerKind,
+    ModelPickerModal, OAuthLoginModal, ProviderPickerPurpose, SessionPickerModal, ThemePickerModal,
 };
 use crate::state::TuiState;
 use crate::theme::{TuiKeybindings, TuiSettings, TuiTheme};
@@ -80,6 +93,19 @@ pub struct App {
     activity_frame: usize,
     should_quit: bool,
     cwd: PathBuf,
+    /// The one-shot responder for an in-flight extension UI dialog, if any.
+    pending_ext_ui: Option<PendingUiResponder>,
+    /// The channel of extension UI requests (set by the host integration).
+    ext_ui_channel: Option<ExtensionUiChannel>,
+    /// The provider an open API-key login modal targets (tau's per-screen entry).
+    login_target: Option<String>,
+}
+
+/// The responder awaiting the result of the open extension UI modal.
+enum PendingUiResponder {
+    Select(tokio::sync::oneshot::Sender<Option<String>>),
+    Confirm(tokio::sync::oneshot::Sender<bool>),
+    Input(tokio::sync::oneshot::Sender<Option<String>>),
 }
 
 impl App {
@@ -120,7 +146,18 @@ impl App {
             should_quit: false,
             cwd,
             session,
+            pending_ext_ui: None,
+            ext_ui_channel: None,
+            login_target: None,
         }
+    }
+
+    /// Wire the extension-host UI channel so `context.ui.*` calls render as TUI
+    /// modals. The coding-runtime cluster creates the channel via
+    /// [`crate::ext_ui::extension_ui_pair`], hands the handle to the extension
+    /// runtime's `HostBridge`, and passes the channel here.
+    pub fn set_extension_ui_channel(&mut self, channel: ExtensionUiChannel) {
+        self.ext_ui_channel = Some(channel);
     }
 
     /// The full prompt text (all editor lines joined).
@@ -453,23 +490,40 @@ pub async fn run_tui(
 impl App {
     async fn event_loop(&mut self, terminal: &mut Terminal<Backend>) -> io::Result<()> {
         let mut events = EventStream::new();
+        // Own the extension-UI channel for the loop's lifetime so the `select!`
+        // below borrows a local (not `self`, which the event branch also touches).
+        let mut ext_ui = self.ext_ui_channel.take();
         loop {
             terminal.draw(|f| render(f, &self.render_ctx()))?;
             if self.should_quit {
                 return Ok(());
             }
-            match events.next().await {
-                Some(Ok(Event::Key(key))) => {
-                    if key.kind == KeyEventKind::Release {
-                        continue;
+            // Only accept a new extension dialog when nothing else is on screen
+            // (a modal or an already-pending dialog owns the overlay first).
+            let accept_ext_ui = self.modal.is_none() && self.pending_ext_ui.is_none();
+            tokio::select! {
+                maybe_request = recv_ext_ui(&mut ext_ui), if accept_ext_ui => {
+                    match maybe_request {
+                        Some(request) => self.handle_ext_ui_request(request),
+                        // All handles dropped: stop polling the (now-dead) channel.
+                        None => ext_ui = None,
                     }
-                    self.handle_key_idle(key, terminal, &mut events).await?;
                 }
-                Some(Ok(_)) => {} // resize / mouse / paste — redraw next iteration.
-                Some(Err(err)) => return Err(err),
-                // Terminal input closed: exit cleanly instead of spinning on a
-                // now-always-ready `None`.
-                None => return Ok(()),
+                maybe_event = events.next() => {
+                    match maybe_event {
+                        Some(Ok(Event::Key(key))) => {
+                            if key.kind == KeyEventKind::Release {
+                                continue;
+                            }
+                            self.handle_key_idle(key, terminal, &mut events).await?;
+                        }
+                        Some(Ok(_)) => {} // resize / mouse / paste — redraw next iteration.
+                        Some(Err(err)) => return Err(err),
+                        // Terminal input closed: exit cleanly instead of spinning on a
+                        // now-always-ready `None`.
+                        None => return Ok(()),
+                    }
+                }
             }
         }
     }
@@ -483,7 +537,7 @@ impl App {
     ) -> io::Result<()> {
         // Modal overlay gets keys first.
         if self.modal.is_some() {
-            self.handle_modal_key(key).await;
+            self.handle_modal_key(key, terminal, events).await?;
             return Ok(());
         }
         let kb = self.settings.keybindings.clone();
@@ -573,14 +627,32 @@ impl App {
         )));
     }
 
-    async fn handle_modal_key(&mut self, key: KeyEvent) {
+    async fn handle_modal_key(
+        &mut self,
+        key: KeyEvent,
+        terminal: &mut Terminal<Backend>,
+        events: &mut EventStream,
+    ) -> io::Result<()> {
         let Some(modal) = self.modal.as_mut() else {
-            return;
+            return Ok(());
         };
         let outcome = modal.handle_key(key);
         match outcome {
-            ModalOutcome::Consumed => {}
-            ModalOutcome::Cancelled => self.modal = None,
+            // `OAuthManualCode` only has a home in `drive_oauth_login`; a stray one
+            // from the idle handler has nowhere to go, so it joins the no-ops.
+            ModalOutcome::Consumed | ModalOutcome::OAuthManualCode(_) => {}
+            ModalOutcome::Cancelled => self.cancel_modal(),
+            ModalOutcome::LoginMethod(method) => self.handle_login_method(method),
+            ModalOutcome::LoginProvider { name, method } => {
+                self.open_login(&name, method, terminal, events).await;
+            }
+            ModalOutcome::Logout(name) => self.handle_logout(&name),
+            ModalOutcome::LoginBack => self.open_login_method_picker(),
+            ModalOutcome::ApiKey(api_key) => self.handle_api_key_login(&api_key),
+            ModalOutcome::CustomProvider(draft) => self.handle_custom_provider(&draft),
+            ModalOutcome::ExtensionSelect(_)
+            | ModalOutcome::ExtensionConfirm(_)
+            | ModalOutcome::ExtensionInput(_) => self.resolve_ext_ui_outcome(outcome),
             ModalOutcome::Theme(name) => {
                 self.settings.theme = name;
                 self.theme = self.settings.resolved_theme();
@@ -651,6 +723,89 @@ impl App {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Close the active modal, resolving any pending extension dialog as a cancel
+    /// so the awaiting `context.ui.*` call is never left hanging.
+    fn cancel_modal(&mut self) {
+        match self.pending_ext_ui.take() {
+            Some(PendingUiResponder::Select(responder) | PendingUiResponder::Input(responder)) => {
+                let _ = responder.send(None);
+            }
+            Some(PendingUiResponder::Confirm(responder)) => {
+                let _ = responder.send(false);
+            }
+            None => {}
+        }
+        self.modal = None;
+    }
+
+    /// Answer the awaiting `context.ui.*` call with a resolved modal outcome and
+    /// close the modal.
+    fn resolve_ext_ui_outcome(&mut self, outcome: ModalOutcome) {
+        match (self.pending_ext_ui.take(), outcome) {
+            (
+                Some(PendingUiResponder::Select(responder)),
+                ModalOutcome::ExtensionSelect(choice),
+            ) => {
+                let _ = responder.send(choice);
+            }
+            (Some(PendingUiResponder::Confirm(responder)), ModalOutcome::ExtensionConfirm(ok)) => {
+                let _ = responder.send(ok);
+            }
+            (Some(PendingUiResponder::Input(responder)), ModalOutcome::ExtensionInput(value)) => {
+                let _ = responder.send(value);
+            }
+            _ => {}
+        }
+        self.modal = None;
+    }
+
+    /// Handle an extension UI request by opening the matching modal (or, for a
+    /// notification, appending a transcript status line).
+    fn handle_ext_ui_request(&mut self, request: UiRequest) {
+        match request {
+            UiRequest::Notify { message, level } => {
+                let role = if level == "error" {
+                    crate::state::ChatItemRole::Error
+                } else {
+                    crate::state::ChatItemRole::Status
+                };
+                self.state.add_item(role, message);
+            }
+            UiRequest::Select {
+                title,
+                options,
+                responder,
+            } => {
+                self.modal = Some(Modal::ExtensionSelect(ExtensionSelectModal::new(
+                    title, options,
+                )));
+                self.pending_ext_ui = Some(PendingUiResponder::Select(responder));
+            }
+            UiRequest::Confirm {
+                title,
+                message,
+                responder,
+            } => {
+                self.modal = Some(Modal::ExtensionConfirm(ExtensionConfirmModal::new(
+                    title, message,
+                )));
+                self.pending_ext_ui = Some(PendingUiResponder::Confirm(responder));
+            }
+            UiRequest::Input {
+                title,
+                placeholder,
+                responder,
+            } => {
+                self.modal = Some(Modal::ExtensionInput(ExtensionInputModal::new(
+                    title,
+                    placeholder,
+                )));
+                self.pending_ext_ui = Some(PendingUiResponder::Input(responder));
+            }
+        }
     }
 
     /// Submit the current prompt: accept a pending completion, run a terminal
@@ -708,7 +863,7 @@ impl App {
         if trimmed.starts_with('/') && !trimmed.starts_with("//") {
             let result = self.session.handle_command(trimmed);
             if result.handled {
-                self.apply_command_result(result).await;
+                self.apply_command_result(result, terminal, events).await;
                 self.refresh_chrome();
                 return Ok(());
             }
@@ -729,10 +884,15 @@ impl App {
     }
 
     /// Apply a handled slash-command result: the picker/toggle/exit effects that
-    /// have an M5 home, plus any user-facing message. Effects that need the
-    /// resume launcher (new-session / resume-id) or M7 (login) surface a notice;
-    /// this deferral is journaled in `phase-5.md`.
-    async fn apply_command_result(&mut self, result: rho_coding::commands::CommandResult) {
+    /// have an M5 home, the login/logout flows (M7), plus any user-facing message.
+    /// Effects that need the resume launcher (new-session / resume-id) surface a
+    /// notice; that deferral is journaled in `phase-5.md`.
+    async fn apply_command_result(
+        &mut self,
+        result: rho_coding::commands::CommandResult,
+        terminal: &mut Terminal<Backend>,
+        events: &mut EventStream,
+    ) {
         if result.exit_requested {
             self.should_quit = true;
             return;
@@ -795,13 +955,25 @@ impl App {
                 self.theme = self.settings.resolved_theme();
             }
         }
-        if result.login_picker_requested
-            || result.custom_provider_login_requested
-            || result.logout_picker_requested
-        {
-            self.modal = Some(Modal::Notice(crate::modals::NoticeModal::m7(
-                "Login / logout",
-            )));
+        if result.login_picker_requested {
+            self.open_login_method_picker();
+            return;
+        }
+        if result.custom_provider_login_requested {
+            self.modal = Some(Modal::CustomProviderLogin(CustomProviderLoginModal::new()));
+            return;
+        }
+        if let Some(provider) = &result.login_provider {
+            let method = login_method_from_str(result.login_method.as_deref());
+            self.open_login(provider, method, terminal, events).await;
+            return;
+        }
+        if result.logout_picker_requested {
+            self.open_logout_picker();
+            return;
+        }
+        if let Some(provider) = &result.logout_provider {
+            self.handle_logout(provider);
             return;
         }
         if result.new_session_requested || result.resume_session_id.is_some() {
@@ -816,6 +988,256 @@ impl App {
             self.modal = Some(Modal::CommandOutput(
                 crate::modals::CommandOutputModal::new("Command", message.clone()),
             ));
+        }
+    }
+
+    // --- login / logout flow (tau's `_open_login*` / `_handle_*` helpers) ----
+
+    /// Open the login method picker (tau `_open_login_picker`).
+    fn open_login_method_picker(&mut self) {
+        self.login_target = None;
+        self.modal = Some(Modal::LoginMethodPicker(LoginMethodPickerModal::new()));
+    }
+
+    /// Route a chosen login method to the right provider picker or the custom
+    /// flow (tau `_handle_login_method_result`).
+    fn handle_login_method(&mut self, method: LoginMethod) {
+        match method {
+            LoginMethod::Custom => {
+                self.modal = Some(Modal::CustomProviderLogin(CustomProviderLoginModal::new()));
+            }
+            LoginMethod::Subscription | LoginMethod::ApiKey => {
+                let providers = login_provider_items(method);
+                if providers.is_empty() {
+                    self.notice("Login", "No login providers are available for that method.");
+                    return;
+                }
+                self.modal = Some(Modal::LoginProviderPicker(LoginProviderPickerModal::new(
+                    providers,
+                    ProviderPickerPurpose::Login { method },
+                    "Login",
+                )));
+            }
+        }
+    }
+
+    /// Open the login screen for `provider` (tau `_open_login`): the OAuth flow if
+    /// the method/provider is subscription-backed, else the API-key prompt.
+    async fn open_login(
+        &mut self,
+        provider: &str,
+        method: Option<LoginMethod>,
+        terminal: &mut Terminal<Backend>,
+        events: &mut EventStream,
+    ) {
+        let Some(entry) = builtin_provider_entry(provider) else {
+            self.notice("Login", format!("Unknown provider: {provider}"));
+            return;
+        };
+        let use_oauth = matches!(method, Some(LoginMethod::Subscription))
+            || (method.is_none() && !entry.auth_methods.iter().any(|m| m == "api_key"));
+        if use_oauth {
+            if let Some(kind) = oauth_login_kind(&entry.name) {
+                self.drive_oauth_login(entry, kind, terminal, events).await;
+                return;
+            }
+        }
+        // API-key screen: remember which provider it targets for the result.
+        self.login_target = Some(entry.name.clone());
+        self.modal = Some(Modal::ApiKeyLogin(ApiKeyLoginModal::new(
+            entry.display_name.clone(),
+        )));
+    }
+
+    /// Persist an entered API key and swap the session provider (tau
+    /// `_handle_login_result`).
+    fn handle_api_key_login(&mut self, api_key: &str) {
+        let Some(name) = self.login_target.take() else {
+            self.modal = None;
+            return;
+        };
+        let Some(entry) = builtin_provider_entry(&name) else {
+            self.notice("Login", format!("Unknown provider: {name}"));
+            return;
+        };
+        let store = FileCredentialStore::at_default();
+        match persist_api_key_login(&store, &entry, api_key) {
+            Ok(display) => self.finish_login_swap(&entry.name, &display),
+            Err(err) => self.notice("Login", format!("Could not save login: {err}")),
+        }
+    }
+
+    /// Persist a custom provider and swap the session provider (tau
+    /// `_handle_custom_provider_login_result`).
+    fn handle_custom_provider(&mut self, draft: &CustomProviderDraft) {
+        let store = FileCredentialStore::at_default();
+        match persist_custom_provider(&store, draft) {
+            Ok(name) => {
+                let display = draft.display_name.clone();
+                self.finish_login_swap(&name, &display);
+            }
+            Err(err) => self.notice("Login", format!("Could not save custom provider: {err}")),
+        }
+    }
+
+    /// Open the logout provider picker (tau `_open_logout_picker`).
+    fn open_logout_picker(&mut self) {
+        let providers = stored_credential_provider_items();
+        if providers.is_empty() {
+            self.notice("Logout", NO_STORED_CREDENTIALS_MESSAGE);
+            return;
+        }
+        self.modal = Some(Modal::LoginProviderPicker(LoginProviderPickerModal::new(
+            providers,
+            ProviderPickerPurpose::Logout,
+            "Logout",
+        )));
+    }
+
+    /// Remove a provider's stored credentials (tau `_logout`).
+    fn handle_logout(&mut self, provider: &str) {
+        let Some(entry) = builtin_provider_entry(provider) else {
+            self.notice("Logout", format!("Unknown provider: {provider}"));
+            return;
+        };
+        let store = FileCredentialStore::at_default();
+        match remove_credentials(&store, provider) {
+            Ok(false) => self.notice("Logout", NO_STORED_CREDENTIALS_MESSAGE),
+            Ok(true) => {
+                let _ = self.session.reload_provider_settings();
+                let message = if entry.kind == "openai-codex" {
+                    format!("Logged out of {}.", entry.display_name)
+                } else {
+                    format!(
+                        "Removed stored API key for {}. Environment variables and \
+                         providers.json config are unchanged.",
+                        entry.display_name
+                    )
+                };
+                self.notice("Logout", message);
+                self.refresh_chrome();
+            }
+            Err(err) => self.notice("Logout", format!("Could not log out: {err}")),
+        }
+    }
+
+    /// Reload provider settings and switch the live provider after a successful
+    /// login (tau's tail of `_handle_*_login_result`).
+    fn finish_login_swap(&mut self, provider: &str, display_name: &str) {
+        if let Err(err) = self.session.reload_provider_settings() {
+            self.notice("Login", format!("Could not save login: {err}"));
+            return;
+        }
+        if let Err(err) = self.session.set_provider(provider, false) {
+            self.notice("Login", format!("Could not save login: {err}"));
+            return;
+        }
+        self.notice("Login", format!("Saved login for {display_name}."));
+        self.refresh_chrome();
+    }
+
+    /// Show a dismissible notice and add a transcript status line (tau `_notify`
+    /// + the modal fallback).
+    fn notice(&mut self, title: &str, message: impl Into<String>) {
+        let message = message.into();
+        self.state
+            .add_item(crate::state::ChatItemRole::Status, message.clone());
+        self.modal = Some(Modal::Notice(crate::modals::NoticeModal::new(
+            title.to_string(),
+            message,
+        )));
+    }
+
+    /// Drive an interactive OAuth login on a background task while reflecting its
+    /// progress in the [`OAuthLoginModal`] (tau `OAuthLoginScreen._run_login`).
+    async fn drive_oauth_login(
+        &mut self,
+        entry: ProviderCatalogEntry,
+        kind: crate::login::OAuthLoginKind,
+        terminal: &mut Terminal<Backend>,
+        events: &mut EventStream,
+    ) {
+        let (update_tx, mut update_rx) = tokio::sync::mpsc::unbounded_channel::<OAuthUpdate>();
+        let (code_tx, code_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let code_rx = std::sync::Arc::new(tokio::sync::Mutex::new(code_rx));
+        let mut task = spawn_oauth_login(kind, update_tx, code_rx);
+
+        self.modal = Some(Modal::OAuthLogin(OAuthLoginModal::new(
+            entry.display_name.clone(),
+        )));
+        let mut outcome: Option<Result<rho_coding::credentials::OAuthCredential, String>> = None;
+        // Escape/Ctrl+D cancel: abort the task and either go back or close.
+        let mut navigate_back = false;
+        let mut cancelled = false;
+
+        loop {
+            terminal.draw(|f| render(f, &self.render_ctx())).ok();
+
+            tokio::select! {
+                update = update_rx.recv() => {
+                    if let Some(update) = update {
+                        if let Some(Modal::OAuthLogin(m)) = self.modal.as_mut() {
+                            apply_oauth_update(m, update);
+                        }
+                    }
+                }
+                joined = &mut task => {
+                    outcome = Some(joined.unwrap_or_else(|err| Err(format!("login task failed: {err}"))));
+                    break;
+                }
+                maybe_event = events.next() => {
+                    match maybe_event {
+                        Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
+                            let action = self
+                                .modal
+                                .as_mut()
+                                .map_or(ModalOutcome::Consumed, |m| m.handle_key(key));
+                            match action {
+                                ModalOutcome::OAuthManualCode(code) => {
+                                    let _ = code_tx.send(code);
+                                }
+                                ModalOutcome::LoginBack => {
+                                    navigate_back = true;
+                                    break;
+                                }
+                                ModalOutcome::Cancelled => {
+                                    cancelled = true;
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(_)) | None => {
+                            cancelled = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stop the flow if the user bailed before it finished.
+        if navigate_back || cancelled {
+            task.abort();
+        }
+
+        match outcome {
+            Some(Ok(credential)) => {
+                let store = FileCredentialStore::at_default();
+                match persist_oauth_login(&store, &entry, &credential) {
+                    Ok(display) => self.finish_login_swap(&entry.name, &display),
+                    Err(err) => self.notice("Login", format!("Could not save login: {err}")),
+                }
+            }
+            Some(Err(err)) => self.notice("Login", format!("OAuth failed: {err}")),
+            None => {
+                if navigate_back {
+                    self.open_login_method_picker();
+                } else {
+                    self.modal = None;
+                }
+            }
         }
     }
 
@@ -1014,6 +1436,75 @@ fn fresh_textarea() -> TextArea<'static> {
     let mut textarea = TextArea::default();
     textarea.set_placeholder_text("Type a message, /command, or !shell");
     textarea
+}
+
+/// tau `NO_STORED_CREDENTIALS_MESSAGE`.
+const NO_STORED_CREDENTIALS_MESSAGE: &str = "No stored credentials to remove. /logout only removes credentials saved by /login; \
+     environment variables and providers.json config are unchanged.";
+
+/// Map a `CommandResult::login_method` string to a [`LoginMethod`] (tau compares
+/// the `"subscription"` / `"api-key"` literals).
+fn login_method_from_str(method: Option<&str>) -> Option<LoginMethod> {
+    match method {
+        Some("subscription") => Some(LoginMethod::Subscription),
+        Some("api-key") => Some(LoginMethod::ApiKey),
+        _ => None,
+    }
+}
+
+/// The providers offered for a login method (tau `_subscription_login_providers`
+/// / `_api_key_login_providers`).
+fn login_provider_items(method: LoginMethod) -> Vec<LoginProviderItem> {
+    let ids = oauth_provider_ids();
+    BUILTIN_PROVIDER_CATALOG
+        .iter()
+        .filter(|entry| match method {
+            LoginMethod::Subscription => ids.contains(&entry.name),
+            LoginMethod::ApiKey => entry.auth_methods.iter().any(|m| m == "api_key"),
+            LoginMethod::Custom => false,
+        })
+        .map(|entry| LoginProviderItem::new(entry.name.clone(), entry.display_name.clone()))
+        .collect()
+}
+
+/// The providers with stored credentials (tau `_stored_credential_providers`).
+fn stored_credential_provider_items() -> Vec<LoginProviderItem> {
+    let store = FileCredentialStore::at_default();
+    BUILTIN_PROVIDER_CATALOG
+        .iter()
+        .filter(|entry| {
+            entry.credential_name.as_deref().is_some_and(|name| {
+                store.get(name).ok().flatten().is_some()
+                    || store.get_oauth(name).ok().flatten().is_some()
+            })
+        })
+        .map(|entry| LoginProviderItem::new(entry.name.clone(), entry.display_name.clone()))
+        .collect()
+}
+
+/// Fold a background-task OAuth update into the modal's display state.
+fn apply_oauth_update(modal: &mut OAuthLoginModal, update: OAuthUpdate) {
+    match update {
+        OAuthUpdate::Auth { url, instructions } => modal.set_auth(url, instructions),
+        OAuthUpdate::DeviceCode {
+            verification_uri,
+            user_code,
+        } => modal.set_device_code(verification_uri, &user_code),
+        OAuthUpdate::Progress(message) => modal.set_help(message),
+        OAuthUpdate::Prompt {
+            message,
+            allow_empty,
+        } => modal.set_prompt(message, allow_empty),
+    }
+}
+
+/// Await the next extension UI request, or never resolve when no channel is
+/// wired (so the `select!` branch is inert until the host connects one).
+async fn recv_ext_ui(channel: &mut Option<ExtensionUiChannel>) -> Option<UiRequest> {
+    match channel {
+        Some(chan) => chan.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 fn queue_texts(control: &HarnessControl, steering: bool) -> Vec<String> {
