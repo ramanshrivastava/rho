@@ -157,12 +157,14 @@ original TypeScript/Node agent that *both* tau and rho port — so the report
 becomes the full language triangle (JIT-warmed Node vs interpreted Python vs
 compiled Rust). Engineering log for the pi side:
 
-- **Measure the installed binary, not the source.** The read-only `pi-mono`
-  checkout is v0.57.1 (`@mariozechner` scope); the installed `pi` on PATH is
-  v0.80.10 (`@earendil-works` fork). They differ enough (renamed packages, newer
-  models, restructured providers) that the source is only an architecture
-  reference. Every pi number measures the **installed** binary and, for
-  in-process families, its OWN bundled internals under
+- **Measure the installed binary, pinned to its source rev.** The current pi
+  source is `earendil-works/pi` (rev pinned in `fixtures/PI_REV`, e.g.
+  `3da591ab`), whose package set is v0.80.10 — matching the installed `pi` on
+  PATH exactly. (An older `badlogic/pi-mono` checkout also exists locally at
+  v0.57.1 under the `@mariozechner` scope; it is 4 months stale and is **not**
+  used for internals harnessing or provider-config research — `earendil-works/pi`
+  is the current repo.) Every pi number measures the **installed** binary and,
+  for in-process families, its OWN bundled internals under
   `…/pi-coding-agent/node_modules/@earendil-works/pi-{ai,agent-core}/dist` —
   resolved from `readlink -f $(command -v pi)` so we never rebuild or diverge
   from what users run. pi ships those internals as importable ESM (not a single

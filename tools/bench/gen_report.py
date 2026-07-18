@@ -188,6 +188,9 @@ def collect_meta() -> dict:
     tau_rev = (REPO_ROOT / "fixtures" / "TAU_REV").read_text().strip() if (
         REPO_ROOT / "fixtures" / "TAU_REV"
     ).exists() else "unknown"
+    pi_rev = (REPO_ROOT / "fixtures" / "PI_REV").read_text().strip() if (
+        REPO_ROOT / "fixtures" / "PI_REV"
+    ).exists() else "unknown"
     return {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
         "machine": _run(["sysctl", "-n", "hw.model"]) or platform.machine(),
@@ -200,6 +203,7 @@ def collect_meta() -> dict:
         "uv": _run(["uv", "--version"]),
         "node": _run(["node", "--version"]),
         "pi_version": _run(["pi", "--version"]),
+        "pi_rev": pi_rev,
         "tau_rev": tau_rev,
         "rho_rev": _run(["git", "rev-parse", "--short", "HEAD"]),
         # Derive the branch rather than hard-coding it, so provenance stays honest
@@ -242,13 +246,14 @@ def render_md(records: list[dict], meta: dict) -> str:
     a(f"- **Machine**: {meta['machine']} — {meta['cpu']} ({meta['ncpu']} cores), "
       f"{gib(meta['mem_bytes'])} RAM, {meta['os']}")
     a(f"- **Toolchain**: {meta['rustc']}; {meta['cargo']}; {meta['uv']}; Node {meta.get('node', '?')}")
-    a(f"- **pi**: v{meta.get('pi_version', '?')}, the installed `pi` binary (Node via fnm). "
-      "Cold start measures it both via the fnm PATH shim (\"what users type\") and via the "
-      "real node binary + resolved `dist/cli.js` entry (\"direct\"), mirroring tau's "
-      "uv-run-vs-venv split. In-process families import the installed binary's OWN bundled "
-      "internals (`@earendil-works/pi-{ai,agent-core}`), never a rebuild, so they measure "
-      "the shipped code. (The read-only `pi-mono` source checkout is an older reference "
-      "line, v0.57.1 under the `@mariozechner` scope; provenance is the installed binary.)")
+    a(f"- **pi**: v{meta.get('pi_version', '?')}, the installed `pi` binary (Node via fnm), "
+      f"corresponding to `earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` "
+      "(fixtures/PI_REV) — its package set is v" + str(meta.get("pi_version", "?")) +
+      ", matching the installed binary exactly. Cold start measures pi both via the fnm PATH "
+      "shim (\"what users type\") and via the real node binary + resolved `dist/cli.js` entry "
+      "(\"direct\"), mirroring tau's uv-run-vs-venv split. In-process families import the "
+      "installed binary's OWN bundled internals (`@earendil-works/pi-{ai,agent-core}`), never "
+      "a rebuild, so they measure the shipped code.")
     a(f"- **tau**: pinned at rev `{meta['tau_rev'][:12]}` (fixtures/TAU_REV), run via `uv run --project <tau>`")
     a(f"- **rho**: `{meta['rho_rev']}` on branch `{meta['rho_branch']}`, `--release` builds throughout")
     a(f"- **Generated**: {meta['generated_utc']}")
@@ -268,8 +273,9 @@ def render_md(records: list[dict], meta: dict) -> str:
       "window, so no reported figure is contaminated by contention.")
     a("- **Variance caveat**: this is still a developer laptop, not an isolated "
       "bench rig. Absolute numbers move ±10–30% between runs; the *ratios* between "
-      "rho and tau are the durable result, and they span orders of magnitude, not "
-      "percentages.\n")
+      "the three engines are the durable result, and the big ones span orders of "
+      "magnitude, not percentages (the near-1× pi-vs-tau startup tie is the "
+      "exception — read it as \"indistinguishable,\" not a precise figure).\n")
 
     # ---- family a: cold start
     a("## (a) Cold start + end-to-end print latency\n")
@@ -325,9 +331,14 @@ def render_md(records: list[dict], meta: dict) -> str:
           "`--version` rows are the cleanest read: almost entirely process startup. rho "
           "is a statically-linked binary that execs and prints; tau pays CPython boot + "
           "imports (pydantic, httpx, typer, rich, textual); pi pays Node/V8 boot + its "
-          "module graph. Between the two interpreted agents **Node boots markedly faster "
-          "than CPython cold-imports here**, so pi's startup sits well below tau's — but "
-          f"still far above a native exec.{direct}")
+          "large bundled module graph and model-catalog load. The measured surprise: "
+          "**pi's cold start is on par with tau's, not faster** — both land in the ~2–2.5 s "
+          "range (see the `tau/pi ≈ 1×` column), roughly two orders of magnitude above "
+          "rho. So a JIT runtime buys nothing over CPython for *startup* here; if anything "
+          "pi's shipped bundle makes `--version` as heavy as tau's import graph. Note too "
+          "that pi's fnm PATH shim adds almost nothing (shim ≈ direct node entry), whereas "
+          f"tau's `uv run` adds a visible slice over its venv — but that's noise next to "
+          f"the runtime tax both pay.{direct}")
         a("**But note the 20 ms/chunk row.** Once the provider streams with even a "
           "small per-chunk latency, a fixed ~hundreds-of-ms cost lands on *all three* "
           "implementations equally, and the spawn-time gaps start to disappear into "
@@ -524,11 +535,14 @@ def render_md(records: list[dict], meta: dict) -> str:
       "JIT-warmed Node/V8, **tau** on interpreted CPython, **rho** on compiled Rust. "
       "Read across the families and a consistent shape emerges — it is *not* a simple "
       "\"Rust wins everything\" ladder.\n")
-    a("- **Process startup (native ≫ JIT > interpreter).** A native binary that just "
-      "execs and prints is untouchable: rho's `--version` is milliseconds. Between the "
-      "two interpreted agents, **Node boots faster than CPython cold-imports** here — "
-      "pi's startup sits well below tau's — so the startup ladder is rho ≪ pi < tau, "
-      "not rho ≪ (pi≈tau).")
+    a("- **Process startup (native ≫ both runtimes, which tie).** A native binary that "
+      "just execs and prints is untouchable: rho's `--version` is single-digit "
+      "milliseconds. The measured surprise is that the two interpreted agents **tie** — "
+      "pi (~2.2 s) is on par with tau (~2–2.5 s), not faster. Node's JIT buys nothing "
+      "for cold start here; pi's shipped bundle + model-catalog load makes `--version` "
+      "as heavy as tau's CPython import graph. So the startup ladder is **rho ≪ pi ≈ "
+      "tau** — a ~200–300× native-vs-interpreted gap that does *not* discriminate "
+      "between the two runtimes.")
     a("- **JSONL decode (JIT can beat compiled).** On linear session replay the warmed "
       "V8 `JSON.parse` is the *fastest of the three* — ahead of both Python's pydantic "
       "and rho's deliberately-cautious `#[serde(untagged)]` trial-decode. This is the "
@@ -583,10 +597,10 @@ def render_md(records: list[dict], meta: dict) -> str:
       "bypassed — the isolated spawn). Its in-process families (session replay, RSS) "
       "import the **installed** binary's own bundled internals "
       "(`@earendil-works/pi-{ai,agent-core}`, v" + str(meta.get("pi_version", "?")) +
-      "), never a rebuild, so they measure the shipped code — the read-only pi-mono "
-      "source (v0.57.1) is a reference, not the measured artifact. pi runs "
-      "`PI_OFFLINE=1` during startup timing to disable its version/catalog network "
-      "probe. Family (c) has no pi row for the architectural reason stated there.\n")
+      f"), never a rebuild, so they measure the shipped code, pinned to "
+      f"`earendil-works/pi` rev `{meta.get('pi_rev', 'unknown')[:12]}` (fixtures/PI_REV). "
+      "pi runs `PI_OFFLINE=1` during startup timing to disable its version/catalog "
+      "network probe. Family (c) has no pi row for the architectural reason stated there.\n")
 
     a("## Conclusion — what the Rust port bought\n")
     # headline numbers
