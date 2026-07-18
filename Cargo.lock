@@ -2287,6 +2287,7 @@ dependencies = [
  "reqwest",
  "rho-agent",
  "rho-ai",
+ "rho-ext-host",
  "serde",
  "serde_json",
  "sha2",

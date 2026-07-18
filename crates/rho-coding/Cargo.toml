@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 rho-agent = { path = "../rho-agent" }
 rho-ai = { path = "../rho-ai" }
+rho-ext-host = { path = "../rho-ext-host" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

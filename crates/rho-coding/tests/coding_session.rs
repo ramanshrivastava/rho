@@ -811,7 +811,10 @@ async fn print_mode_indexes_a_default_session() {
     // Inject the temp-dir manager (no `session_path` → the default indexed path).
     config.session_manager = Some(manager.clone());
 
-    assert!(run_session_print_mode(config).await, "print run succeeds");
+    assert!(
+        Box::pin(run_session_print_mode(config)).await,
+        "print run succeeds"
+    );
 
     let sessions = manager.list_sessions(Some(&cwd)).unwrap();
     assert_eq!(sessions.len(), 1, "the print run is indexed and listed");
