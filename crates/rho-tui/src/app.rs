@@ -258,7 +258,7 @@ impl App {
         // reading as a stray floating block. Use the soft resting underline there;
         // keep the ember-throb block only once the user is actually typing.
         let cursor_style = if self.prompt_text().is_empty() {
-            motion::cursor_rest_style(self.motion)
+            motion::cursor_rest_style(self.motion, self.activity_frame)
         } else {
             motion::cursor_throb_style(self.motion, self.activity_frame)
         };
@@ -523,8 +523,24 @@ fn render_transcript_scrolled(
     let offset = state.resolve_transcript_scroll(total, area.height);
     let bg = crate::widgets::parse_color(&theme.transcript_background)
         .map_or_else(Style::default, |color| Style::default().bg(color));
+    // Bottom-anchor short conversations (Claude Code / shell feel): when the
+    // transcript doesn't fill the pane, pad the TOP with blank rows so the messages
+    // hug the composer and the conversation grows upward. Once it fills/overflows
+    // (total >= area.height) the scroll/follow path takes over unchanged — pad is 0,
+    // so scrollback is entirely unaffected.
+    let (render_lines, render_offset) = if total < area.height {
+        let pad = usize::from(area.height - total);
+        let mut padded = Vec::with_capacity(pad + lines.len());
+        padded.extend(std::iter::repeat_with(ratatui::text::Line::default).take(pad));
+        padded.extend_from_slice(lines);
+        (padded, 0)
+    } else {
+        (lines.to_vec(), offset)
+    };
     frame.render_widget(
-        Paragraph::new(lines.to_vec()).scroll((offset, 0)).style(bg),
+        Paragraph::new(render_lines)
+            .scroll((render_offset, 0))
+            .style(bg),
         area,
     );
 }
@@ -2056,6 +2072,53 @@ mod tests {
         assert!(
             status_row < top_border_row,
             "working status must be above the composer border:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn transcript_short_conversation_bottom_anchors() {
+        // A SHORT conversation (fewer lines than the viewport) hugs the composer at
+        // the BOTTOM with empty space ABOVE — the Claude Code / terminal-shell feel.
+        // The transcript region's TOP rows are blank and the message text sits in the
+        // LOWER rows, just above the status/composer.
+        let mut state = TuiState::new();
+        state.add_item(crate::state::ChatItemRole::User, "first message");
+        state.add_item(crate::state::ChatItemRole::Assistant, "second message");
+        let rendered = render_app_frame(&state, "", false, 50, 16);
+        let lines: Vec<&str> = rendered.lines().collect();
+
+        // The composer border marks the bottom of the transcript region.
+        let composer_top = lines
+            .iter()
+            .position(|l| l.contains('╭'))
+            .expect("composer top border is present");
+        // The messages must land in the LOWER rows, just above the composer.
+        let first_row = lines
+            .iter()
+            .position(|l| l.contains("first message"))
+            .expect("first message is rendered");
+        let second_row = lines
+            .iter()
+            .position(|l| l.contains("second message"))
+            .expect("second message is rendered");
+        assert!(
+            first_row < second_row,
+            "message order preserved:\n{rendered}"
+        );
+        assert!(
+            second_row < composer_top,
+            "messages sit above the composer:\n{rendered}"
+        );
+        // Bottom-anchored: the messages hug the composer, so the last message is in
+        // the lower half of the transcript region (empty space is ABOVE, not below).
+        assert!(
+            first_row > composer_top / 2,
+            "short conversation must be bottom-anchored (blank space above):\n{rendered}"
+        );
+        // The TOP rows of the transcript region are blank (the pad).
+        assert!(
+            lines[0].is_empty() && lines[1].is_empty(),
+            "top of the transcript region must be blank padding:\n{rendered}"
         );
     }
 
