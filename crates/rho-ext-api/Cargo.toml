@@ -6,9 +6,17 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Extension guest API — the types an extension links against. Stub until M7."
+description = "Extension guest API — an ergonomic authoring layer over the `rho:extension` WIT world for writing rho extensions in Rust (compiled to wasm32-wasip2 components)."
 
 [lints]
 workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# The wit-bindgen guest runtime is only meaningful when compiling an extension
+# to WebAssembly; a host build of this crate (e.g. `cargo build --workspace`)
+# links none of it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = "0.46"
