@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "generated_utc": "2026-07-18 11:30:21Z",
+    "machine": "Mac16,7",
+    "cpu": "Apple M4 Pro",
+    "ncpu": "14",
+    "mem_bytes": "51539607552",
+    "os": "Darwin 26.5.1",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "uv": "uv 0.11.28 (Homebrew 2026-07-07 aarch64-apple-darwin)",
+    "tau_rev": "81de4f8896a94ed6861bd77b0c486c33eebd3f8d",
+    "rho_rev": "8c933f0",
+    "anthropic_key_present": false
+  },
+  "records": [
+    {
+      "family": "session_replay",
+      "impl": "rho",
+      "variant": "linear-1k",
+      "n_entries": 1000,
+      "mean_ms": 20.231453067502837,
+      "stddev_ms": 10.153119497537832,
+      "entries_per_sec": 49427.98703896703
+    },
+    {
+      "family": "sse_canonicalize",
+      "impl": "rho",
+      "variant": "100",
+      "n_deltas": 100,
+      "mean_ms": 0.11532216140835085,
+      "stddev_ms": 0.16201601715454764,
+      "ns_per_delta": 1153.2216140835085,
+      "deltas_per_sec": 867136.0194672755
+    },
+    {
+      "family": "sse_canonicalize",
+      "impl": "rho",
+      "variant": "1000",
+      "n_deltas": 1000,
+      "mean_ms": 1.240975502395796,
+      "stddev_ms": 1.4061321522048837,
+      "ns_per_delta": 1240.9755023957962,
+      "deltas_per_sec": 805817.6797764542
+    },
+    {
+      "family": "sse_canonicalize",
+      "impl": "rho",
+      "variant": "10000",
+      "n_deltas": 10000,
+      "mean_ms": 22.9324254,
+      "stddev_ms": 22.696616223700392,
+      "ns_per_delta": 2293.2425399999997,
+      "deltas_per_sec": 436063.77544348186
+    }
+  ]
+}
