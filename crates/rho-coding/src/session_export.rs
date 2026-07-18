@@ -59,8 +59,14 @@ use rho_agent::messages::AgentMessage;
 use rho_agent::session::entries::SessionEntry;
 use rho_agent::session::tree::path_to_entry;
 
-/// Default export title (tau `render_session_html` default).
-pub const DEFAULT_EXPORT_TITLE: &str = "Tau Session Export";
+/// Harness brand shown in exported HTML chrome (eyebrow + theme-storage key).
+/// Real exports introduce rho as itself; the tau byte-parity golden overrides
+/// this with `"Tau"` (see [`render_html`] and `dev-notes/identity-vs-parity.md`).
+const EXPORT_BRAND: &str = "Rho";
+
+/// Default export title (tau `render_session_html` default was "Tau Session
+/// Export"; rho brands its own exports).
+pub const DEFAULT_EXPORT_TITLE: &str = "Rho Session Export";
 
 /// Raised when a session cannot be exported (tau `SessionExportError`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -190,7 +196,7 @@ pub fn export_session_artifact(
 /// `render_session_html`). The "Generated:" instant is the current system time.
 #[must_use]
 pub fn render_session_html(entries: &[SessionEntry], title: &str, source: Option<&str>) -> String {
-    render_html(entries, title, source, now_unix_secs())
+    render_html(entries, title, source, now_unix_secs(), EXPORT_BRAND)
 }
 
 fn ensure_parent(path: &Path) -> io::Result<()> {
@@ -288,6 +294,7 @@ fn render_html(
     title: &str,
     source: Option<&str>,
     generated_secs: i64,
+    brand: &str,
 ) -> String {
     let active_leaf = active_leaf_id(entries);
     let active_path = active_path_ids(entries, active_leaf.as_deref());
@@ -306,7 +313,12 @@ fn render_html(
     let mut out = String::new();
     out.push_str(HTML_1);
     out.push_str(&title_e);
-    out.push_str(HTML_2);
+    // Identity seam: the eyebrow chrome and theme-storage key carry the harness
+    // brand. Real exports say "rho"; the tau byte-parity golden passes
+    // brand = "Tau" so `HTML_2`/`HTML_8` are reproduced verbatim. The static
+    // constants keep tau's tokens so the replace is a no-op in parity mode. See
+    // `dev-notes/identity-vs-parity.md`.
+    out.push_str(&brand_chrome(HTML_2, brand));
     out.push_str(&title_e);
     out.push_str(HTML_3);
     out.push_str(&source_html);
@@ -318,8 +330,21 @@ fn render_html(
     out.push_str(&tree_html);
     out.push_str(HTML_7);
     out.push_str(&details_html);
-    out.push_str(HTML_8);
+    out.push_str(&brand_chrome(HTML_8, brand));
     out
+}
+
+/// Rebrand tau's identity tokens in a static template chunk. With `brand =
+/// "Tau"` both replacements are no-ops, so parity mode emits the template
+/// verbatim; the production default (`"Rho"`) yields "Rho session export" and a
+/// `rho-session-export-theme` storage key.
+fn brand_chrome(chunk: &str, brand: &str) -> String {
+    chunk
+        .replace("Tau session export", &format!("{brand} session export"))
+        .replace(
+            "tau-session-export-theme",
+            &format!("{}-session-export-theme", brand.to_lowercase()),
+        )
 }
 
 fn active_leaf_id(entries: &[SessionEntry]) -> Option<String> {
@@ -1980,11 +2005,14 @@ mod tests {
     fn kitchen_sink_html_matches_golden() {
         let entries = load_entries("sessions/kitchen-sink.jsonl");
         // Frozen "generated at" = 2024-01-01T00:00:00Z (as the extractor pinned).
+        // Parity mode: brand = "Tau" reproduces tau's chrome byte-for-byte. The
+        // production export brand is "Rho" (see `EXPORT_BRAND`).
         let html = render_html(
             &entries,
             "Kitchen Sink Session",
             Some("fixtures/sessions/kitchen-sink.jsonl"),
             1_704_067_200,
+            "Tau",
         );
         let golden =
             std::fs::read_to_string(fixtures_dir().join("export/kitchen-sink.html")).unwrap();
@@ -2133,7 +2161,12 @@ mod tests {
         )];
         let html = render_session_html(&entries, "Layout Export", None);
 
-        assert!(html.contains("<p class=\"eyebrow\">Tau session export</p>"));
+        // Real exports are branded rho, never Tau (the golden test covers the
+        // parity-mode "Tau session export" chrome directly).
+        assert!(html.contains("<p class=\"eyebrow\">Rho session export</p>"));
+        assert!(!html.contains("Tau session export"));
+        assert!(html.contains("rho-session-export-theme"));
+        assert!(!html.contains("tau-session-export-theme"));
         assert!(html.contains("<main class=\"session-shell\">"));
         assert!(html.contains("<aside class=\"tree-rail\">"));
         assert!(html.contains("<section class=\"entry-stream\" aria-label=\"Session entries\">"));

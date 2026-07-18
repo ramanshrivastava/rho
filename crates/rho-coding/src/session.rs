@@ -1901,8 +1901,8 @@ impl CodingSession {
             }
         }
         match self.session_id() {
-            Some(session_id) => format!("Tau session {session_id}"),
-            None => "Tau Session Export".to_string(),
+            Some(session_id) => format!("Rho session {session_id}"),
+            None => "Rho Session Export".to_string(),
         }
     }
 

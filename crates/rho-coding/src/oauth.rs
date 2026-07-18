@@ -812,7 +812,7 @@ fn oauth_html(message: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;");
-    format!("<!doctype html><meta charset=\"utf-8\"><title>Tau OAuth</title><p>{escaped}</p>")
+    format!("<!doctype html><meta charset=\"utf-8\"><title>Rho OAuth</title><p>{escaped}</p>")
 }
 
 /// Run OpenAI Codex OAuth and return refreshable credentials (tau
