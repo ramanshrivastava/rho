@@ -92,6 +92,57 @@ pub type ToolCallMarkup = Arc<dyn Fn(&str, &JsonMap) -> Option<String> + Send + 
 pub type ToolResultMarkup =
     Arc<dyn Fn(&str, &AgentToolResult, bool) -> Option<String> + Send + Sync>;
 
+/// Transcript scrollback position (tau `TranscriptView`'s follow-output state).
+///
+/// `following` (true by default) pins the viewport to the tail so streaming
+/// output and new turns stay visible; the moment the user scrolls up it flips
+/// false and `offset` becomes the top visible line, so incoming content no longer
+/// yanks the view. `viewport_height` / `total_lines` are written by the render
+/// pass so the input handlers can compute page steps and clamp without knowing
+/// the frame geometry themselves. Re-armed to `following` once the user scrolls
+/// back to the bottom (tau's `watch_scroll_y` at `max_scroll_y`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptScroll {
+    /// The top visible transcript line when not following.
+    pub offset: u16,
+    /// Whether the viewport is pinned to the tail (auto-follow).
+    pub following: bool,
+    /// The last rendered viewport height (rows), for page steps / clamping.
+    pub viewport_height: u16,
+    /// The last rendered total transcript line count, for clamping.
+    pub total_lines: u16,
+}
+
+impl Default for TranscriptScroll {
+    fn default() -> Self {
+        // A fresh transcript follows the tail (tau mounts in follow-output mode).
+        Self {
+            offset: 0,
+            following: true,
+            viewport_height: 0,
+            total_lines: 0,
+        }
+    }
+}
+
+impl TranscriptScroll {
+    /// The maximum top-line offset for the last rendered geometry.
+    #[must_use]
+    pub fn max_offset(self) -> u16 {
+        self.total_lines.saturating_sub(self.viewport_height)
+    }
+
+    /// The effective top-line offset right now (the tail while following).
+    #[must_use]
+    fn effective_offset(self) -> u16 {
+        if self.following {
+            self.max_offset()
+        } else {
+            self.offset.min(self.max_offset())
+        }
+    }
+}
+
 /// One rendered item in the TUI transcript (tau `ChatItem`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatItem {
@@ -187,6 +238,11 @@ pub struct TuiState {
     /// user message then differs from the raw echo) or handles it (no agent run,
     /// no durable user message at all — e.g. `/template` / `/skill:` expansion).
     optimistic_range: Option<(usize, usize)>,
+    /// Transcript scrollback position. Interior-mutable so the immediate-mode
+    /// render pass (which borrows the state immutably) can write back the resolved
+    /// offset + frame geometry and re-arm follow, exactly like the memoized
+    /// `transcript_cache`.
+    pub transcript_scroll: std::cell::Cell<TranscriptScroll>,
 }
 
 impl std::fmt::Debug for TuiState {
@@ -475,6 +531,8 @@ impl TuiState {
         // dangling) range marker so a later stream event can't drain live items.
         self.optimistic_echo = None;
         self.optimistic_range = None;
+        // A cleared transcript follows the tail again.
+        self.transcript_scroll.set(TranscriptScroll::default());
     }
 
     /// Optimistically render a just-submitted user message and remember its raw
@@ -528,6 +586,83 @@ impl TuiState {
             let end = (start + count).min(self.items.len());
             self.items.drain(start..end);
         }
+    }
+
+    /// Record the render pass's transcript geometry and resolve the scroll offset,
+    /// re-arming follow once the stored offset reaches the tail (tau's
+    /// `watch_scroll_y` at `max_scroll_y`). Returns the top line to scroll to.
+    /// Called from the render layer through the shared immutable borrow.
+    pub fn resolve_transcript_scroll(&self, total_lines: u16, viewport_height: u16) -> u16 {
+        let mut scroll = self.transcript_scroll.get();
+        scroll.total_lines = total_lines;
+        scroll.viewport_height = viewport_height;
+        let max_offset = scroll.max_offset();
+        let offset = if scroll.following {
+            max_offset
+        } else if scroll.offset >= max_offset {
+            // Scrolled (or shrunk) back to the tail: re-arm follow so new content
+            // keeps the view pinned again.
+            scroll.following = true;
+            max_offset
+        } else {
+            scroll.offset
+        };
+        scroll.offset = offset;
+        self.transcript_scroll.set(scroll);
+        offset
+    }
+
+    /// Scroll the transcript up by `lines`, opting out of follow so incoming
+    /// content no longer yanks the viewport back to the tail.
+    pub fn scroll_transcript_up(&self, lines: u16) {
+        let mut scroll = self.transcript_scroll.get();
+        let current = scroll.effective_offset();
+        scroll.offset = current.saturating_sub(lines);
+        scroll.following = false;
+        self.transcript_scroll.set(scroll);
+    }
+
+    /// Scroll the transcript down by `lines`, re-arming follow if it reaches the
+    /// tail.
+    pub fn scroll_transcript_down(&self, lines: u16) {
+        let mut scroll = self.transcript_scroll.get();
+        let max_offset = scroll.max_offset();
+        let target = scroll
+            .effective_offset()
+            .saturating_add(lines)
+            .min(max_offset);
+        scroll.offset = target;
+        scroll.following = target >= max_offset;
+        self.transcript_scroll.set(scroll);
+    }
+
+    /// Scroll up by (nearly) a full viewport — `PageUp`.
+    pub fn scroll_transcript_page_up(&self) {
+        let page = self
+            .transcript_scroll
+            .get()
+            .viewport_height
+            .saturating_sub(1)
+            .max(1);
+        self.scroll_transcript_up(page);
+    }
+
+    /// Scroll down by (nearly) a full viewport — `PageDown`.
+    pub fn scroll_transcript_page_down(&self) {
+        let page = self
+            .transcript_scroll
+            .get()
+            .viewport_height
+            .saturating_sub(1)
+            .max(1);
+        self.scroll_transcript_down(page);
+    }
+
+    /// Jump to the tail and re-arm follow (a user-driven turn / explicit jump).
+    pub fn follow_transcript_tail(&self) {
+        let mut scroll = self.transcript_scroll.get();
+        scroll.following = true;
+        self.transcript_scroll.set(scroll);
     }
 
     /// Elapsed whole seconds since the current turn began (0 when idle).
@@ -915,4 +1050,111 @@ fn expanduser(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    /// Seed the scroll geometry the render pass would have written, so the input
+    /// handlers can be exercised deterministically without a real frame.
+    fn state_with_geometry(total_lines: u16, viewport_height: u16) -> TuiState {
+        let state = TuiState::new();
+        state.transcript_scroll.set(TranscriptScroll {
+            offset: 0,
+            following: true,
+            viewport_height,
+            total_lines,
+        });
+        state
+    }
+
+    #[test]
+    fn fresh_transcript_follows_the_tail() {
+        let state = TuiState::new();
+        assert!(state.transcript_scroll.get().following);
+        // Following resolves to the tail offset for any geometry.
+        let offset = state.resolve_transcript_scroll(30, 6);
+        assert_eq!(offset, 24, "following pins to max_offset = total - height");
+        assert!(state.transcript_scroll.get().following);
+    }
+
+    #[test]
+    fn scroll_up_opts_out_of_follow_and_reveals_history() {
+        let state = state_with_geometry(30, 6);
+        // From the tail (offset 24) a page-up (height-1 = 5) moves to line 19.
+        state.scroll_transcript_page_up();
+        let scroll = state.transcript_scroll.get();
+        assert!(!scroll.following, "scrolling up opts out of follow");
+        assert_eq!(scroll.offset, 19);
+        // The resolved render offset now honors the scrollback position, not the tail.
+        assert_eq!(state.resolve_transcript_scroll(30, 6), 19);
+    }
+
+    #[test]
+    fn wheel_up_step_moves_the_top_line() {
+        let state = state_with_geometry(30, 6);
+        state.scroll_transcript_up(3);
+        assert_eq!(state.transcript_scroll.get().offset, 21); // 24 - 3
+        state.scroll_transcript_up(3);
+        assert_eq!(state.transcript_scroll.get().offset, 18);
+    }
+
+    #[test]
+    fn new_content_does_not_yank_a_scrolled_up_view() {
+        let state = state_with_geometry(30, 6);
+        state.scroll_transcript_up(10); // offset 14, following = false
+        assert_eq!(state.transcript_scroll.get().offset, 14);
+        // More transcript arrives (total grows); the top line stays put.
+        let offset = state.resolve_transcript_scroll(40, 6);
+        assert_eq!(
+            offset, 14,
+            "incoming content must not move a scrolled-up view"
+        );
+        assert!(!state.transcript_scroll.get().following);
+    }
+
+    #[test]
+    fn scrolling_back_to_bottom_rearms_follow() {
+        let state = state_with_geometry(30, 6);
+        state.scroll_transcript_up(10); // following = false, offset 14
+        assert!(!state.transcript_scroll.get().following);
+        // Page back down past the tail: follow re-arms and the view pins again.
+        state.scroll_transcript_down(u16::MAX);
+        let scroll = state.transcript_scroll.get();
+        assert!(scroll.following, "reaching the tail re-arms follow");
+        assert_eq!(scroll.offset, 24);
+        // A later resolve keeps following the growing tail.
+        assert_eq!(state.resolve_transcript_scroll(50, 6), 44);
+    }
+
+    #[test]
+    fn follow_tail_helper_rearms_from_any_offset() {
+        let state = state_with_geometry(30, 6);
+        state.scroll_transcript_up(10);
+        assert!(!state.transcript_scroll.get().following);
+        state.follow_transcript_tail();
+        assert!(state.transcript_scroll.get().following);
+    }
+
+    #[test]
+    fn resolve_rearms_follow_when_content_shrinks_below_the_fold() {
+        let state = state_with_geometry(30, 6);
+        state.scroll_transcript_up(4); // offset 20, not following
+        // The transcript shrinks so everything fits (max_offset = 0); the stored
+        // offset now exceeds the tail, so follow re-arms and we pin to 0.
+        let offset = state.resolve_transcript_scroll(4, 6);
+        assert_eq!(offset, 0);
+        assert!(state.transcript_scroll.get().following);
+    }
+
+    #[test]
+    fn clear_resets_scroll_to_following() {
+        let mut state = state_with_geometry(30, 6);
+        state.scroll_transcript_up(10);
+        assert!(!state.transcript_scroll.get().following);
+        state.clear();
+        assert!(state.transcript_scroll.get().following);
+        assert_eq!(state.transcript_scroll.get().offset, 0);
+    }
 }

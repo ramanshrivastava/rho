@@ -47,7 +47,7 @@ pub fn render_prompt_prefix(
     );
 }
 
-/// Build the working-state signature line shown below the composer while a turn
+/// Build the working-state signature line shown above the composer while a turn
 /// runs: `⟨shimmering forge-verb⟩…  ·  ⟨elapsed⟩  ·  ⟨interrupt⟩ to interrupt`,
 /// e.g. `Tempering…  ·  2m 14s  ·  esc to interrupt`. The verb shimmers along the
 /// oxide ramp (Codex's light-sweep, oxidized); the whole line degrades to plain
