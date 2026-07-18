@@ -37,7 +37,15 @@ use rho_coding::{PrintOutputMode, SessionPrintModeConfig, run_session_print_mode
 
 /// A minimalist Pi-style coding-agent harness (Rust port of tau).
 #[derive(Debug, Parser)]
-#[command(name = "rho", version, about, long_about = None)]
+#[command(
+    name = "rho",
+    version,
+    about,
+    long_about = "rho — a minimalist coding-agent harness.\n\nLineage: π → τ → ρ. \
+                  rho (ρ) is a Rust port of tau (τ), itself a descendant of pi (π): \
+                  byte-for-byte wire/session/CLI compatibility with tau, with rho's own \
+                  look, feel, and performance."
+)]
 struct Cli {
     /// Subcommand (sessions / providers / export / setup). Omit for print/TUI mode.
     #[command(subcommand)]

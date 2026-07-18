@@ -1,0 +1,15 @@
+---
+source: crates/rho-tui/tests/snapshots.rs
+expression: rendered
+---
+
+
+
+                        ρ
+
+                    π → τ → ρ
+
+                       rho
+               a Rust port of tau
+
+  Type a message, /command, or !shell to begin.

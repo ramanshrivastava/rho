@@ -17,6 +17,7 @@
 //! `session`. Idle input (model/thinking cycles, pickers, resume) runs with full
 //! `&mut session` access between turns.
 
+use std::cell::RefCell;
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,7 +30,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -99,6 +100,9 @@ pub struct App {
     ext_ui_channel: Option<ExtensionUiChannel>,
     /// The provider an open API-key login modal targets (tau's per-screen entry).
     login_target: Option<String>,
+    /// Memoized transcript render (rebuilt only when its fingerprint changes).
+    /// `RefCell` so the immutable-borrow render path can refresh it in place.
+    transcript_cache: RefCell<crate::widgets::TranscriptCache>,
 }
 
 /// The responder awaiting the result of the open extension UI modal.
@@ -149,6 +153,7 @@ impl App {
             pending_ext_ui: None,
             ext_ui_channel: None,
             login_target: None,
+            transcript_cache: RefCell::new(crate::widgets::TranscriptCache::default()),
         }
     }
 
@@ -234,6 +239,7 @@ impl App {
             modal: self.modal.as_ref(),
             activity_frame: self.activity_frame,
             footer_mode: self.footer_mode(),
+            transcript_cache: &self.transcript_cache,
         }
     }
 }
@@ -250,6 +256,7 @@ struct RenderCtx<'a> {
     modal: Option<&'a Modal>,
     activity_frame: usize,
     footer_mode: FooterMode,
+    transcript_cache: &'a RefCell<crate::widgets::TranscriptCache>,
 }
 
 /// Render one frame from a [`RenderCtx`] (immediate-mode; called every tick).
@@ -294,7 +301,7 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
         ])
         .split(main_area);
 
-    render_transcript_scrolled(frame, rows[0], ctx.state, ctx.theme);
+    render_transcript_scrolled(frame, rows[0], ctx.state, ctx.theme, ctx.transcript_cache);
     if queued_h > 0 {
         render_queued_messages(
             frame,
@@ -352,13 +359,29 @@ fn render_prompt_row(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
 /// Render the transcript, following the bottom when it overflows the viewport so
 /// the newest turns and streaming output stay visible (tau auto-scrolls to the
 /// tail on new content).
-fn render_transcript_scrolled(frame: &mut Frame, area: Rect, state: &TuiState, theme: &TuiTheme) {
-    let lines = crate::widgets::build_transcript_lines(state, theme, area.width);
+fn render_transcript_scrolled(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TuiState,
+    theme: &TuiTheme,
+    cache: &RefCell<crate::widgets::TranscriptCache>,
+) {
+    // A fresh, idle session shows the rho welcome splash instead of a blank pane
+    // (suppressed the moment a turn is pending — see `should_show_splash`).
+    if crate::widgets::should_show_splash(state) {
+        crate::widgets::render_splash(frame, area, theme);
+        return;
+    }
+    let mut cache = cache.borrow_mut();
+    let lines = cache.lines(state, theme, area.width);
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let offset = total.saturating_sub(area.height);
     let bg = crate::widgets::parse_color(&theme.transcript_background)
         .map_or_else(Style::default, |color| Style::default().bg(color));
-    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)).style(bg), area);
+    frame.render_widget(
+        Paragraph::new(lines.to_vec()).scroll((offset, 0)).style(bg),
+        area,
+    );
 }
 
 fn seed_transcript(state: &mut TuiState, session: &CodingSession) {
@@ -555,9 +578,17 @@ impl App {
             self.completion = self.completion.select_next();
             return Ok(());
         }
-        if matches_binding(&key, &kb.completion_previous) && !self.completion.items.is_empty() {
-            self.completion = self.completion.select_previous();
-            return Ok(());
+        if matches_binding(&key, &kb.completion_previous) {
+            if !self.completion.items.is_empty() {
+                self.completion = self.completion.select_previous();
+                return Ok(());
+            }
+            // No completions open: tau maps Up (`action_recall_previous_prompt`)
+            // to recalling the last submitted prompt into an EMPTY composer,
+            // before falling through to a plain cursor-up.
+            if self.recall_previous_prompt() {
+                return Ok(());
+            }
         }
         if matches_binding(&key, &kb.quit) {
             self.should_quit = true;
@@ -597,6 +628,22 @@ impl App {
         self.textarea.input(Event::Key(key));
         self.rebuild_completion();
         Ok(())
+    }
+
+    /// Recall the most recently submitted prompt into an EMPTY composer (tau
+    /// `action_recall_previous_prompt`). Only fires when the composer is blank so
+    /// an accidental Up never clobbers a prompt the user is still writing.
+    /// Returns whether a prompt was recalled.
+    fn recall_previous_prompt(&mut self) -> bool {
+        if !self.prompt_text().trim().is_empty() {
+            return false;
+        }
+        let Some(previous) = self.prompt_history.last().cloned() else {
+            return false;
+        };
+        self.set_prompt_text(&previous);
+        self.rebuild_completion();
+        true
     }
 
     fn accept_completion(&mut self) {
@@ -1262,6 +1309,12 @@ impl App {
         // would target a stale run's cancel token + queues (CR).
         let control = self.session.control();
         let keybindings = self.settings.keybindings.clone();
+        // Mark the turn running BEFORE the first frame. The adapter only flips
+        // `running` true once the first stream event lands, but the loop draws a
+        // frame before that; without this, a slow provider (or pre-prompt work
+        // like auto-compaction) would keep showing the empty-session splash after
+        // the user already submitted, as if the submit were ignored.
+        self.state.running = true;
         // Scope the disjoint field borrows (and the `session`-borrowing stream)
         // so they all drop before we touch `self` again after the turn. The block
         // yields whether the user asked to quit mid-turn.
@@ -1275,6 +1328,7 @@ impl App {
                 chrome,
                 settings,
                 activity_frame,
+                transcript_cache,
                 ..
             } = &mut *self;
             let stream = session.prompt(text, Some(StreamingBehavior::Steer));
@@ -1282,7 +1336,7 @@ impl App {
             let mut ticker = tokio::time::interval(Duration::from_millis(150));
             let mut quit_requested = false;
 
-            loop {
+            'turn: loop {
                 {
                     let ctx = RenderCtx {
                         state,
@@ -1295,6 +1349,7 @@ impl App {
                         modal: None,
                         activity_frame: *activity_frame,
                         footer_mode: FooterMode::Running,
+                        transcript_cache,
                     };
                     terminal.draw(|f| render(f, &ctx))?;
                 }
@@ -1302,7 +1357,26 @@ impl App {
                 tokio::select! {
                     maybe_event = stream.next() => {
                         match maybe_event {
-                            Some(event) => TuiEventAdapter::new(state).apply(&event),
+                            Some(event) => {
+                                TuiEventAdapter::new(state).apply(&event);
+                                // Coalesce a burst of stream deltas into ONE redraw:
+                                // drain every event that is already ready this frame
+                                // (`now_or_never` polls without awaiting) before the
+                                // next `terminal.draw`. A fast token stream would
+                                // otherwise redraw once per delta; now the whole
+                                // batch costs a single (cache-fingerprinted) render.
+                                loop {
+                                    match stream.next().now_or_never() {
+                                        Some(Some(event)) => {
+                                            TuiEventAdapter::new(state).apply(&event);
+                                        }
+                                        // Stream ended mid-drain: finish the turn.
+                                        Some(None) => break 'turn,
+                                        // Nothing more ready right now: draw the batch.
+                                        None => break,
+                                    }
+                                }
+                            }
                             None => break,
                         }
                     }
@@ -1354,6 +1428,10 @@ impl App {
             self.should_quit = true;
         }
         self.state.tool_spinner = None;
+        // Clear the running flag we set before the first frame, in case the
+        // stream ended without a settle event (the adapter clears it on settle /
+        // error, but a bare stream close would otherwise leave it stuck true).
+        self.state.running = false;
         // Surface a run error the session recorded (tau shows the failure in the
         // transcript after the turn settles).
         if let Some(error) = self.session.take_run_error() {
@@ -1790,6 +1868,28 @@ mod tests {
             "the startup message is seeded as a status notice: {:?}",
             app.state.items
         );
+    }
+
+    #[tokio::test]
+    async fn up_recalls_previous_prompt_only_into_empty_composer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = login_required_session(tmp.path()).await;
+        let mut app = App::new(session, TuiSettings::default(), None);
+
+        // No history yet → nothing to recall.
+        assert!(!app.recall_previous_prompt());
+
+        app.prompt_history.push("first prompt".to_string());
+        app.prompt_history.push("second prompt".to_string());
+
+        // Empty composer → recalls the most recent submission.
+        assert!(app.recall_previous_prompt());
+        assert_eq!(app.prompt_text(), "second prompt");
+
+        // Non-empty composer → never clobbers what the user is writing.
+        app.set_prompt_text("half-written");
+        assert!(!app.recall_previous_prompt());
+        assert_eq!(app.prompt_text(), "half-written");
     }
 
     #[tokio::test]

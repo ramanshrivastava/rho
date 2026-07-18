@@ -15,6 +15,8 @@
 //! code blocks render with tau's `markdown_code_block_background` only. See
 //! `dev-notes/phase-5.md` for the deferral ledger.
 
+use std::hash::{Hash, Hasher};
+
 use ratatui::Frame;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -26,6 +28,81 @@ use crate::widgets::style::{RoleStyles, chat_role_styles, parse_color, parse_sty
 
 /// The left gutter marker tau renders beside each transcript block.
 const GUTTER_BAR: &str = "▌";
+
+/// A memo over [`build_transcript_lines`], keyed by a cheap fingerprint of every
+/// input that affects the rendered output (item contents, the toggles, the
+/// active spinner, the theme, and the width). The transcript is otherwise
+/// rebuilt from scratch on *every* frame — each 150 ms spinner tick during a run
+/// and each keystroke while composing — which is O(transcript) markdown parsing
+/// and word wrapping (tens of milliseconds on a long history, per the
+/// `transcript_render` bench). With the cache a frame that changed nothing (idle
+/// typing, an idle tick between deltas) reuses the prior render for the cost of
+/// one hash. Correctness comes entirely from the fingerprint: whenever the
+/// output could differ, one hashed input differs, so there is no manual
+/// invalidation to drift out of sync.
+#[derive(Default)]
+pub struct TranscriptCache {
+    key: Option<u64>,
+    lines: Vec<Line<'static>>,
+}
+
+impl TranscriptCache {
+    /// The rendered transcript lines for the current state, rebuilding only when
+    /// the fingerprint changed since the last call.
+    pub fn lines(&mut self, state: &TuiState, theme: &TuiTheme, width: u16) -> &[Line<'static>] {
+        let key = transcript_fingerprint(state, theme, width);
+        if self.key != Some(key) {
+            self.lines = build_transcript_lines(state, theme, width);
+            self.key = Some(key);
+        }
+        &self.lines
+    }
+}
+
+/// Hash every input `build_transcript_lines` reads. The per-item fields mirror
+/// the branches in [`build_chat_item_lines`] / [`visible_chat_text`]; the global
+/// `tool_spinner` plus the per-item resolved invocation
+/// (`resolve_tool_invocation`, hashed in the loop) cover the live spinner AND the
+/// whole-second elapsed timer on a still-executing tool row, so an executing turn
+/// re-renders each tick without the timer ever going stale; `theme.name` stands
+/// in for the whole palette (name ↔ colors 1:1).
+fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    width.hash(&mut h);
+    theme.name.as_str().hash(&mut h);
+    state.show_tool_results.hash(&mut h);
+    state.show_thinking.hash(&mut h);
+    state.assistant_buffer.hash(&mut h);
+    state.tool_spinner.hash(&mut h);
+    for item in &state.items {
+        std::mem::discriminant(&item.role).hash(&mut h);
+        item.text.hash(&mut h);
+        item.tool_result_text.hash(&mut h);
+        item.update_text.hash(&mut h);
+        item.always_show_tool_result.hash(&mut h);
+        // Hash the *resolved* invocation for an executing tool row: it folds in
+        // the live spinner frame AND the whole-second elapsed timer
+        // (`started_at.elapsed()`). The spinner string alone recurs every cycle
+        // (10 frames × 150 ms = 1.5 s) while the timer keeps advancing, so
+        // without the elapsed bucket a fingerprint could collide and freeze the
+        // "(Ns)" timer until some other state changed. `None` for settled/non-tool
+        // rows, so this is cheap for everything but the one running tool.
+        state.resolve_tool_invocation(item).hash(&mut h);
+    }
+    // Not hashed: `tool_name` / `tool_arguments` / `custom_type` / `details`.
+    // They only reach the render through the extension resolvers
+    // (`tool_call_renderer` / `custom_renderer`), which are never installed
+    // before M7 — today those items fall back to `item.text` (already hashed).
+    // They are also set once when an item is created and never mutated, so any
+    // change to them arrives as a new item, i.e. a new sequence with a different
+    // hash. When M7 wires the resolvers this fingerprint must fold them in.
+    h.finish()
+}
+
+/// Placeholder shown in place of a hidden thinking block (tau
+/// `_HIDDEN_THINKING_PLACEHOLDER`). Consecutive hidden thinking blocks collapse
+/// to a single placeholder.
+pub const HIDDEN_THINKING_PLACEHOLDER: &str = "Thinking… Press Ctrl+T to show thinking tokens.";
 
 /// Build every transcript line for the current state at `width` columns.
 ///
@@ -41,15 +118,42 @@ pub fn build_transcript_lines(
 ) -> Vec<Line<'static>> {
     let inner_width = inner_text_width(width);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, item) in state.items.iter().enumerate() {
-        if index > 0 {
+    let mut rendered_any = false;
+    // tau `TranscriptView.render_state`: when thinking is hidden, a run of
+    // consecutive thinking items collapses to a SINGLE placeholder block
+    // (`_HIDDEN_THINKING_PLACEHOLDER`); any non-thinking item resets the run.
+    let mut hidden_thinking_placeholder = false;
+    for item in &state.items {
+        if item.role == ChatItemRole::Thinking && !state.show_thinking {
+            if !hidden_thinking_placeholder {
+                if rendered_any {
+                    lines.push(Line::default());
+                }
+                let placeholder = ChatItem::new(
+                    ChatItemRole::Thinking,
+                    HIDDEN_THINKING_PLACEHOLDER.to_string(),
+                );
+                lines.extend(build_chat_item_lines(
+                    &placeholder,
+                    state,
+                    theme,
+                    inner_width,
+                ));
+                rendered_any = true;
+                hidden_thinking_placeholder = true;
+            }
+            continue;
+        }
+        hidden_thinking_placeholder = false;
+        if rendered_any {
             lines.push(Line::default());
         }
         let mut block = build_chat_item_lines(item, state, theme, inner_width);
         lines.append(&mut block);
+        rendered_any = true;
     }
     if !state.assistant_buffer.is_empty() {
-        if !lines.is_empty() {
+        if rendered_any {
             lines.push(Line::default());
         }
         let mut item = ChatItem::new(ChatItemRole::Assistant, state.assistant_buffer.clone());
@@ -59,6 +163,62 @@ pub fn build_transcript_lines(
         lines.extend(build_chat_item_lines(&item, state, theme, inner_width));
     }
     lines
+}
+
+/// Whether the transcript is empty (no items, nothing streaming) — the cue to
+/// show the rho welcome splash instead of a blank pane.
+#[must_use]
+pub fn transcript_is_empty(state: &TuiState) -> bool {
+    state.items.is_empty() && state.assistant_buffer.is_empty()
+}
+
+/// Whether to show the rho welcome splash: an empty transcript on a **fresh,
+/// idle** session. Gated on `!running` so it never lingers after the user
+/// submits the first prompt while a slow provider (or pre-prompt work like
+/// auto-compaction) has not yet produced the first event.
+#[must_use]
+pub fn should_show_splash(state: &TuiState) -> bool {
+    !state.running && transcript_is_empty(state)
+}
+
+/// Render the rho welcome splash into `area`, vertically + horizontally centered:
+/// the ρ mark, the π → τ → ρ lineage, and a one-line hint. A sanctioned identity
+/// divergence (tau shows a blank transcript on a fresh session).
+pub fn render_splash(frame: &mut Frame, area: ratatui::layout::Rect, theme: &TuiTheme) {
+    let accent = parse_style(&theme.accent).add_modifier(ratatui::style::Modifier::BOLD);
+    let muted = parse_style(&theme.muted_text);
+    let bg = parse_color(&theme.transcript_background)
+        .map_or_else(Style::default, |color| Style::default().bg(color));
+
+    let lines: Vec<Line<'static>> = vec![
+        Line::from(Span::styled("ρ", accent)),
+        Line::default(),
+        Line::from(Span::styled("π → τ → ρ", muted)),
+        Line::default(),
+        Line::from(Span::styled("rho", accent)),
+        Line::from(Span::styled("a Rust port of tau", muted)),
+        Line::default(),
+        Line::from(Span::styled(
+            "Type a message, /command, or !shell to begin.",
+            muted,
+        )),
+    ];
+
+    // Vertically center: pad the top by half the slack (clamped so a short pane
+    // still shows the mark from the top).
+    let slack = (area.height as usize).saturating_sub(lines.len());
+    let top_pad = u16::try_from(slack / 2).unwrap_or(0);
+    let inner = ratatui::layout::Rect {
+        y: area.y.saturating_add(top_pad),
+        height: area.height.saturating_sub(top_pad),
+        ..area
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(bg),
+        inner,
+    );
 }
 
 /// Render the whole transcript into `area` from the top (no scroll), clipped by
@@ -951,6 +1111,115 @@ mod tests {
         let mut state = TuiState::new();
         state.show_tool_results = true;
         let _ = build_chat_item_lines(&tool, &state, &theme, 40);
+    }
+
+    fn joined(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn splash_shows_only_on_a_fresh_idle_session() {
+        let mut state = TuiState::new();
+        // Fresh + idle → splash.
+        assert!(should_show_splash(&state));
+        // A pending turn (running set before the first event) suppresses it, so
+        // the splash never lingers after the user submits the first prompt.
+        state.running = true;
+        assert!(!should_show_splash(&state));
+        state.running = false;
+        // Any content suppresses it (via items or a streaming buffer).
+        state.add_item(ChatItemRole::User, "hi".to_string());
+        assert!(!should_show_splash(&state));
+        state.items.clear();
+        state.assistant_buffer = "streaming…".to_string();
+        assert!(!should_show_splash(&state));
+    }
+
+    #[test]
+    fn transcript_cache_never_returns_stale_content() {
+        // The memo must always equal a fresh build across every input that
+        // affects the render: content, the thinking toggle (placeholder
+        // collapse), and width. (A hit is a perf property; correctness is that
+        // the cached bytes are never stale.)
+        let theme = crate::theme::tau_dark_theme();
+        let mut cache = crate::widgets::TranscriptCache::default();
+        let mut state = TuiState::new();
+        state.show_thinking = true;
+        state.add_item(ChatItemRole::User, "hi".to_string());
+        state.add_item(ChatItemRole::Thinking, "a thought".to_string());
+
+        let a = cache.lines(&state, &theme, 60).to_vec();
+        assert_eq!(a, build_transcript_lines(&state, &theme, 60));
+
+        // Repeated call with no change: identical output (the hit path).
+        assert_eq!(cache.lines(&state, &theme, 60), a.as_slice());
+
+        // Toggling thinking flips to the collapsed placeholder — must invalidate.
+        state.show_thinking = false;
+        let b = cache.lines(&state, &theme, 60).to_vec();
+        assert_eq!(b, build_transcript_lines(&state, &theme, 60));
+        assert_ne!(a, b);
+
+        // New content invalidates.
+        state.add_item(ChatItemRole::Assistant, "answer".to_string());
+        assert_eq!(
+            cache.lines(&state, &theme, 60),
+            build_transcript_lines(&state, &theme, 60).as_slice()
+        );
+
+        // A width change invalidates (wrapping differs).
+        assert_eq!(
+            cache.lines(&state, &theme, 20),
+            build_transcript_lines(&state, &theme, 20).as_slice()
+        );
+    }
+
+    #[test]
+    fn hidden_thinking_collapses_to_single_placeholder() {
+        // tau parity: with show_thinking=false a run of thinking items collapses
+        // to ONE placeholder; visible thinking shows the real text.
+        let theme = crate::theme::tau_dark_theme();
+        let mut state = TuiState::new();
+        state.add_item(ChatItemRole::User, "hi".to_string());
+        state.add_item(ChatItemRole::Thinking, "first thought".to_string());
+        state.add_item(ChatItemRole::Thinking, "second thought".to_string());
+        state.add_item(ChatItemRole::Assistant, "answer".to_string());
+
+        // Shown: real thinking text appears, no placeholder.
+        state.show_thinking = true;
+        let shown = joined(&build_transcript_lines(&state, &theme, 60));
+        assert!(
+            shown.iter().any(|l| l.contains("first thought")),
+            "{shown:?}"
+        );
+        assert!(
+            !shown
+                .iter()
+                .any(|l| l.contains(HIDDEN_THINKING_PLACEHOLDER)),
+            "{shown:?}"
+        );
+
+        // Hidden: exactly one placeholder replaces the whole thinking run; the
+        // real thinking text is gone; user + assistant survive.
+        state.show_thinking = false;
+        let hidden = joined(&build_transcript_lines(&state, &theme, 60));
+        let placeholders = hidden
+            .iter()
+            .filter(|l| l.contains(HIDDEN_THINKING_PLACEHOLDER))
+            .count();
+        assert_eq!(placeholders, 1, "{hidden:?}");
+        assert!(
+            !hidden.iter().any(|l| l.contains("first thought")),
+            "{hidden:?}"
+        );
+        assert!(
+            !hidden.iter().any(|l| l.contains("second thought")),
+            "{hidden:?}"
+        );
+        assert!(hidden.iter().any(|l| l.contains("answer")), "{hidden:?}");
     }
 
     #[test]

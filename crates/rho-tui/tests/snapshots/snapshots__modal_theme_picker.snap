@@ -8,10 +8,10 @@ expression: rendered
 
 
                   ┌ Theme ──────────────────────────┐
+                  │  rho                            │
                   │› tau-dark ✓                     │
                   │  tau-light                      │
                   │  high-contrast                  │
-                  │                                 │
                   │                                 │
                   │Enter selects · Escape closes    │
                   └─────────────────────────────────┘
