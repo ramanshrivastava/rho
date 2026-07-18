@@ -231,7 +231,14 @@ fn snapshot_rho_splash() {
     let theme = get_tui_theme(TuiThemeName::Rho);
     let rendered = render_to_string(80, 18, |frame| {
         let area = full(frame);
-        rho_tui::widgets::render_splash(frame, area, &theme, 0, MotionCaps::plain());
+        rho_tui::widgets::render_splash(
+            frame,
+            area,
+            &theme,
+            &TuiKeybindings::default(),
+            0,
+            MotionCaps::plain(),
+        );
     });
     insta::assert_snapshot!("rho_splash", rendered);
 }
@@ -252,7 +259,14 @@ fn splash_fills_entire_pane_with_theme_background() {
         terminal
             .draw(|frame| {
                 let area = full(frame);
-                rho_tui::widgets::render_splash(frame, area, &theme, 0, MotionCaps::plain());
+                rho_tui::widgets::render_splash(
+                    frame,
+                    area,
+                    &theme,
+                    &TuiKeybindings::default(),
+                    0,
+                    MotionCaps::plain(),
+                );
             })
             .expect("draw");
         let buffer = terminal.backend().buffer().clone();

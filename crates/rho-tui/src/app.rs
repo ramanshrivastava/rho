@@ -339,6 +339,7 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
         rows[0],
         ctx.state,
         ctx.theme,
+        ctx.keybindings,
         ctx.activity_frame,
         ctx.motion,
         ctx.transcript_cache,
@@ -428,11 +429,13 @@ fn interrupt_key_label(kb: &TuiKeybindings) -> String {
 /// Render the transcript, following the bottom when it overflows the viewport so
 /// the newest turns and streaming output stay visible (tau auto-scrolls to the
 /// tail on new content).
+#[allow(clippy::too_many_arguments)]
 fn render_transcript_scrolled(
     frame: &mut Frame,
     area: Rect,
     state: &TuiState,
     theme: &TuiTheme,
+    keybindings: &TuiKeybindings,
     activity_frame: usize,
     motion: MotionCaps,
     cache: &RefCell<crate::widgets::TranscriptCache>,
@@ -440,7 +443,7 @@ fn render_transcript_scrolled(
     // A fresh, idle session shows the rho welcome splash instead of a blank pane
     // (suppressed the moment a turn is pending — see `should_show_splash`).
     if crate::widgets::should_show_splash(state) {
-        crate::widgets::render_splash(frame, area, theme, activity_frame, motion);
+        crate::widgets::render_splash(frame, area, theme, keybindings, activity_frame, motion);
         return;
     }
     let mut cache = cache.borrow_mut();

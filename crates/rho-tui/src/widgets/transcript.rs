@@ -208,9 +208,19 @@ const DID_YOU_KNOW: [&str; 4] = [
     "the rho theme is rust-oxide over warm parchment",
 ];
 
-/// The one-line hints row (Claude-Code-style getting-started).
-const HINTS_ROW: &str =
-    "/ commands  ·  Ctrl+P model  ·  Ctrl+R sessions  ·  !cmd shell  ·  Ctrl+D quit";
+/// The one-line hints row (Claude-Code-style getting-started), built from the
+/// active keybindings so a user with customized `TuiSettings::keybindings` sees
+/// the keys they actually bound (the `/` and `!cmd` prefixes are literal syntax,
+/// not bindings).
+fn splash_hints_row(kb: &crate::theme::TuiKeybindings) -> String {
+    use crate::widgets::footer::key_hint;
+    format!(
+        "/ commands  ·  {} model  ·  {} sessions  ·  !cmd shell  ·  {} quit",
+        key_hint(&kb.model_cycle),
+        key_hint(&kb.session_picker),
+        key_hint(&kb.quit),
+    )
+}
 
 /// Frames each lineage glyph stays "active" before the oxidation marches on.
 const LINEAGE_STEP_FRAMES: usize = 4;
@@ -228,6 +238,7 @@ pub fn render_splash(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     theme: &TuiTheme,
+    keybindings: &crate::theme::TuiKeybindings,
     frame_idx: usize,
     caps: MotionCaps,
 ) {
@@ -255,7 +266,14 @@ pub fn render_splash(
     };
 
     let bench = bench_brag_line();
-    let fact = DID_YOU_KNOW[(frame_idx / FACT_STEP_FRAMES) % DID_YOU_KNOW.len()];
+    // Rotate the fact only when motion is allowed; a reduced-motion / non-truecolor
+    // splash holds on the first fact so nothing shifts under the user.
+    let fact_index = if caps.animated() {
+        (frame_idx / FACT_STEP_FRAMES) % DID_YOU_KNOW.len()
+    } else {
+        0
+    };
+    let fact = DID_YOU_KNOW[fact_index];
 
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled("ρ", mark_style)),
@@ -269,7 +287,10 @@ pub fn render_splash(
         lines.push(Line::from(bench_brag_spans(&bench, theme)));
     }
     lines.push(Line::default());
-    lines.push(Line::from(Span::styled(HINTS_ROW, muted)));
+    lines.push(Line::from(Span::styled(
+        splash_hints_row(keybindings),
+        muted,
+    )));
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
         format!("· did you know — {fact}"),
