@@ -236,87 +236,38 @@ async fn build_interactive_session(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let use_fake = cli.fake || std::env::var("RHO_FAKE").is_ok_and(|v| v == "1");
-    let mut provider_settings = None;
-    let mut runtime_provider = None;
-    // A login-required notice to surface on launch (tau's startup warning),
-    // set only when we fall back to the `LoginRequiredProvider` placeholder.
-    let mut startup_message: Option<String> = None;
-    let (provider, mut model, mut provider_name): (Arc<dyn ModelProvider>, String, String) =
-        if use_fake {
-            (
-                Arc::new(demo_fake_provider()),
-                cli.model.clone().unwrap_or_else(|| "fake".to_string()),
-                cli.provider.clone().unwrap_or_else(|| "fake".to_string()),
-            )
-        } else {
-            let credentials = FileCredentialStore::at_default();
-            let settings =
-                load_provider_settings(None, Some(&credentials as &dyn CredentialReader))
-                    .map_err(|err| err.0)?;
-            let selection = resolve_tui_startup_selection(
-                &settings,
-                cli.provider.as_deref(),
-                cli.model.as_deref(),
-                Some(&credentials as &dyn CredentialReader),
-            )
-            .map_err(|err| err.0)?;
-            let name = selection.provider.name().to_string();
-            // tau parity (`run_tui_app`): a missing credential must not abort the
-            // TUI. When `create_model_provider` fails *and* the provider has no
-            // usable credential, substitute a `LoginRequiredProvider` placeholder
-            // and carry a startup notice so the app still launches; the user then
-            // runs `/login` or picks a credentialed provider/model to swap in a
-            // real provider. A genuine config error (e.g. an invalid `--model`)
-            // still aborts, matching tau, which only catches the missing-key
-            // `RuntimeError` and lets `ProviderConfigError` propagate.
-            let provider: Arc<dyn ModelProvider> = match create_model_provider(
-                &selection.provider,
-                None,
-                Some(&selection.model),
-                Some(DEFAULT_THINKING_LEVEL),
-            ) {
-                Ok(provider) => {
-                    runtime_provider = Some(selection.provider.clone());
-                    provider
-                }
-                Err(err) => {
-                    if provider_has_usable_credentials(
-                        &selection.provider,
-                        Some(&credentials as &dyn CredentialReader),
-                    ) {
-                        return Err(err.0);
-                    }
-                    let message = format!(
-                        "Login required. Run /login to choose a provider, \
-                         or /login {name} to continue with the current provider."
-                    );
-                    startup_message = Some(message.clone());
-                    Arc::new(LoginRequiredProvider::new(message))
-                }
-            };
-            provider_settings = Some(settings);
-            (provider, selection.model, name)
-        };
-
     let manager = SessionManager::new(rho_coding::paths::RhoPaths::default());
-    let (storage, cwd, session_id) = if let Some(resume_id) = &cli.resume {
-        let record = manager
-            .get_session(resume_id)
-            .map_err(|err| err.0)?
-            .ok_or_else(|| format!("Unknown session id: {resume_id}"))?;
-        // Resume adopts the stored session's cwd/model (and provider, if known).
-        model.clone_from(&record.model);
-        if let Some(name) = &record.provider_name {
-            provider_name.clone_from(name);
-        }
+    // Load the resume record up front so its stored provider/model drive the
+    // startup selection (and thus the login-required decision), rather than
+    // being stamped on after a provider was already built for a *different*
+    // selection (tau resolves the resume record before constructing the
+    // provider; `_resolve_tui_startup_selection(explicit_resume=...)`).
+    let resume_record = match &cli.resume {
+        Some(resume_id) => Some(
+            manager
+                .get_session(resume_id)
+                .map_err(|err| err.0)?
+                .ok_or_else(|| format!("Unknown session id: {resume_id}"))?,
+        ),
+        None => None,
+    };
+
+    let startup = resolve_startup_provider(cli, resume_record.as_ref())?;
+
+    let (storage, cwd, session_id) = if let Some(record) = resume_record {
         (
             jsonl_session_storage(&record.path),
             record.cwd.clone(),
             Some(record.id),
         )
     } else {
-        let record = manager.create_session(&default_cwd, &model, Some(&provider_name), None, None);
+        let record = manager.create_session(
+            &default_cwd,
+            &startup.model,
+            Some(&startup.provider_name),
+            None,
+            None,
+        );
         (
             jsonl_session_storage(&record.path),
             record.cwd.clone(),
@@ -324,16 +275,118 @@ async fn build_interactive_session(
         )
     };
 
-    let mut config = CodingSessionConfig::new(provider, model, storage, cwd);
-    config.provider_name = provider_name;
-    config.provider_settings = provider_settings;
-    config.runtime_provider_config = runtime_provider;
+    let mut config = CodingSessionConfig::new(startup.provider, startup.model, storage, cwd);
+    config.provider_name = startup.provider_name;
+    config.provider_settings = startup.provider_settings;
+    config.runtime_provider_config = startup.runtime_provider;
     config.session_id = session_id;
     config.session_manager = Some(manager);
     let session = CodingSession::load(config)
         .await
         .map_err(|err| err.to_string())?;
-    Ok((session, startup_message))
+    Ok((session, startup.startup_message))
+}
+
+/// The live provider and session metadata to launch the interactive TUI with.
+struct StartupProvider {
+    provider: Arc<dyn ModelProvider>,
+    model: String,
+    provider_name: String,
+    provider_settings: Option<ProviderSettings>,
+    runtime_provider: Option<ProviderConfig>,
+    /// A login-required notice to surface on launch (tau's startup warning),
+    /// set only for the `LoginRequiredProvider` placeholder path.
+    startup_message: Option<String>,
+}
+
+/// Resolve the live provider for the interactive TUI: the scripted `--fake`
+/// provider, a real credentialed provider, or the `LoginRequiredProvider`
+/// placeholder when the resolved provider has no usable credential.
+///
+/// tau parity (`run_tui_app`): a missing credential must not abort the TUI. The
+/// model is validated by `resolve_provider_selection` before this point, so a
+/// missing credential is the only reason a real provider can't be built — no
+/// error classification is needed. The resolved provider config is kept as the
+/// runtime config even for the placeholder, so a later same-provider `/login` +
+/// model pick rebuilds a real provider via
+/// `CodingSession::refresh_runtime_provider` (a no-op when the runtime config is
+/// absent). A genuine configuration failure on a credentialed provider still
+/// aborts, matching tau (which lets `ProviderConfigError` propagate).
+fn resolve_startup_provider(
+    cli: &Cli,
+    resume_record: Option<&CodingSessionRecord>,
+) -> Result<StartupProvider, String> {
+    let use_fake = cli.fake || std::env::var("RHO_FAKE").is_ok_and(|v| v == "1");
+    if use_fake {
+        return Ok(StartupProvider {
+            provider: Arc::new(demo_fake_provider()),
+            model: resume_record
+                .map(|record| record.model.clone())
+                .or_else(|| cli.model.clone())
+                .unwrap_or_else(|| "fake".to_string()),
+            provider_name: resume_record
+                .and_then(|record| record.provider_name.clone())
+                .or_else(|| cli.provider.clone())
+                .unwrap_or_else(|| "fake".to_string()),
+            provider_settings: None,
+            runtime_provider: None,
+            startup_message: None,
+        });
+    }
+
+    let credentials = FileCredentialStore::at_default();
+    let settings = load_provider_settings(None, Some(&credentials as &dyn CredentialReader))
+        .map_err(|err| err.0)?;
+    // A resume adopts the stored provider/model (authoritative); a fresh launch
+    // honors `--provider`/`--model`, else a credentialed default.
+    let selection = if let Some(record) = resume_record {
+        let provider_name = record.provider_name.as_deref().or(cli.provider.as_deref());
+        resolve_provider_selection(&settings, provider_name, Some(record.model.as_str()))
+            .map_err(|err| err.0)?
+    } else {
+        resolve_tui_startup_selection(
+            &settings,
+            cli.provider.as_deref(),
+            cli.model.as_deref(),
+            Some(&credentials as &dyn CredentialReader),
+        )
+        .map_err(|err| err.0)?
+    };
+    let name = selection.provider.name().to_string();
+
+    if provider_has_usable_credentials(
+        &selection.provider,
+        Some(&credentials as &dyn CredentialReader),
+    ) {
+        let provider = create_model_provider(
+            &selection.provider,
+            None,
+            Some(&selection.model),
+            Some(DEFAULT_THINKING_LEVEL),
+        )
+        .map_err(|err| err.0)?;
+        return Ok(StartupProvider {
+            provider,
+            model: selection.model,
+            provider_name: name,
+            provider_settings: Some(settings),
+            runtime_provider: Some(selection.provider),
+            startup_message: None,
+        });
+    }
+
+    let message = format!(
+        "Login required. Run /login to choose a provider, \
+         or /login {name} to continue with the current provider."
+    );
+    Ok(StartupProvider {
+        provider: Arc::new(LoginRequiredProvider::new(message.clone())),
+        model: selection.model,
+        provider_name: name,
+        provider_settings: Some(settings),
+        runtime_provider: Some(selection.provider),
+        startup_message: Some(message),
+    })
 }
 
 /// Resolve the provider/model to launch the interactive TUI with (tau

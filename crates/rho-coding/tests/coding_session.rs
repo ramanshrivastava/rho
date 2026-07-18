@@ -905,27 +905,78 @@ async fn login_required_placeholder_reports_the_login_message_when_prompted() {
 }
 
 #[tokio::test]
-async fn login_required_placeholder_unlocks_after_provider_swap() {
+async fn login_required_placeholder_unlocks_after_same_provider_model_pick() {
+    use rho_agent::messages::AgentMessage;
     use rho_coding::login_required::LoginRequiredProvider;
+    use rho_coding::provider_config::{OpenAICompatibleProviderConfig, ProviderConfig};
 
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().join("project");
     std::fs::create_dir_all(&cwd).unwrap();
-    // A usable credential for `openai` lives in the hermetic store, so swapping
-    // to it builds a real provider.
-    write_openai_credential(tmp.path());
 
+    // A custom provider pointing at an unreachable endpoint, with a usable
+    // credential in the hermetic store. Once the placeholder is swapped for the
+    // real provider, a prompt fails *offline* (connection refused) rather than
+    // returning the login message — so the test needs no network.
+    let rho_home = tmp.path().join(".rho");
+    std::fs::create_dir_all(&rho_home).unwrap();
+    FileCredentialStore::new(rho_home.join("credentials.json"))
+        .set("local", "sk-test")
+        .unwrap();
+
+    let local = ProviderConfig::OpenAICompatible(OpenAICompatibleProviderConfig {
+        base_url: "http://127.0.0.1:9/v1".to_string(),
+        api_key_env: "RHO_TEST_LOCAL_KEY_UNSET".to_string(),
+        credential_name: Some("local".to_string()),
+        models: vec!["m1".to_string(), "m2".to_string()],
+        default_model: "m1".to_string(),
+        max_retries: 0,
+        timeout_seconds: 1.0,
+        ..OpenAICompatibleProviderConfig::new("local")
+    });
+    let settings = ProviderSettings {
+        default_provider: "local".to_string(),
+        providers: vec![local.clone()],
+        scoped_models: Vec::new(),
+    };
+
+    // Configure the session exactly as `build_interactive_session` does for the
+    // login-required path: the placeholder is live, but the resolved provider
+    // config is kept as the runtime config so a same-provider model pick can
+    // rebuild the real provider (Codex P1 — otherwise the swap is a silent
+    // no-op and every prompt keeps returning the login error).
     let provider: Arc<dyn ModelProvider> =
         Arc::new(LoginRequiredProvider::new(LOGIN_REQUIRED_MESSAGE));
     let storage = jsonl_session_storage(tmp.path().join("s.jsonl"));
-    let config = provider_aware_config(provider, storage, cwd, tmp.path(), "gpt-4");
+    let mut config = CodingSessionConfig::new(provider, "m1", storage, cwd.clone());
+    config.clock = Arc::new(FixedClock::fixture());
+    config.id_gen = Arc::new(SequentialIdGen::new());
+    config.provider_name = "local".to_string();
+    config.provider_settings = Some(settings);
+    config.runtime_provider_config = Some(local);
+    config.resource_paths = Some(temp_resource_paths(tmp.path(), &cwd));
     let mut session = CodingSession::load(config).await.unwrap();
 
-    // Picking a credentialed provider/model swaps the placeholder for a real
-    // provider (the same path `/login` and the model picker drive).
+    // A same-provider model pick rebuilds the runtime provider, replacing the
+    // placeholder (the model-picker / login unlock path).
     session
-        .set_model_choice(&ModelChoice::new("openai", "gpt-4o"))
-        .expect("swapping to a credentialed provider/model succeeds");
-    assert_eq!(session.provider_name(), "openai");
-    assert_eq!(session.model(), "gpt-4o");
+        .set_model_choice(&ModelChoice::new("local", "m2"))
+        .expect("same-provider model pick rebuilds the runtime provider");
+    assert_eq!(session.model(), "m2");
+
+    // With the real provider installed, prompting no longer returns the login
+    // message (it now fails against the unreachable endpoint instead).
+    drain(session.prompt("hello".to_string(), None)).await;
+    let still_locked = session.messages().iter().any(|message| {
+        matches!(
+            message,
+            AgentMessage::Assistant(assistant)
+                if assistant.error_message.as_deref() == Some(LOGIN_REQUIRED_MESSAGE)
+        )
+    });
+    assert!(
+        !still_locked,
+        "the placeholder was swapped out, so no login-required error is produced: {:?}",
+        session.messages()
+    );
 }
