@@ -61,9 +61,11 @@ impl TranscriptCache {
 
 /// Hash every input `build_transcript_lines` reads. The per-item fields mirror
 /// the branches in [`build_chat_item_lines`] / [`visible_chat_text`]; the global
-/// `tool_spinner` covers the live spinner + elapsed timer applied to any
-/// still-executing tool row (so an executing turn correctly re-renders each
-/// tick), and `theme.name` stands in for the whole palette (name ↔ colors 1:1).
+/// `tool_spinner` plus the per-item resolved invocation
+/// (`resolve_tool_invocation`, hashed in the loop) cover the live spinner AND the
+/// whole-second elapsed timer on a still-executing tool row, so an executing turn
+/// re-renders each tick without the timer ever going stale; `theme.name` stands
+/// in for the whole palette (name ↔ colors 1:1).
 fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     width.hash(&mut h);
@@ -78,6 +80,14 @@ fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64
         item.tool_result_text.hash(&mut h);
         item.update_text.hash(&mut h);
         item.always_show_tool_result.hash(&mut h);
+        // Hash the *resolved* invocation for an executing tool row: it folds in
+        // the live spinner frame AND the whole-second elapsed timer
+        // (`started_at.elapsed()`). The spinner string alone recurs every cycle
+        // (10 frames × 150 ms = 1.5 s) while the timer keeps advancing, so
+        // without the elapsed bucket a fingerprint could collide and freeze the
+        // "(Ns)" timer until some other state changed. `None` for settled/non-tool
+        // rows, so this is cheap for everything but the one running tool.
+        state.resolve_tool_invocation(item).hash(&mut h);
     }
     // Not hashed: `tool_name` / `tool_arguments` / `custom_type` / `details`.
     // They only reach the render through the extension resolvers
@@ -160,6 +170,15 @@ pub fn build_transcript_lines(
 #[must_use]
 pub fn transcript_is_empty(state: &TuiState) -> bool {
     state.items.is_empty() && state.assistant_buffer.is_empty()
+}
+
+/// Whether to show the rho welcome splash: an empty transcript on a **fresh,
+/// idle** session. Gated on `!running` so it never lingers after the user
+/// submits the first prompt while a slow provider (or pre-prompt work like
+/// auto-compaction) has not yet produced the first event.
+#[must_use]
+pub fn should_show_splash(state: &TuiState) -> bool {
+    !state.running && transcript_is_empty(state)
 }
 
 /// Render the rho welcome splash into `area`, vertically + horizontally centered:
@@ -1099,6 +1118,24 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn splash_shows_only_on_a_fresh_idle_session() {
+        let mut state = TuiState::new();
+        // Fresh + idle → splash.
+        assert!(should_show_splash(&state));
+        // A pending turn (running set before the first event) suppresses it, so
+        // the splash never lingers after the user submits the first prompt.
+        state.running = true;
+        assert!(!should_show_splash(&state));
+        state.running = false;
+        // Any content suppresses it (via items or a streaming buffer).
+        state.add_item(ChatItemRole::User, "hi".to_string());
+        assert!(!should_show_splash(&state));
+        state.items.clear();
+        state.assistant_buffer = "streaming…".to_string();
+        assert!(!should_show_splash(&state));
     }
 
     #[test]

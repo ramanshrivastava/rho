@@ -329,10 +329,9 @@ fn render_transcript_scrolled(
     theme: &TuiTheme,
     cache: &RefCell<crate::widgets::TranscriptCache>,
 ) {
-    // A fresh, idle session shows the rho welcome splash instead of a blank pane.
-    // Gated on `!running` so it never flashes during the first turn before the
-    // user message / first delta lands in the transcript.
-    if !state.running && crate::widgets::transcript_is_empty(state) {
+    // A fresh, idle session shows the rho welcome splash instead of a blank pane
+    // (suppressed the moment a turn is pending — see `should_show_splash`).
+    if crate::widgets::should_show_splash(state) {
         crate::widgets::render_splash(frame, area, theme);
         return;
     }
@@ -880,6 +879,12 @@ impl App {
         // would target a stale run's cancel token + queues (CR).
         let control = self.session.control();
         let keybindings = self.settings.keybindings.clone();
+        // Mark the turn running BEFORE the first frame. The adapter only flips
+        // `running` true once the first stream event lands, but the loop draws a
+        // frame before that; without this, a slow provider (or pre-prompt work
+        // like auto-compaction) would keep showing the empty-session splash after
+        // the user already submitted, as if the submit were ignored.
+        self.state.running = true;
         // Scope the disjoint field borrows (and the `session`-borrowing stream)
         // so they all drop before we touch `self` again after the turn. The block
         // yields whether the user asked to quit mid-turn.
@@ -980,6 +985,10 @@ impl App {
             self.should_quit = true;
         }
         self.state.tool_spinner = None;
+        // Clear the running flag we set before the first frame, in case the
+        // stream ended without a settle event (the adapter clears it on settle /
+        // error, but a bare stream close would otherwise leave it stuck true).
+        self.state.running = false;
         // Surface a run error the session recorded (tau shows the failure in the
         // transcript after the turn settles).
         if let Some(error) = self.session.take_run_error() {
