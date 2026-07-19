@@ -634,32 +634,48 @@ impl LocalOAuthServer {
 /// Like `std::net::TcpListener::bind`, every address `host:port` resolves to is
 /// tried in turn; the first that binds wins, otherwise the last error propagates.
 fn bind_reuse_addr(host: &str, port: u16) -> std::io::Result<TcpListener> {
-    use socket2::{Domain, Protocol, Socket, Type};
-
-    let mut last_err: Option<std::io::Error> = None;
-    for addr in (host, port).to_socket_addrs()? {
-        let bind_one = || -> std::io::Result<TcpListener> {
-            let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
-            // Unix only — see the doc comment for the Windows hijack rationale.
-            #[cfg(not(windows))]
-            socket.set_reuse_address(true)?;
-            socket.bind(&addr.into())?;
-            socket.listen(128)?;
-            let listener: TcpListener = socket.into();
-            listener.set_nonblocking(true)?;
-            Ok(listener)
-        };
-        match bind_one() {
-            Ok(listener) => return Ok(listener),
-            Err(err) => last_err = Some(err),
-        }
+    // On Windows, delegate to the standard library, which sets
+    // `SO_EXCLUSIVEADDRUSE` on the listener — actively refusing any other
+    // process that tries to reuse the address+port, which is the correct defense
+    // against the callback-hijack described above (merely *not* setting
+    // `SO_REUSEADDR` would still leave the socket at Windows' weak default).
+    // `TcpListener::bind` already tries every resolved address. The
+    // `SO_REUSEADDR` `TIME_WAIT`-rebind benefit is a Unix-only concern, so only
+    // Unix needs the `socket2` path.
+    #[cfg(windows)]
+    {
+        let listener = TcpListener::bind((host, port))?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
     }
-    Err(last_err.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::AddrNotAvailable,
-            format!("no socket address resolved for {host}:{port}"),
-        )
-    }))
+    #[cfg(not(windows))]
+    {
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let mut last_err: Option<std::io::Error> = None;
+        for addr in (host, port).to_socket_addrs()? {
+            let bind_one = || -> std::io::Result<TcpListener> {
+                let socket =
+                    Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+                socket.set_reuse_address(true)?;
+                socket.bind(&addr.into())?;
+                socket.listen(128)?;
+                let listener: TcpListener = socket.into();
+                listener.set_nonblocking(true)?;
+                Ok(listener)
+            };
+            match bind_one() {
+                Ok(listener) => return Ok(listener),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("no socket address resolved for {host}:{port}"),
+            )
+        }))
+    }
 }
 
 /// Start the local OAuth callback server (tau `_start_local_oauth_server`).
@@ -1100,6 +1116,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn loopback_server_rebinds_same_port_with_reuse_addr() {
         // Without SO_REUSEADDR the fixed callback port lingers in TIME_WAIT after
         // the first server closes, and this immediate rebind on the SAME port
