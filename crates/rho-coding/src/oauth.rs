@@ -617,28 +617,49 @@ impl LocalOAuthServer {
     }
 }
 
-/// Bind a nonblocking loopback listener with `SO_REUSEADDR` set.
+/// Bind a nonblocking loopback listener with `SO_REUSEADDR` set (on Unix).
 ///
 /// Mirrors tau's `ThreadingHTTPServer` (Python's `HTTPServer` sets
-/// `allow_reuse_address = 1`): setting `SO_REUSEADDR` lets a fixed callback port
+/// `allow_reuse_address = 1`): on Unix, `SO_REUSEADDR` lets a fixed callback port
 /// be rebound while a prior connection lingers in `TIME_WAIT`, which is exactly
 /// the rapid-retry case that otherwise fails on the fixed OAuth ports.
+///
+/// `SO_REUSEADDR` is **not** set on Windows: there its semantics let a *different*
+/// process bind an already-listening address+port and race for the browser
+/// redirect. That is a callback-hijack risk here — the Anthropic flow uses the
+/// PKCE verifier as `state`, so a stolen redirect leaks both the code and the
+/// verifier. Windows' default (exclusive) ownership is what we want, and the
+/// `TIME_WAIT` rebind problem this fixes is a Unix concern.
+///
+/// Like `std::net::TcpListener::bind`, every address `host:port` resolves to is
+/// tried in turn; the first that binds wins, otherwise the last error propagates.
 fn bind_reuse_addr(host: &str, port: u16) -> std::io::Result<TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
 
-    let addr = (host, port).to_socket_addrs()?.next().ok_or_else(|| {
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in (host, port).to_socket_addrs()? {
+        let bind_one = || -> std::io::Result<TcpListener> {
+            let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+            // Unix only — see the doc comment for the Windows hijack rationale.
+            #[cfg(not(windows))]
+            socket.set_reuse_address(true)?;
+            socket.bind(&addr.into())?;
+            socket.listen(128)?;
+            let listener: TcpListener = socket.into();
+            listener.set_nonblocking(true)?;
+            Ok(listener)
+        };
+        match bind_one() {
+            Ok(listener) => return Ok(listener),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::AddrNotAvailable,
             format!("no socket address resolved for {host}:{port}"),
         )
-    })?;
-    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
-    socket.set_reuse_address(true)?;
-    socket.bind(&addr.into())?;
-    socket.listen(128)?;
-    let listener: TcpListener = socket.into();
-    listener.set_nonblocking(true)?;
-    Ok(listener)
+    }))
 }
 
 /// Start the local OAuth callback server (tau `_start_local_oauth_server`).
