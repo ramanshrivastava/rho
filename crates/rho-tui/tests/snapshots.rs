@@ -552,6 +552,35 @@ fn snapshot_oauth_login_device_code() {
 }
 
 #[test]
+fn oauth_login_prompt_uses_neutral_caret_not_code_label() {
+    // In prompt mode (e.g. the GitHub Enterprise domain question) the input line
+    // must show the neutral `›` caret and let the `help` line carry the real
+    // prompt — the old hardcoded "code:" label contradicted the domain prompt.
+    let theme = dark();
+    let mut modal = OAuthLoginModal::new("GitHub Copilot");
+    modal.set_prompt(
+        "GitHub Enterprise URL/domain (blank for github.com)".to_string(),
+        true,
+    );
+    let rendered = render_to_string(70, 18, |frame| {
+        let area = full(frame);
+        Modal::OAuthLogin(modal).render(frame, area, &theme);
+    });
+    assert!(
+        rendered.contains("GitHub Enterprise URL/domain"),
+        "help prompt should be rendered:\n{rendered}"
+    );
+    assert!(
+        rendered.contains('›'),
+        "neutral caret should be rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("code:"),
+        "the misleading 'code:' label must be gone:\n{rendered}"
+    );
+}
+
+#[test]
 fn snapshot_custom_provider_login() {
     snapshot_modal(
         "modal_custom_provider_login",

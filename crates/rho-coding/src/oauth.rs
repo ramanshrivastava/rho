@@ -33,7 +33,7 @@
 
 use std::fmt::Write as _;
 use std::io::{Read as _, Write as _};
-use std::net::TcpListener;
+use std::net::{TcpListener, ToSocketAddrs as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -617,6 +617,67 @@ impl LocalOAuthServer {
     }
 }
 
+/// Bind a nonblocking loopback listener with `SO_REUSEADDR` set (on Unix).
+///
+/// Mirrors tau's `ThreadingHTTPServer` (Python's `HTTPServer` sets
+/// `allow_reuse_address = 1`): on Unix, `SO_REUSEADDR` lets a fixed callback port
+/// be rebound while a prior connection lingers in `TIME_WAIT`, which is exactly
+/// the rapid-retry case that otherwise fails on the fixed OAuth ports.
+///
+/// `SO_REUSEADDR` is **not** set on Windows: there its semantics let a *different*
+/// process bind an already-listening address+port and race for the browser
+/// redirect. That is a callback-hijack risk here — the Anthropic flow uses the
+/// PKCE verifier as `state`, so a stolen redirect leaks both the code and the
+/// verifier. Windows' default (exclusive) ownership is what we want, and the
+/// `TIME_WAIT` rebind problem this fixes is a Unix concern.
+///
+/// Like `std::net::TcpListener::bind`, every address `host:port` resolves to is
+/// tried in turn; the first that binds wins, otherwise the last error propagates.
+fn bind_reuse_addr(host: &str, port: u16) -> std::io::Result<TcpListener> {
+    // On Windows, delegate to the standard library, which sets
+    // `SO_EXCLUSIVEADDRUSE` on the listener — actively refusing any other
+    // process that tries to reuse the address+port, which is the correct defense
+    // against the callback-hijack described above (merely *not* setting
+    // `SO_REUSEADDR` would still leave the socket at Windows' weak default).
+    // `TcpListener::bind` already tries every resolved address. The
+    // `SO_REUSEADDR` `TIME_WAIT`-rebind benefit is a Unix-only concern, so only
+    // Unix needs the `socket2` path.
+    #[cfg(windows)]
+    {
+        let listener = TcpListener::bind((host, port))?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    }
+    #[cfg(not(windows))]
+    {
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let mut last_err: Option<std::io::Error> = None;
+        for addr in (host, port).to_socket_addrs()? {
+            let bind_one = || -> std::io::Result<TcpListener> {
+                let socket =
+                    Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+                socket.set_reuse_address(true)?;
+                socket.bind(&addr.into())?;
+                socket.listen(128)?;
+                let listener: TcpListener = socket.into();
+                listener.set_nonblocking(true)?;
+                Ok(listener)
+            };
+            match bind_one() {
+                Ok(listener) => return Ok(listener),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("no socket address resolved for {host}:{port}"),
+            )
+        }))
+    }
+}
+
 /// Start the local OAuth callback server (tau `_start_local_oauth_server`).
 ///
 /// Returns `None` if the port cannot be bound (mirroring tau's `except OSError`).
@@ -629,8 +690,19 @@ pub fn start_local_oauth_server(
     success_message: &str,
 ) -> Option<LocalOAuthServer> {
     let host = std::env::var("TAU_OAUTH_CALLBACK_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let listener = TcpListener::bind((host.as_str(), callback_port)).ok()?;
-    listener.set_nonblocking(true).ok()?;
+    let listener = match bind_reuse_addr(host.as_str(), callback_port) {
+        Ok(listener) => listener,
+        Err(error) => {
+            // tau's `ThreadingHTTPServer` sets `allow_reuse_address = 1`; without
+            // SO_REUSEADDR the fixed callback port lingers in TIME_WAIT after a
+            // prior `/login`, so a rapid retry fails to bind. Don't swallow it
+            // silently (that drops the user to manual paste with no warning).
+            eprintln!(
+                "warning: OAuth loopback server could not bind {host}:{callback_port} ({error}); falling back to manual code paste"
+            );
+            return None;
+        }
+    };
 
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
@@ -1041,6 +1113,27 @@ mod tests {
             urlencode_form(&[("scope", "openid profile"), ("uri", "http://x/y")]),
             "scope=openid+profile&uri=http%3A%2F%2Fx%2Fy"
         );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn loopback_server_rebinds_same_port_with_reuse_addr() {
+        // Without SO_REUSEADDR the fixed callback port lingers in TIME_WAIT after
+        // the first server closes, and this immediate rebind on the SAME port
+        // fails — the exact rapid-`/login`-retry defect this fixes. With
+        // SO_REUSEADDR both binds succeed.
+        const PORT: u16 = 54999;
+
+        let first = start_local_oauth_server("state-1", PORT, "/auth/callback", "ok");
+        assert!(first.is_some(), "first bind on port {PORT} should succeed");
+        first.unwrap().close();
+
+        let second = start_local_oauth_server("state-2", PORT, "/auth/callback", "ok");
+        assert!(
+            second.is_some(),
+            "immediate rebind on the same port {PORT} should succeed with SO_REUSEADDR"
+        );
+        second.unwrap().close();
     }
 
     #[test]

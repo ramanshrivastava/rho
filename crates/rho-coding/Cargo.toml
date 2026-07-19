@@ -38,6 +38,7 @@ async-trait = { workspace = true }
 regex = "1"
 reqwest = { workspace = true }
 base64 = "0.22"
+socket2 = "0.6"
 getrandom = "0.2"
 url = "2"
 toml = { workspace = true }

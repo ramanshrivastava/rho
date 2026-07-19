@@ -1431,8 +1431,13 @@ impl OAuthLoginModal {
         }
         rows.push(Line::default());
         if self.select_options.is_empty() {
+            // Neutral prompt caret (matching rho's composer/list `› ` style)
+            // rather than a hardcoded "code:" label: the same input line serves
+            // the domain prompt (GitHub Enterprise URL), the manual code-paste
+            // prompts, and any other `set_prompt` help — the `help` line above
+            // carries the real prompt, so the caret must not contradict it.
             rows.push(Line::from(vec![
-                Span::styled("code: ".to_string(), parse_style(&theme.muted_text)),
+                Span::styled("› ".to_string(), parse_style(&theme.muted_text)),
                 Span::styled(self.field.display(), parse_style(&theme.prompt_text)),
             ]));
             render_list_modal(
