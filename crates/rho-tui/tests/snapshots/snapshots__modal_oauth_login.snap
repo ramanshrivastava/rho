@@ -12,6 +12,6 @@ expression: rendered
            │                                               │
            │https://claude.ai/oauth/authorize?client_id=dem│
            │                                               │
-           │code:                                          │
+           │›                                              │
            │Enter submits · Escape goes back · Ctrl+D close│
            └───────────────────────────────────────────────┘
