@@ -83,6 +83,25 @@ async fn content_type_reaches_the_wire_exactly_once() {
     );
 }
 
+/// Providers whose header list omits `content-type` (openai-compatible and
+/// Mistral send only `Authorization`) must keep the `application/json` that
+/// `RequestBuilder::json` installs: `RequestBuilder::headers` replaces
+/// per-key via `replace_headers`, it does not clear the map wholesale.
+#[tokio::test]
+async fn json_content_type_survives_when_the_list_omits_it() {
+    let lines = captured_header_lines(vec![(
+        "Authorization".to_string(),
+        "Bearer test-token".to_string(),
+    )])
+    .await;
+
+    assert_eq!(
+        values_for(&lines, "content-type"),
+        vec!["application/json"],
+        "expected .json()'s content-type to survive, got: {lines:?}"
+    );
+}
+
 /// tau's header dicts overwrite on duplicate keys, so a configured header a
 /// provider also sets must resolve to the later (provider) value — last wins.
 #[tokio::test]
