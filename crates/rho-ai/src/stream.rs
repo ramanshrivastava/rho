@@ -67,12 +67,20 @@ pub enum Delta {
     },
 }
 
+/// Which kind of block is currently open in the streamed content
+/// (tau `active_kind`: `"text"` / `"thinking"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveKind {
+    Text,
+    Thinking,
+}
+
 /// Accumulates provider [`Delta`]s into canonical [`AssistantMessageEvent`]s
 /// (tau `canonicalize_provider_stream`).
 pub struct StreamAccumulator {
     partial: AssistantMessage,
-    text_index: Option<usize>,
-    thinking_index: Option<usize>,
+    active_index: Option<usize>,
+    active_kind: Option<ActiveKind>,
     started: bool,
     terminal: bool,
     api: String,
@@ -103,8 +111,8 @@ impl StreamAccumulator {
         partial.timestamp = timestamp_ms;
         Self {
             partial,
-            text_index: None,
-            thinking_index: None,
+            active_index: None,
+            active_kind: None,
             started: false,
             terminal: false,
             api,
@@ -162,12 +170,40 @@ impl StreamAccumulator {
         }
     }
 
+    /// End the active text/thinking block before the provider changes channels
+    /// (tau `_end_active_block`). Emits the matching `*EndEvent` with a snapshot
+    /// taken *before* any new block is appended.
+    fn end_active_block(&self, out: &mut Vec<AssistantMessageEvent>) {
+        let Some(index) = self.active_index else {
+            return;
+        };
+        match &self.partial.content[index] {
+            AssistantContent::Text(block) => {
+                out.push(AssistantMessageEvent::TextEnd(TextEndEvent::new(
+                    content_index(index),
+                    block.text.clone(),
+                    self.snapshot(),
+                )));
+            }
+            AssistantContent::Thinking(block) => {
+                out.push(AssistantMessageEvent::ThinkingEnd(ThinkingEndEvent::new(
+                    content_index(index),
+                    block.thinking.clone(),
+                    self.snapshot(),
+                )));
+            }
+            AssistantContent::ToolCall(_) => {}
+        }
+    }
+
     fn text_delta(&mut self, delta: &str) -> Vec<AssistantMessageEvent> {
         let mut out = Vec::new();
         self.ensure_started(&mut out);
-        if self.text_index.is_none() {
+        if self.active_kind != Some(ActiveKind::Text) {
+            self.end_active_block(&mut out);
             let index = self.partial.content.len();
-            self.text_index = Some(index);
+            self.active_index = Some(index);
+            self.active_kind = Some(ActiveKind::Text);
             self.partial
                 .content
                 .push(AssistantContent::Text(TextContent::new("")));
@@ -176,7 +212,7 @@ impl StreamAccumulator {
                 self.snapshot(),
             )));
         }
-        let index = self.text_index.expect("text index set");
+        let index = self.active_index.expect("active index set");
         if let AssistantContent::Text(block) = &mut self.partial.content[index] {
             block.text.push_str(delta);
         }
@@ -191,9 +227,11 @@ impl StreamAccumulator {
     fn thinking_delta(&mut self, delta: &str) -> Vec<AssistantMessageEvent> {
         let mut out = Vec::new();
         self.ensure_started(&mut out);
-        if self.thinking_index.is_none() {
+        if self.active_kind != Some(ActiveKind::Thinking) {
+            self.end_active_block(&mut out);
             let index = self.partial.content.len();
-            self.thinking_index = Some(index);
+            self.active_index = Some(index);
+            self.active_kind = Some(ActiveKind::Thinking);
             self.partial
                 .content
                 .push(AssistantContent::Thinking(ThinkingContent::new("")));
@@ -201,7 +239,7 @@ impl StreamAccumulator {
                 ThinkingStartEvent::new(content_index(index), self.snapshot()),
             ));
         }
-        let index = self.thinking_index.expect("thinking index set");
+        let index = self.active_index.expect("active index set");
         if let AssistantContent::Thinking(block) = &mut self.partial.content[index] {
             block.thinking.push_str(delta);
         }
@@ -214,6 +252,9 @@ impl StreamAccumulator {
     fn tool_call(&mut self, tool_call: ToolCall) -> Vec<AssistantMessageEvent> {
         let mut out = Vec::new();
         self.ensure_started(&mut out);
+        self.end_active_block(&mut out);
+        self.active_index = None;
+        self.active_kind = None;
         let index = self.partial.content.len();
         self.partial
             .content
@@ -237,28 +278,9 @@ impl StreamAccumulator {
         let mut out = Vec::new();
         self.ensure_started(&mut out);
 
-        if let Some(index) = self.text_index {
-            let content = match &self.partial.content[index] {
-                AssistantContent::Text(block) => block.text.clone(),
-                _ => String::new(),
-            };
-            out.push(AssistantMessageEvent::TextEnd(TextEndEvent::new(
-                content_index(index),
-                content,
-                self.snapshot(),
-            )));
-        }
-        if let Some(index) = self.thinking_index {
-            let content = match &self.partial.content[index] {
-                AssistantContent::Thinking(block) => block.thinking.clone(),
-                _ => String::new(),
-            };
-            out.push(AssistantMessageEvent::ThinkingEnd(ThinkingEndEvent::new(
-                content_index(index),
-                content,
-                self.snapshot(),
-            )));
-        }
+        self.end_active_block(&mut out);
+        self.active_index = None;
+        self.active_kind = None;
 
         // Preserve the exact streamed content order; the provider's message
         // remains authoritative only for response metadata/usage.
@@ -274,6 +296,10 @@ impl StreamAccumulator {
         if final_message.content.is_empty() && !message.content.is_empty() {
             final_message.content.clone_from(&message.content);
         }
+        // Carry provider replay metadata (thinking/text signatures, redaction)
+        // from the parser's assembled message onto the canonical streamed blocks
+        // without reordering them (tau `_copy_replay_metadata`).
+        copy_replay_metadata(&mut final_message, message);
         let has_tools = !final_message.tool_calls().is_empty();
         let reason = map_finish_reason(finish_reason, has_tools);
         final_message.stop_reason = reason.into_stop_reason();
@@ -368,6 +394,44 @@ impl DoneReasonExt for DoneReason {
             DoneReason::Stop => StopReason::Stop,
             DoneReason::Length => StopReason::Length,
             DoneReason::ToolUse => StopReason::ToolUse,
+        }
+    }
+}
+
+/// Copy provider replay metadata from `source` onto `target` without changing
+/// block order (tau `_copy_replay_metadata`). Thinking blocks receive the
+/// `thinking_signature` and `redacted` flag; text blocks receive the
+/// `text_signature`. Blocks are matched positionally within each kind, stopping
+/// at the shorter list (Python `zip(..., strict=False)`).
+fn copy_replay_metadata(target: &mut AssistantMessage, source: &AssistantMessage) {
+    let mut source_thinking = source.content.iter().filter_map(|block| match block {
+        AssistantContent::Thinking(thinking) => Some(thinking),
+        _ => None,
+    });
+    for target_block in &mut target.content {
+        if let AssistantContent::Thinking(target_thinking) = target_block {
+            let Some(source_block) = source_thinking.next() else {
+                break;
+            };
+            target_thinking
+                .thinking_signature
+                .clone_from(&source_block.thinking_signature);
+            target_thinking.redacted = source_block.redacted;
+        }
+    }
+
+    let mut source_text = source.content.iter().filter_map(|block| match block {
+        AssistantContent::Text(text) => Some(text),
+        _ => None,
+    });
+    for target_block in &mut target.content {
+        if let AssistantContent::Text(target_text) = target_block {
+            let Some(source_block) = source_text.next() else {
+                break;
+            };
+            target_text
+                .text_signature
+                .clone_from(&source_block.text_signature);
         }
     }
 }

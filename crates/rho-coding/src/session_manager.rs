@@ -314,7 +314,10 @@ impl SessionManager {
             ))
         })?;
         let mut records = Vec::new();
-        for line in text.lines() {
+        // Split on newlines only: Python's str.splitlines() (and Rust's
+        // str::lines()) would also break on characters like U+2028 that appear
+        // unescaped inside JSON string values. tau splits on "\n" alone here.
+        for line in text.split('\n') {
             let stripped = line.trim();
             if stripped.is_empty() {
                 continue;

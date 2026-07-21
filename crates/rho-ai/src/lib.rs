@@ -26,6 +26,7 @@ pub mod google;
 pub mod http;
 pub mod http_errors;
 pub mod mistral;
+pub mod model_limits;
 pub mod openai_codex;
 pub mod openai_compatible;
 pub mod retry;
@@ -41,6 +42,7 @@ pub use env::{
 };
 pub use google::GoogleGenerativeAIProvider;
 pub use mistral::MistralConversationsProvider;
+pub use model_limits::RuntimeModelLimits;
 pub use openai_codex::OpenAICodexProvider;
 pub use openai_compatible::OpenAICompatibleProvider;
 
