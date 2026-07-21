@@ -688,12 +688,16 @@ impl CodingSession {
         input_tokens: i64,
     ) -> Option<IndexMap<String, f64>> {
         let provider = provider_config_for_name(&self.config, provider_name)?;
+        // `provider_config_for_name` falls back to `runtime_provider_config` on a
+        // miss, so this name guard is load-bearing: it rejects pricing lookups for
+        // a response whose provider is not the configured one (tau
+        // `_pricing_for_response`).
         if provider.name() != provider_name {
             return None;
         }
         let metadata = provider.model_metadata()?.get(model)?;
         for tier in &metadata.cost_tiers {
-            if tier.max_input_tokens.is_none() || input_tokens <= tier.max_input_tokens.unwrap() {
+            if tier.max_input_tokens.is_none_or(|max| input_tokens <= max) {
                 return Some(tier.cost.clone());
             }
         }

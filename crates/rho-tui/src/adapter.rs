@@ -123,40 +123,27 @@ impl<'a> TuiEventAdapter<'a> {
                     .add_user_message(&m.text(), Some(&m.custom_type), details);
             }
             AgentMessage::Assistant(m) => {
+                // The canonical message often has empty content, so fall back to
+                // the streamed buffer for the projected assistant text.
+                let text = resolved_assistant_text(m.text(), &self.state.assistant_buffer);
                 if matches!(m.stop_reason, StopReason::Error | StopReason::Aborted) {
-                    // Project any partial response streamed before the failure
-                    // (the canonical error message often has empty content, so
-                    // fall back to the streamed buffer), then the terminal error
-                    // (tau `add_assistant_error`).
-                    let message_text = m.text();
-                    let partial = if message_text.is_empty() {
-                        self.state.assistant_buffer.clone()
-                    } else {
-                        message_text
-                    };
-                    if !partial.is_empty() {
-                        self.state.add_item(ChatItemRole::Assistant, partial);
+                    // Project any partial response streamed before the failure,
+                    // then the terminal error (tau `add_assistant_error`).
+                    if !text.is_empty() {
+                        self.state.add_item(ChatItemRole::Assistant, text);
                     }
-                    let text = m
+                    let error = m
                         .error_message
                         .as_deref()
                         .filter(|s| !s.is_empty())
                         .unwrap_or("Error")
                         .to_string();
-                    self.state.error = Some(text.clone());
+                    self.state.error = Some(error.clone());
                     self.state.running = false;
                     self.state
-                        .add_item(ChatItemRole::Error, format!("Error: {text}"));
-                } else {
-                    let message_text = m.text();
-                    let text = if message_text.is_empty() {
-                        self.state.assistant_buffer.clone()
-                    } else {
-                        message_text
-                    };
-                    if !text.is_empty() {
-                        self.state.add_item(ChatItemRole::Assistant, text);
-                    }
+                        .add_item(ChatItemRole::Error, format!("Error: {error}"));
+                } else if !text.is_empty() {
+                    self.state.add_item(ChatItemRole::Assistant, text);
                 }
                 self.state.assistant_buffer.clear();
             }
@@ -172,5 +159,15 @@ impl<'a> TuiEventAdapter<'a> {
             let text = std::mem::take(&mut self.state.assistant_buffer);
             self.state.add_item(ChatItemRole::Assistant, text);
         }
+    }
+}
+
+/// The assistant text to project: the canonical `message_text` when non-empty,
+/// otherwise the streamed `buffer` (shared by the error and success paths).
+fn resolved_assistant_text(message_text: String, buffer: &str) -> String {
+    if message_text.is_empty() {
+        buffer.to_string()
+    } else {
+        message_text
     }
 }
