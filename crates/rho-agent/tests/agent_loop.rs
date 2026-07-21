@@ -523,3 +523,89 @@ async fn tool_error_becomes_is_error_result() {
     assert!(result.is_error);
     assert_eq!(result.text(), "kaboom");
 }
+
+#[tokio::test]
+async fn strips_empty_failed_turn_from_provider_request() {
+    // Both terminal failure modes (error and user-abort) are exercised: an empty
+    // failed/aborted assistant turn stays in durable history but is filtered out
+    // of the provider request so it cannot poison the next call (tau
+    // `_provider_context`).
+    for stop_reason in [StopReason::Error, StopReason::Aborted] {
+        let empty_failure = AssistantMessage::new(Vec::new())
+            .with_model("fake")
+            .with_stop_reason(stop_reason)
+            .with_error_message("connection reset");
+        let fake = FakeProvider::new(vec![vec![
+            assistant_start(),
+            assistant_done(AssistantMessage::new(vec![AssistantContent::Text(
+                TextContent::new("recovered"),
+            )])),
+        ]]);
+        let recorder = fake.clone();
+        let provider: Arc<dyn ModelProvider> = Arc::new(fake);
+        let messages = shared(vec![
+            AgentMessage::User(UserMessage::new("hello")),
+            AgentMessage::Assistant(empty_failure),
+        ]);
+        let mut config = base_config(provider, messages.clone(), vec![]);
+        config.max_turns = Some(1);
+        let _ = collect(config).await;
+
+        // The provider saw only the user turn — the empty failure was stripped.
+        let call = &recorder.calls()[0];
+        assert_eq!(user_texts(&call.messages), vec!["hello".to_string()]);
+        assert!(
+            !call.messages.iter().any(|m| matches!(
+                m,
+                AgentMessage::Assistant(a)
+                    if a.stop_reason == stop_reason && a.content.is_empty()
+            )),
+            "empty {stop_reason:?} turn must not reach the provider"
+        );
+
+        // Durable history still retains the failure for diagnostics.
+        assert!(
+            messages.lock().unwrap().iter().any(|m| matches!(
+                m,
+                AgentMessage::Assistant(a)
+                    if a.stop_reason == stop_reason && a.content.is_empty()
+            )),
+            "durable history must keep the {stop_reason:?} failure"
+        );
+    }
+}
+
+#[tokio::test]
+async fn keeps_failed_turn_with_content_in_provider_request() {
+    // A failed turn that DID produce content is real context and is retained.
+    let partial_error = AssistantMessage::new(vec![AssistantContent::Text(TextContent::new(
+        "partial answer",
+    ))])
+    .with_model("fake")
+    .with_stop_reason(StopReason::Error)
+    .with_error_message("stream cut");
+    let fake = FakeProvider::new(vec![vec![
+        assistant_start(),
+        assistant_done(AssistantMessage::new(vec![AssistantContent::Text(
+            TextContent::new("ok"),
+        )])),
+    ]]);
+    let recorder = fake.clone();
+    let provider: Arc<dyn ModelProvider> = Arc::new(fake);
+    let messages = shared(vec![
+        AgentMessage::User(UserMessage::new("hello")),
+        AgentMessage::Assistant(partial_error),
+    ]);
+    let mut config = base_config(provider, messages.clone(), vec![]);
+    config.max_turns = Some(1);
+    let _ = collect(config).await;
+
+    let call = &recorder.calls()[0];
+    assert!(
+        call.messages.iter().any(|m| matches!(
+            m,
+            AgentMessage::Assistant(a) if a.stop_reason == StopReason::Error
+        )),
+        "a failed turn with content is real context and must be kept"
+    );
+}

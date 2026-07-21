@@ -7,12 +7,12 @@ expression: rendered
 
 
            ┌ Sessions ─────────────────────────────────────┐
+           │search:                                        │
+           │                                               │
            │› sess-001  Refactor parser  claude            │
            │  sess-002  Untitled  claude                   │
            │                                               │
            │                                               │
            │                                               │
-           │                                               │
-           │                                               │
-           │Enter selects · Escape closes                  │
+           │Type to search · Enter selects · Escape closes │
            └───────────────────────────────────────────────┘

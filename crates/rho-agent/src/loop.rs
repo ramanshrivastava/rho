@@ -187,7 +187,11 @@ pub fn run_agent_loop(config: AgentLoopConfig) -> impl Stream<Item = AgentEvent>
                 }
 
                 // --- assistant events (inlined `_assistant_events`) ---------
-                let snapshot = messages.lock().expect("messages lock").clone();
+                // Strip empty failed/aborted assistant turns from the provider
+                // request (they stay in durable history) so a prior failure does
+                // not poison the next call (tau `_provider_context`).
+                let snapshot =
+                    provider_context(messages.lock().expect("messages lock").clone());
                 let mut source =
                     provider.stream_response(&model, &system, &snapshot, &tools, signal.clone());
                 let mut assistant: Option<AssistantMessage> = None;
@@ -406,6 +410,30 @@ fn error_message(model: &str, message: &str, clock: &dyn Clock) -> AssistantMess
         .with_error_message(message);
     m.timestamp = clock.now_ms();
     m
+}
+
+/// Return replayable messages while retaining failures in durable history (tau
+/// `_provider_context`).
+///
+/// Providers cannot consistently accept an assistant turn with no content. rho
+/// persists terminal failures for diagnostics, but an empty failed or aborted
+/// turn is not model context and must not poison the next request.
+fn provider_context(messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+    messages
+        .into_iter()
+        .filter(|message| !is_empty_failed_turn(message))
+        .collect()
+}
+
+/// Whether `message` is an assistant turn that failed or was aborted with no
+/// content (the shape [`provider_context`] strips before a provider request).
+fn is_empty_failed_turn(message: &AgentMessage) -> bool {
+    matches!(
+        message,
+        AgentMessage::Assistant(assistant)
+            if matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted)
+                && assistant.content.is_empty()
+    )
 }
 
 /// Append `message` to both the shared transcript and the run's `new_messages`.

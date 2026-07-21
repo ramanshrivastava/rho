@@ -37,8 +37,8 @@ use rho_coding::provider_config::{
     load_provider_settings, openai_compatible_config_from_provider,
     provider_default_thinking_level, provider_has_usable_credentials, provider_settings_from_json,
     provider_thinking_levels, provider_thinking_unavailable_reason, resolve_provider_selection,
-    save_provider_settings, set_default_provider_model, set_provider_thinking_level,
-    upsert_openai_compatible_provider,
+    resolve_startup_thinking_level, save_provider_settings, set_default_provider_model,
+    set_provider_thinking_level, upsert_openai_compatible_provider,
 };
 
 /// A test credential store keyed by credential name (stands in for tau's fake
@@ -506,6 +506,64 @@ fn runtime_metadata_rejects_invalid_cost_tier_values() {
         err.0.contains("cost tier values must be non-negative"),
         "got: {}",
         err.0
+    );
+}
+
+#[test]
+fn resolve_startup_thinking_level_coerces_and_falls_back() {
+    // A model whose only supported level is `xhigh` must not crash startup when
+    // the global preferred level (`medium`) is unsupported — it coerces to the
+    // first available level (tau `resolve_startup_thinking_level`).
+    let xhigh_only = ProviderConfig::OpenAICompatible(OpenAICompatibleProviderConfig {
+        models: strvec(&["k3"]),
+        default_model: "k3".into(),
+        thinking_levels: Some(strvec(&["xhigh"])),
+        thinking_parameter: Some("reasoning_effort".into()),
+        ..OpenAICompatibleProviderConfig::new("kimi-code")
+    });
+    assert_eq!(
+        resolve_startup_thinking_level(&xhigh_only, "k3", "medium").as_deref(),
+        Some("xhigh")
+    );
+
+    // A remembered per-model choice wins over the global preferred level.
+    let mut thinking_defaults = IndexMap::new();
+    thinking_defaults.insert("k3".to_string(), "high".to_string());
+    let remembered = ProviderConfig::OpenAICompatible(OpenAICompatibleProviderConfig {
+        models: strvec(&["k3"]),
+        default_model: "k3".into(),
+        thinking_levels: Some(strvec(&["low", "medium", "high"])),
+        thinking_parameter: Some("reasoning_effort".into()),
+        thinking_defaults,
+        ..OpenAICompatibleProviderConfig::new("kimi-code")
+    });
+    assert_eq!(
+        resolve_startup_thinking_level(&remembered, "k3", "medium").as_deref(),
+        Some("high")
+    );
+
+    // The global preferred level is used when supported and not remembered.
+    let no_memory = ProviderConfig::OpenAICompatible(OpenAICompatibleProviderConfig {
+        models: strvec(&["k3"]),
+        default_model: "k3".into(),
+        thinking_levels: Some(strvec(&["low", "medium", "high"])),
+        thinking_parameter: Some("reasoning_effort".into()),
+        ..OpenAICompatibleProviderConfig::new("kimi-code")
+    });
+    assert_eq!(
+        resolve_startup_thinking_level(&no_memory, "k3", "low").as_deref(),
+        Some("low")
+    );
+
+    // A model with no configurable thinking returns None instead of crashing.
+    let plain = ProviderConfig::OpenAICompatible(OpenAICompatibleProviderConfig {
+        models: strvec(&["qwen"]),
+        default_model: "qwen".into(),
+        ..OpenAICompatibleProviderConfig::new("local")
+    });
+    assert_eq!(
+        resolve_startup_thinking_level(&plain, "qwen", "medium"),
+        None
     );
 }
 

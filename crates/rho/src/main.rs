@@ -27,7 +27,8 @@ use rho_coding::provider_config::{
     CredentialReader, DEFAULT_MODEL, DEFAULT_PROVIDER_NAME, OpenAICompatibleProviderConfig,
     ProviderConfig, ProviderConfigError, ProviderSelection, ProviderSettings,
     load_provider_settings, provider_has_usable_credentials, provider_kind,
-    resolve_provider_selection, save_provider_settings, upsert_openai_compatible_provider,
+    resolve_provider_selection, resolve_startup_thinking_level, save_provider_settings,
+    upsert_openai_compatible_provider,
 };
 use rho_coding::provider_runtime::create_model_provider;
 use rho_coding::session_export::{export_session_artifact, normalize_export_format};
@@ -387,11 +388,16 @@ fn resolve_startup_provider(
         &selection.provider,
         Some(&credentials as &dyn CredentialReader),
     ) {
+        let thinking_level = resolve_startup_thinking_level(
+            &selection.provider,
+            &selection.model,
+            DEFAULT_THINKING_LEVEL,
+        );
         let provider = create_model_provider(
             &selection.provider,
             None,
             Some(&selection.model),
-            Some(DEFAULT_THINKING_LEVEL),
+            thinking_level.as_deref(),
         )
         .map_err(|err| err.0)?;
         return Ok(StartupProvider {
@@ -549,11 +555,16 @@ async fn run_print(cli: Cli, prompt: String) -> Result<bool, String> {
             cli.model.as_deref(),
         )
         .map_err(|err| err.0)?;
+        let thinking_level = resolve_startup_thinking_level(
+            &selection.provider,
+            &selection.model,
+            DEFAULT_THINKING_LEVEL,
+        );
         let provider = create_model_provider(
             &selection.provider,
             None,
             Some(&selection.model),
-            Some(DEFAULT_THINKING_LEVEL),
+            thinking_level.as_deref(),
         )
         .map_err(|err| err.0)?;
         let provider_name = selection.provider.name().to_string();

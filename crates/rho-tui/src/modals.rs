@@ -296,8 +296,15 @@ fn move_cursor(index: usize, len: usize, delta: i32) -> usize {
 // --- session picker ---------------------------------------------------------
 
 /// Pick an indexed session to resume (tau `SessionPickerScreen`).
+///
+/// Mirrors the model/provider pickers' live-search UX: typing filters the list
+/// by session title or model name. Working-directory paths are deliberately
+/// excluded from matching (tau `_filter_session_records`, tightened in tau
+/// `08e2bfd`) so a query like `main` doesn't match every session under a
+/// `.../main/...` path.
 pub struct SessionPickerModal {
     records: Vec<CodingSessionRecord>,
+    search: String,
     index: usize,
 }
 
@@ -305,7 +312,11 @@ impl SessionPickerModal {
     /// Build from indexed session records.
     #[must_use]
     pub fn new(records: Vec<CodingSessionRecord>) -> Self {
-        Self { records, index: 0 }
+        Self {
+            records,
+            search: String::new(),
+            index: 0,
+        }
     }
 
     fn label(record: &CodingSessionRecord) -> String {
@@ -313,45 +324,91 @@ impl SessionPickerModal {
         format!("{}  {}  {}", record.id, title, record.model)
     }
 
+    /// Case-insensitive substring match on session title or model, ignoring the
+    /// working directory (tau `_filter_session_records`).
+    fn visible(&self) -> Vec<&CodingSessionRecord> {
+        let query = self.search.trim().to_lowercase();
+        self.records
+            .iter()
+            .filter(|record| {
+                query.is_empty()
+                    || record
+                        .title
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
+                    || record.model.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    fn clamp_index(&mut self) {
+        let len = self.visible().len();
+        self.index = if len == 0 { 0 } else { self.index.min(len - 1) };
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
         match key.code {
             KeyCode::Esc => ModalOutcome::Cancelled,
             KeyCode::Up => {
-                self.index = move_cursor(self.index, self.records.len(), -1);
+                let len = self.visible().len();
+                self.index = move_cursor(self.index, len, -1);
                 ModalOutcome::Consumed
             }
             KeyCode::Down => {
-                self.index = move_cursor(self.index, self.records.len(), 1);
+                let len = self.visible().len();
+                self.index = move_cursor(self.index, len, 1);
                 ModalOutcome::Consumed
             }
-            KeyCode::Enter => match self.records.get(self.index) {
+            KeyCode::Enter => match self.visible().get(self.index) {
                 Some(record) => ModalOutcome::Session(record.id.clone()),
                 None => ModalOutcome::Cancelled,
             },
+            KeyCode::Backspace => {
+                self.search.pop();
+                self.clamp_index();
+                ModalOutcome::Consumed
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search.push(c);
+                self.clamp_index();
+                ModalOutcome::Consumed
+            }
             _ => ModalOutcome::Consumed,
         }
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, theme: &TuiTheme) {
         let area = centered_rect(70, 60, area);
-        let rows: Vec<Line<'static>> = if self.records.is_empty() {
-            vec![Line::from(Span::styled(
+        let mut rows: Vec<Line<'static>> = Vec::new();
+        rows.push(Line::from(Span::styled(
+            format!("search: {}", self.search),
+            parse_style(&theme.muted_text),
+        )));
+        rows.push(Line::default());
+        let visible = self.visible();
+        if self.records.is_empty() {
+            rows.push(Line::from(Span::styled(
                 "  No sessions found".to_string(),
                 parse_style(&theme.completion_description),
-            ))]
+            )));
+        } else if visible.is_empty() {
+            rows.push(Line::from(Span::styled(
+                "  No matching sessions".to_string(),
+                parse_style(&theme.completion_description),
+            )));
         } else {
-            self.records
-                .iter()
-                .enumerate()
-                .map(|(i, r)| list_row(Self::label(r), i == self.index, theme))
-                .collect()
-        };
+            for (i, r) in visible.iter().enumerate() {
+                rows.push(list_row(Self::label(r), i == self.index, theme));
+            }
+        }
         render_list_modal(
             frame,
             area,
             "Sessions",
             &rows,
-            "Enter selects · Escape closes",
+            "Type to search · Enter selects · Escape closes",
             theme,
         );
     }
@@ -1891,6 +1948,72 @@ mod tests {
             ModalOutcome::Session("b".into())
         );
         assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::Cancelled);
+    }
+
+    fn session_record(
+        id: &str,
+        cwd: &str,
+        model: &str,
+        title: Option<&str>,
+    ) -> CodingSessionRecord {
+        CodingSessionRecord {
+            id: id.into(),
+            path: format!("{cwd}/{id}.jsonl").into(),
+            cwd: cwd.into(),
+            model: model.into(),
+            title: title.map(str::to_string),
+            created_at: 0.0,
+            updated_at: 0.0,
+            provider_name: None,
+        }
+    }
+
+    #[test]
+    fn session_picker_filters_by_title_and_model() {
+        let records = vec![
+            session_record("a", "/x", "claude", Some("Refactor loop")),
+            session_record("b", "/x", "gpt-4", Some("Fix parser")),
+            session_record("c", "/x", "claude", None),
+        ];
+        let mut modal = SessionPickerModal::new(records);
+        // Title match.
+        for ch in "parser".chars() {
+            modal.handle_key(key(KeyCode::Char(ch)));
+        }
+        let visible = modal.visible();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "b");
+        assert_eq!(
+            modal.handle_key(key(KeyCode::Enter)),
+            ModalOutcome::Session("b".into())
+        );
+        // Model match.
+        let records = vec![
+            session_record("a", "/x", "claude", Some("Refactor loop")),
+            session_record("b", "/x", "gpt-4", Some("Fix parser")),
+        ];
+        let mut modal = SessionPickerModal::new(records);
+        for ch in "gpt".chars() {
+            modal.handle_key(key(KeyCode::Char(ch)));
+        }
+        let visible = modal.visible();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, "b");
+    }
+
+    #[test]
+    fn session_picker_search_excludes_workspace_paths() {
+        // The query matches only the cwd path segment, not title or model, so no
+        // records match (tau 08e2bfd: workspace paths excluded from matching).
+        let records = vec![
+            session_record("a", "/home/dev/main-repo", "claude", Some("Refactor")),
+            session_record("b", "/home/dev/main-repo", "gpt-4", Some("Parser")),
+        ];
+        let mut modal = SessionPickerModal::new(records);
+        for ch in "main-repo".chars() {
+            modal.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert!(modal.visible().is_empty());
     }
 
     #[test]

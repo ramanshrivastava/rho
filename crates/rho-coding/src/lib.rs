@@ -49,6 +49,7 @@ pub mod resources;
 pub mod session;
 pub mod session_export;
 pub mod session_manager;
+pub mod session_stats;
 pub mod skills;
 pub mod system_prompt;
 pub mod thinking;

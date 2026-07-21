@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
+use indexmap::IndexMap;
 
 use rho_agent::clock::{Clock, IdGen, system_clock, uuid_id_gen};
 use rho_agent::events::AgentEvent;
@@ -98,6 +99,7 @@ use crate::session_export::{
     default_session_export_artifact_path, export_session_artifact, normalize_export_format,
 };
 use crate::session_manager::SessionManager;
+use crate::session_stats::{SessionStats, calculate_session_stats};
 use crate::skills::{Skill, expand_skill_command, load_skills_with_diagnostics};
 use crate::system_prompt::{BuildSystemPromptOptions, ProjectContextFile, build_system_prompt};
 use crate::thinking::{
@@ -656,6 +658,54 @@ impl CodingSession {
     #[must_use]
     pub fn prompt_templates(&self) -> &[PromptTemplate] {
         &self.prompt_templates
+    }
+
+    /// Loaded extension names in load order (tau `extension_names`).
+    #[must_use]
+    pub fn extension_names(&self) -> Vec<String> {
+        self.extension_runtime.extension_names()
+    }
+
+    /// Cumulative activity and billed usage for the active branch (tau
+    /// `session_stats`). Iterates every original-branch message (including
+    /// compaction-replaced messages) and estimates cost from catalog pricing.
+    #[must_use]
+    pub fn session_stats(&self) -> SessionStats {
+        calculate_session_stats(
+            &self.state.entries,
+            &|provider_name, model, input_tokens| {
+                self.pricing_for_response(provider_name, model, input_tokens)
+            },
+        )
+    }
+
+    /// Resolve per-million-token rates for one response from the configured
+    /// provider's model metadata (tau `_pricing_for_response`).
+    fn pricing_for_response(
+        &self,
+        provider_name: &str,
+        model: &str,
+        input_tokens: i64,
+    ) -> Option<IndexMap<String, f64>> {
+        let provider = provider_config_for_name(&self.config, provider_name)?;
+        // `provider_config_for_name` falls back to `runtime_provider_config` on a
+        // miss, so this name guard is load-bearing: it rejects pricing lookups for
+        // a response whose provider is not the configured one (tau
+        // `_pricing_for_response`).
+        if provider.name() != provider_name {
+            return None;
+        }
+        let metadata = provider.model_metadata()?.get(model)?;
+        for tier in &metadata.cost_tiers {
+            if tier.max_input_tokens.is_none_or(|max| input_tokens <= max) {
+                return Some(tier.cost.clone());
+            }
+        }
+        if metadata.cost.is_empty() {
+            None
+        } else {
+            Some(metadata.cost.clone())
+        }
     }
 
     /// Non-fatal resource diagnostics.

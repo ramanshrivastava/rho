@@ -4,12 +4,20 @@ expression: rendered
 ---
 ρ
 
+ Refine sidebar
+
  session
  provider anthropic
  model claude
  thinking medium
  tools 2
  skills 1
+
+ activity
+ 3 turns, 7 tool calls
+
+ usage
+ 42k in, 1.5k out · ~$0.42
 
  context
  • AGENTS.md
@@ -22,3 +30,7 @@ expression: rendered
  • review
 
  prompts
+ No prompt templates
+
+ extensions
+ No extensions

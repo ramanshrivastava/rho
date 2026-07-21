@@ -203,18 +203,25 @@ fn snapshot_status_line() {
 #[test]
 fn snapshot_sidebar() {
     let info = SidebarInfo {
+        session_title: Some("Refine sidebar".to_string()),
         provider_name: "anthropic".to_string(),
         model: "claude".to_string(),
         thinking_display: "medium".to_string(),
         tools_count: 2,
         skills_count: 1,
+        turn_count: 3,
+        tool_call_count: 7,
+        input_tokens: 42_000,
+        output_tokens: 1_500,
+        estimated_cost: Some(0.42),
         context_labels: vec!["AGENTS.md".to_string()],
         tool_names: vec!["bash".to_string(), "read".to_string()],
         skill_names: vec!["review".to_string()],
         prompt_names: vec![],
+        extension_names: vec![],
     };
     let theme = dark();
-    let rendered = render_to_string(32, 20, |frame| {
+    let rendered = render_to_string(32, 34, |frame| {
         let area = full(frame);
         render_sidebar(frame, area, &info, &theme);
     });
