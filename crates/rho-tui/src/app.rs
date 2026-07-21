@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEvent, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -51,6 +51,7 @@ use rho_coding::session_manager::SessionManager;
 use crate::adapter::TuiEventAdapter;
 use crate::autocomplete::{CompletionInputs, CompletionState, build_completion_state};
 use crate::ext_ui::{ExtensionUiChannel, UiRequest};
+use crate::file_drop::{normalize_dropped_paths, pad_dropped_insertion};
 use crate::login::{
     OAuthUpdate, logout_provider as remove_credentials, oauth_login_kind, persist_api_key_login,
     persist_custom_provider, persist_oauth_login, spawn_oauth_login, stored_credential_providers,
@@ -629,7 +630,15 @@ type Backend = CrosstermBackend<Stdout>;
 fn init_terminal() -> io::Result<Terminal<Backend>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Bracketed paste lets the terminal deliver a paste (and terminal-generated
+    // drag-and-drop path drops) as a single `Event::Paste` unit, which the file-
+    // drop normalizer inspects before insertion.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
@@ -637,7 +646,12 @@ fn init_terminal() -> io::Result<Terminal<Backend>> {
 /// handle), so both the panic hook and the RAII guard can call it.
 fn restore_terminal_stdout() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        io::stdout(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     Ok(())
 }
 
@@ -732,7 +746,10 @@ impl App {
                         Some(Ok(Event::Mouse(mouse))) => {
                             scroll_transcript_on_mouse(&self.state, mouse);
                         }
-                        Some(Ok(_)) => {} // resize / paste — redraw next iteration.
+                        Some(Ok(Event::Paste(text))) => {
+                            self.handle_paste_idle(&text, terminal, &mut events).await?;
+                        }
+                        Some(Ok(_)) => {} // resize — redraw next iteration.
                         Some(Err(err)) => return Err(err),
                         // Terminal input closed: exit cleanly instead of spinning on a
                         // now-always-ready `None`.
@@ -827,6 +844,43 @@ impl App {
         self.textarea.input(Event::Key(key));
         self.rebuild_completion();
         Ok(())
+    }
+
+    /// Handle a bracketed-paste while idle. A paste into an open modal is
+    /// replayed as individual character keys (so the modal's text fields keep
+    /// working, e.g. pasting an OAuth code or API key); otherwise the paste goes
+    /// to the composer, where a terminal-generated file drop is normalized.
+    async fn handle_paste_idle(
+        &mut self,
+        text: &str,
+        terminal: &mut Terminal<Backend>,
+        events: &mut EventStream,
+    ) -> io::Result<()> {
+        if self.modal.is_some() {
+            for key in paste_as_key_events(text) {
+                self.handle_modal_key(key, terminal, events).await?;
+                if self.modal.is_none() {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+        self.paste_into_composer(text);
+        Ok(())
+    }
+
+    /// Insert pasted text into the composer, normalizing terminal-generated file
+    /// drops to clean paths (tau `PromptInput.on_paste` + `_insert_dropped_paths`).
+    fn paste_into_composer(&mut self, text: &str) {
+        let insertion = match normalize_dropped_paths(text) {
+            Some(paths) => {
+                let (before, after) = composer_cursor_context(&self.textarea);
+                pad_dropped_insertion(&paths, &before, &after)
+            }
+            None => text.to_string(),
+        };
+        self.textarea.insert_str(insertion);
+        self.rebuild_completion();
     }
 
     /// Recall the most recently submitted prompt into an EMPTY composer (tau
@@ -1450,32 +1504,42 @@ impl App {
                     break;
                 }
                 maybe_event = events.next() => {
-                    match maybe_event {
-                        Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
-                            let action = self
-                                .modal
-                                .as_mut()
-                                .map_or(ModalOutcome::Consumed, |m| m.handle_key(key));
-                            match action {
-                                ModalOutcome::OAuthManualCode(code) => {
-                                    let _ = code_tx.send(code);
-                                }
-                                ModalOutcome::LoginBack => {
-                                    navigate_back = true;
-                                    break;
-                                }
-                                ModalOutcome::Cancelled => {
-                                    cancelled = true;
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                        Some(Ok(_)) => {}
+                    // A paste (e.g. the manual OAuth code) is replayed as
+                    // individual character keys so the modal's code field fills in.
+                    let keys: Vec<KeyEvent> = match maybe_event {
+                        Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => vec![key],
+                        Some(Ok(Event::Paste(text))) => paste_as_key_events(&text),
+                        Some(Ok(_)) => Vec::new(),
                         Some(Err(_)) | None => {
                             cancelled = true;
                             break;
                         }
+                    };
+                    let mut should_break = false;
+                    for key in keys {
+                        let action = self
+                            .modal
+                            .as_mut()
+                            .map_or(ModalOutcome::Consumed, |m| m.handle_key(key));
+                        match action {
+                            ModalOutcome::OAuthManualCode(code) => {
+                                let _ = code_tx.send(code);
+                            }
+                            ModalOutcome::LoginBack => {
+                                navigate_back = true;
+                                should_break = true;
+                                break;
+                            }
+                            ModalOutcome::Cancelled => {
+                                cancelled = true;
+                                should_break = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if should_break {
+                        break;
                     }
                 }
             }
@@ -1629,6 +1693,18 @@ impl App {
                             Some(Ok(Event::Mouse(mouse))) => {
                                 scroll_transcript_on_mouse(state, mouse);
                             }
+                            Some(Ok(Event::Paste(text))) => {
+                                // Follow-up composer stays live mid-turn: normalize
+                                // a file drop, otherwise insert the raw paste.
+                                let insertion = match normalize_dropped_paths(&text) {
+                                    Some(paths) => {
+                                        let (before, after) = composer_cursor_context(textarea);
+                                        pad_dropped_insertion(&paths, &before, &after)
+                                    }
+                                    None => text,
+                                };
+                                textarea.insert_str(insertion);
+                            }
                             Some(Ok(_)) => {}
                             // Input closed / errored mid-turn: cancel the run and
                             // stop draining events so we don't spin on a ready `None`.
@@ -1770,6 +1846,30 @@ fn handle_running_key(
     // Otherwise let the user keep composing the next steering message.
     textarea.input(Event::Key(key));
     RunningKeyOutcome::Continue
+}
+
+/// Replay pasted `text` as individual character key events so widgets that only
+/// consume `Event::Key` (the login/OAuth modals) keep accepting pastes once
+/// bracketed paste is enabled. Line breaks are dropped (those fields are
+/// single-line); control characters are ignored.
+fn paste_as_key_events(text: &str) -> Vec<KeyEvent> {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+        .collect()
+}
+
+/// The text immediately before and after the composer cursor on its current
+/// line — enough for [`pad_dropped_insertion`] to decide on separating spaces.
+fn composer_cursor_context(textarea: &TextArea<'static>) -> (String, String) {
+    let (row, col) = textarea.cursor();
+    let line = textarea.lines().get(row).cloned().unwrap_or_default();
+    let split = line
+        .char_indices()
+        .nth(col)
+        .map_or(line.len(), |(idx, _)| idx);
+    let (before, after) = line.split_at(split.min(line.len()));
+    (before.to_string(), after.to_string())
 }
 
 fn fresh_textarea() -> TextArea<'static> {
@@ -1954,6 +2054,36 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn paste_as_key_events_maps_chars_and_drops_control() {
+        let keys = paste_as_key_events("ab\n c");
+        let codes: Vec<KeyCode> = keys.iter().map(|k| k.code).collect();
+        assert_eq!(
+            codes,
+            vec![
+                KeyCode::Char('a'),
+                KeyCode::Char('b'),
+                KeyCode::Char(' '),
+                KeyCode::Char('c'),
+            ]
+        );
+    }
+
+    #[test]
+    fn composer_cursor_context_splits_current_line_at_cursor() {
+        let mut textarea = fresh_textarea();
+        textarea.insert_str("hello world");
+        // Cursor is at end after insert.
+        let (before, after) = composer_cursor_context(&textarea);
+        assert_eq!(before, "hello world");
+        assert_eq!(after, "");
+        // Move the cursor to the start of the line.
+        textarea.move_cursor(tui_textarea::CursorMove::Head);
+        let (before, after) = composer_cursor_context(&textarea);
+        assert_eq!(before, "");
+        assert_eq!(after, "hello world");
     }
 
     // --- full-frame layout snapshots (drive the real `render`) ---------------

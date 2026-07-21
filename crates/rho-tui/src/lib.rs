@@ -20,6 +20,7 @@ pub mod adapter;
 pub mod app;
 pub mod autocomplete;
 pub mod ext_ui;
+pub mod file_drop;
 pub mod login;
 pub mod modals;
 pub mod motion;
