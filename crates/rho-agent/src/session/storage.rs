@@ -87,7 +87,10 @@ impl SessionStorage for JsonlSessionStorage {
             return Ok(Vec::new());
         }
         let text = std::fs::read_to_string(&self.path)?;
-        let lines: Vec<&str> = text.lines().collect();
+        // Split on newlines only: Python's str.splitlines() (and Rust's
+        // str::lines()) would also break on characters like U+2028 that appear
+        // unescaped inside JSON string values. tau splits on "\n" alone here.
+        let lines: Vec<&str> = text.split('\n').collect();
         Ok(entries_from_json_lines(&lines)?)
     }
 }

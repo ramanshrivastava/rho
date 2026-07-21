@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rho_agent::clock::{Clock, system_clock};
-use rho_agent::messages::{AgentMessage, ToolCall, Usage};
+use rho_agent::messages::{AgentMessage, AssistantContent, ThinkingContent, ToolCall, Usage};
 use rho_agent::provider::{AssistantEventStream, CancellationToken, ModelProvider};
 use rho_agent::tools::AgentTool;
 use serde_json::{Map, Value, json};
@@ -522,6 +522,8 @@ pub struct ChatStreamParser {
     emitted_content: bool,
     fatal: bool,
     content_parts: Vec<String>,
+    thinking_parts: Vec<String>,
+    thinking_signature: Option<String>,
     tool_call_builders: BTreeMap<i64, ChatToolCallBuilder>,
     finish_reason: Option<String>,
     usage: Option<Usage>,
@@ -536,6 +538,8 @@ impl ChatStreamParser {
             emitted_content: false,
             fatal: false,
             content_parts: Vec::new(),
+            thinking_parts: Vec::new(),
+            thinking_signature: None,
             tool_call_builders: BTreeMap::new(),
             finish_reason: None,
             usage: None,
@@ -598,10 +602,15 @@ impl ProviderParser for ChatStreamParser {
                 deltas.push(Delta::Text(content.clone()));
             }
         }
-        let thinking = thinking_delta_text(delta);
-        if !thinking.is_empty() {
+        if let Some((field_name, text)) = thinking_delta(delta) {
             self.emitted_content = true;
-            deltas.push(Delta::Thinking(thinking));
+            self.thinking_parts.push(text.clone());
+            // tau: `self._thinking_signature = self._thinking_signature or
+            // field_name` — the first reasoning channel seen wins.
+            if self.thinking_signature.is_none() {
+                self.thinking_signature = Some(field_name.to_string());
+            }
+            deltas.push(Delta::Thinking(text));
         }
         for tool_call_delta in tool_call_deltas(delta) {
             self.emitted_content = true;
@@ -624,11 +633,19 @@ impl ProviderParser for ChatStreamParser {
             .map(|(index, builder)| builder.build(index))
             .collect();
         let mut deltas: Vec<Delta> = tool_calls.iter().cloned().map(Delta::ToolCall).collect();
-        let message = assistant_message(
-            assistant_content(&self.content_parts.concat(), tool_calls),
-            self.usage.clone().unwrap_or_default(),
-            0,
-        );
+        let mut content = assistant_content(&self.content_parts.concat(), tool_calls);
+        // tau `_ChatStreamParser.finalize`: prepend the accumulated reasoning as
+        // a `ThinkingContent`, carrying the reasoning-channel name as the replay
+        // signature so `_copy_replay_metadata` can stamp it on the canonical
+        // message.
+        if !self.thinking_parts.is_empty() {
+            let mut thinking = ThinkingContent::new(self.thinking_parts.concat());
+            thinking
+                .thinking_signature
+                .clone_from(&self.thinking_signature);
+            content.insert(0, AssistantContent::Thinking(thinking));
+        }
+        let message = assistant_message(content, self.usage.clone().unwrap_or_default(), 0);
         deltas.push(Delta::End {
             message,
             finish_reason: self.finish_reason.clone(),
@@ -1085,15 +1102,18 @@ fn first_choice(chunk: &Map<String, Value>) -> Option<&Map<String, Value>> {
     }
 }
 
-fn thinking_delta_text(delta: &Map<String, Value>) -> String {
+/// Extract a reasoning delta and the channel it arrived on (tau
+/// `_thinking_delta`): returns the field name (`reasoning_content` / `reasoning`
+/// / `thinking`) and the text, or `None` when this chunk carries no reasoning.
+fn thinking_delta(delta: &Map<String, Value>) -> Option<(&'static str, String)> {
     for field in ["reasoning_content", "reasoning", "thinking"] {
         if let Some(Value::String(value)) = delta.get(field) {
             if !value.is_empty() {
-                return value.clone();
+                return Some((field, value.clone()));
             }
         }
     }
-    String::new()
+    None
 }
 
 fn tool_call_deltas(delta: &Map<String, Value>) -> Vec<&Map<String, Value>> {

@@ -46,6 +46,7 @@ use rho_agent::messages::{
     AgentMessage, AssistantMessage, StopReason, TextContent, ToolResultContent, ToolResultMessage,
     UserMessage,
 };
+use rho_agent::model_limits::RuntimeModelLimits;
 use rho_agent::provider::ModelProvider;
 use rho_agent::provider_events::AssistantMessageEvent;
 use rho_agent::session::entries::{
@@ -368,6 +369,15 @@ pub struct CodingSession {
     thinking_level: String,
     auto_compact_token_threshold: Option<i64>,
     auto_compact_enabled: bool,
+    /// Live model limits discovered from the active provider's authenticated
+    /// catalog, keyed by the (provider, model) they were resolved for (tau
+    /// `_runtime_model_limits` / `_runtime_model_limits_key`). Cleared on any
+    /// model/provider swap; refreshed at load and before each turn.
+    runtime_model_limits: Option<RuntimeModelLimits>,
+    runtime_model_limits_key: Option<(String, String)>,
+    /// The last non-fatal live model-limit discovery error, for `/status`
+    /// diagnostics (tau `_model_limits_discovery_error`).
+    model_limits_discovery_error: Option<String>,
     context_usage_cache: Option<ContextUsageEstimate>,
     diagnostic_logger: AgentCallDiagnosticLogger,
     last_diagnostic_log_path: Option<PathBuf>,
@@ -532,6 +542,9 @@ impl CodingSession {
             thinking_level,
             auto_compact_token_threshold,
             auto_compact_enabled,
+            runtime_model_limits: None,
+            runtime_model_limits_key: None,
+            model_limits_discovery_error: None,
             context_usage_cache: None,
             diagnostic_logger,
             last_diagnostic_log_path: None,
@@ -547,6 +560,7 @@ impl CodingSession {
         session.persist_loaded_interrupted_tool_repairs().await?;
         session.sync_thinking_level_to_active_model();
         session.refresh_runtime_provider()?;
+        session.refresh_runtime_model_limits().await;
         // Bind a live session-context bridge so extension `context.*` reads
         // reflect this session (tau's `extension_runtime.bind(session)`), and
         // fire `session_start` for lifecycle subscribers. Cheap no-op when no
@@ -892,10 +906,14 @@ impl CodingSession {
         self.context_usage().total_tokens
     }
 
-    /// Active model's configured context window, or rho's fallback (tau
-    /// `context_window_tokens`).
+    /// Active model's discovered or configured context window (tau
+    /// `context_window_tokens`). A live limit discovered for the active
+    /// (provider, model) overrides the static catalog.
     #[must_use]
     pub fn context_window_tokens(&self) -> i64 {
+        if let Some(limits) = self.active_runtime_model_limits() {
+            return limits.context_window();
+        }
         let Some(provider) = self.active_provider_config() else {
             return DEFAULT_CONTEXT_WINDOW_TOKENS;
         };
@@ -904,6 +922,42 @@ impl CodingSession {
             .get(&self.model())
             .copied()
             .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS)
+    }
+
+    /// Where the active context-window limit came from (tau
+    /// `context_window_source`): the provider's live catalog when a discovered
+    /// limit is active, else the configured catalog.
+    #[must_use]
+    pub fn context_window_source(&self) -> &'static str {
+        if self.active_runtime_model_limits().is_some() {
+            "provider live catalog"
+        } else {
+            "configured catalog"
+        }
+    }
+
+    /// The last non-fatal live model-limit discovery error, if any (tau
+    /// `model_limits_discovery_error`).
+    #[must_use]
+    pub fn model_limits_discovery_error(&self) -> Option<&str> {
+        self.model_limits_discovery_error.as_deref()
+    }
+
+    /// The live model limits discovered for the *currently active*
+    /// (provider, model), or `None` when the cached key no longer matches or
+    /// nothing was discovered (tau's `_runtime_model_limits_key` guard).
+    fn active_runtime_model_limits(&self) -> Option<&RuntimeModelLimits> {
+        let matches = self
+            .runtime_model_limits_key
+            .as_ref()
+            .is_some_and(|(provider, model)| {
+                provider == self.provider_name() && model == &self.model()
+            });
+        if matches {
+            self.runtime_model_limits.as_ref()
+        } else {
+            None
+        }
     }
 
     // ---- provider config internals ---------------------------------------
@@ -941,6 +995,9 @@ impl CodingSession {
         }
         if self.auto_compact_token_threshold.is_some() {
             return self.auto_compact_token_threshold;
+        }
+        if let Some(limits) = self.active_runtime_model_limits() {
+            return Some(limits.effective_auto_compact_token_limit());
         }
         auto_compaction_threshold_for_context_window(self.context_window_tokens())
     }
@@ -1012,6 +1069,7 @@ impl CodingSession {
                 }
             }
 
+            self.refresh_runtime_model_limits().await;
             self.try_auto_compact(&context, "auto_compact_before_prompt")
                 .await;
             let mut persisted_count = self.harness.messages().len();
@@ -1165,6 +1223,7 @@ impl CodingSession {
         async_stream::stream! {
             self.run_error = None;
             let context = self.diagnostic_context();
+            self.refresh_runtime_model_limits().await;
             let mut persisted_count = self.harness.messages().len();
             let Ok(mut events) = self.harness.continue_() else {
                 return;
@@ -1535,12 +1594,14 @@ impl CodingSession {
         let mut config = self.harness.config().clone();
         config.model = model.to_string();
         self.harness = AgentHarness::new(config, self.harness.messages());
+        self.invalidate_runtime_model_limits();
     }
 
     fn set_harness_provider(&mut self, provider: Arc<dyn ModelProvider>) {
         let mut config = self.harness.config().clone();
         config.provider = provider;
         self.harness = AgentHarness::new(config, self.harness.messages());
+        self.invalidate_runtime_model_limits();
     }
 
     fn set_harness_provider_and_model(&mut self, provider: Arc<dyn ModelProvider>, model: &str) {
@@ -1548,6 +1609,35 @@ impl CodingSession {
         config.provider = provider;
         config.model = model.to_string();
         self.harness = AgentHarness::new(config, self.harness.messages());
+        self.invalidate_runtime_model_limits();
+    }
+
+    /// Drop any discovered model limits after a model/provider swap (tau
+    /// `_invalidate_runtime_model_limits`). The next turn re-discovers them.
+    fn invalidate_runtime_model_limits(&mut self) {
+        self.runtime_model_limits = None;
+        self.runtime_model_limits_key = None;
+        self.model_limits_discovery_error = None;
+    }
+
+    /// Discover live model limits for the active (provider, model) if not already
+    /// cached for that pair (tau `_refresh_runtime_model_limits`). A provider that
+    /// exposes no live catalog returns `None` from the default trait hook, so the
+    /// session simply falls back to the static catalog. Discovery failures are
+    /// recorded (not fatal) for `/status`.
+    async fn refresh_runtime_model_limits(&mut self) {
+        let key = (self.provider_name().to_string(), self.model());
+        if self.runtime_model_limits_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.runtime_model_limits = None;
+        self.runtime_model_limits_key = Some(key.clone());
+        self.model_limits_discovery_error = None;
+        let provider = self.harness.config().provider.clone();
+        match provider.discover_model_limits(&key.1).await {
+            Ok(limits) => self.runtime_model_limits = limits,
+            Err(err) => self.model_limits_discovery_error = Some(err),
+        }
     }
 
     // ---- compaction -------------------------------------------------------
@@ -3131,6 +3221,14 @@ impl CommandSession for CodingSession {
 
     fn context_window_tokens(&self) -> i64 {
         CodingSession::context_window_tokens(self)
+    }
+
+    fn context_window_source(&self) -> &'static str {
+        CodingSession::context_window_source(self)
+    }
+
+    fn model_limits_discovery_error(&self) -> Option<&str> {
+        CodingSession::model_limits_discovery_error(self)
     }
 
     fn thinking_level(&self) -> &str {

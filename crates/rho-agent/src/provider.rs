@@ -26,9 +26,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 
 use crate::messages::AgentMessage;
+use crate::model_limits::RuntimeModelLimits;
 use crate::provider_events::AssistantMessageEvent;
 use crate::tools::AgentTool;
 
@@ -58,6 +60,24 @@ pub trait ModelProvider: Send + Sync {
         tools: &[AgentTool],
         signal: Option<Arc<dyn CancellationToken>>,
     ) -> AssistantEventStream;
+
+    /// Discover live per-model limits from the provider's authenticated catalog
+    /// (tau's optional `ModelLimitsProvider.discover_model_limits`).
+    ///
+    /// The default returns `Ok(None)` — a provider that does not advertise a live
+    /// catalog is simply not a `ModelLimitsProvider` in tau, so the session falls
+    /// back to the static catalog. Only the Codex-subscription adapter overrides
+    /// this. Like [`stream_response`](Self::stream_response) the returned future
+    /// is `'static`, so an implementer snapshots what it needs synchronously
+    /// (the Codex provider is `Arc`-cloneable). `Err` carries a human-readable,
+    /// secret-free discovery error for session diagnostics.
+    fn discover_model_limits(
+        &self,
+        model: &str,
+    ) -> BoxFuture<'static, Result<Option<RuntimeModelLimits>, String>> {
+        let _ = model;
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// A simple shared cancellation flag (tau `SimpleCancellationToken`).
