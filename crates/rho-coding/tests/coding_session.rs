@@ -983,3 +983,69 @@ async fn login_required_placeholder_unlocks_after_same_provider_model_pick() {
         session.messages()
     );
 }
+
+/// A provider that advertises a live model-limit catalog (tau's Codex
+/// `ModelLimitsProvider`). Its `discover_model_limits` returns a fixed limit so
+/// the session's runtime-limit wiring can be exercised without a network.
+struct DiscoveringProvider {
+    limits: rho_agent::model_limits::RuntimeModelLimits,
+}
+
+impl ModelProvider for DiscoveringProvider {
+    fn stream_response(
+        &self,
+        _model: &str,
+        _system: &str,
+        _messages: &[rho_agent::messages::AgentMessage],
+        _tools: &[rho_agent::tools::AgentTool],
+        _signal: Option<Arc<dyn rho_agent::provider::CancellationToken>>,
+    ) -> rho_agent::provider::AssistantEventStream {
+        futures::stream::iter(text_turn("ok")).boxed()
+    }
+
+    fn discover_model_limits(
+        &self,
+        _model: &str,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<Option<rho_agent::model_limits::RuntimeModelLimits>, String>,
+    > {
+        let limits = self.limits.clone();
+        Box::pin(async move { Ok(Some(limits)) })
+    }
+}
+
+/// A discovered limit must override the static catalog in `context_window_tokens`
+/// — the exact regression tau's a4bebeb runtime discovery avoids (Codex P1).
+#[tokio::test]
+async fn discovered_model_limits_override_static_context_window() {
+    use rho_agent::model_limits::RuntimeModelLimits;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    // A baseline session with a non-discovering provider falls back to the
+    // static catalog default.
+    let baseline_provider = Arc::new(FakeProvider::new(vec![text_turn("ok")]));
+    let baseline_storage = jsonl_session_storage(tmp.path().join("baseline.jsonl"));
+    let baseline_config = pinned_config(baseline_provider, baseline_storage, cwd.clone());
+    let baseline = CodingSession::load(baseline_config).await.unwrap();
+    let static_window = baseline.context_window_tokens();
+    assert_eq!(baseline.context_window_source(), "configured catalog");
+
+    // A discovering provider reports an account-specific window well above the
+    // static fallback; the session must prefer it.
+    let discovered = static_window + 777_000;
+    let limits = RuntimeModelLimits::new(discovered, None, 100, None).unwrap();
+    let provider = Arc::new(DiscoveringProvider { limits });
+    let storage = jsonl_session_storage(tmp.path().join("session.jsonl"));
+    let config = pinned_config(provider, storage, cwd.clone());
+    let session = CodingSession::load(config).await.unwrap();
+
+    // `load` runs the discovery refresh, so the live limit is active.
+    assert_eq!(session.context_window_tokens(), discovered);
+    assert_ne!(session.context_window_tokens(), static_window);
+    assert_eq!(session.context_window_source(), "provider live catalog");
+    assert!(session.model_limits_discovery_error().is_none());
+}

@@ -35,6 +35,7 @@ pub mod events;
 pub mod fake;
 pub mod harness;
 pub mod messages;
+pub mod model_limits;
 pub mod provider;
 pub mod provider_events;
 pub mod session;

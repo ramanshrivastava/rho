@@ -26,7 +26,6 @@ pub mod google;
 pub mod http;
 pub mod http_errors;
 pub mod mistral;
-pub mod model_limits;
 pub mod openai_codex;
 pub mod openai_compatible;
 pub mod retry;
@@ -42,7 +41,6 @@ pub use env::{
 };
 pub use google::GoogleGenerativeAIProvider;
 pub use mistral::MistralConversationsProvider;
-pub use model_limits::RuntimeModelLimits;
 pub use openai_codex::OpenAICodexProvider;
 pub use openai_compatible::OpenAICompatibleProvider;
 
@@ -55,3 +53,10 @@ pub use rho_agent::fake::FakeProvider;
 
 /// Re-exported so adapters and callers share one provider contract.
 pub use rho_agent::provider::{CancellationToken, ModelProvider};
+
+/// `RuntimeModelLimits` mirrors tau's `tau_ai.model_limits`, but the type lives
+/// in `rho-agent` so the `ModelProvider` trait's discovery hook can reference it
+/// without a `rho-agent -> rho-ai` dependency (same layering rationale as
+/// [`FakeProvider`]). Re-exported here so `rho_ai::RuntimeModelLimits` matches
+/// tau's `tau_ai.RuntimeModelLimits` import path.
+pub use rho_agent::model_limits::RuntimeModelLimits;

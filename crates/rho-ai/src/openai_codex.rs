@@ -12,15 +12,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use rho_agent::clock::{Clock, system_clock};
 use rho_agent::messages::{AgentMessage, ToolCall, Usage};
+use rho_agent::model_limits::RuntimeModelLimits;
 use rho_agent::provider::{AssistantEventStream, CancellationToken, ModelProvider};
 use rho_agent::tools::AgentTool;
 use serde_json::{Map, Value, json};
 
 use crate::engine::{Feed, FetchError, ProviderParser, RetryPolicy, provider_stream, send_reqwest};
 use crate::env::{OpenAICodexConfig, OpenAICodexCredentials};
-use crate::model_limits::RuntimeModelLimits;
 use crate::openai_compatible::parse_arguments;
 use crate::retry::is_transient_status;
 use crate::stream::{Delta, assistant_content, assistant_message};
@@ -68,24 +69,6 @@ impl OpenAICodexProvider {
         }
     }
 
-    /// Discover live limits for `model` from the authenticated Codex model
-    /// catalog (tau `OpenAICodexProvider.discover_model_limits`). Returns `None`
-    /// when the model is not advertised; propagates the fetch error otherwise so
-    /// the caller can fall back to the static catalog.
-    ///
-    /// Unlike tau this does not memoize the fetched catalog on the provider (tau
-    /// caches `_discovered_model_limits`); rho's provider is shared behind an
-    /// `Arc` without interior mutability, and the caching is not observable in
-    /// the wire/session format. The session is expected to cache the resolved
-    /// `RuntimeModelLimits` per (provider, model) instead.
-    pub async fn discover_model_limits(
-        &self,
-        model: &str,
-    ) -> Result<Option<RuntimeModelLimits>, FetchError> {
-        let limits = self.fetch_model_limits().await?;
-        Ok(limits.get(model).cloned())
-    }
-
     /// GET the authenticated Codex model catalog and parse per-model limits (tau
     /// `_fetch_model_limits`).
     async fn fetch_model_limits(&self) -> Result<HashMap<String, RuntimeModelLimits>, FetchError> {
@@ -102,21 +85,30 @@ impl OpenAICodexProvider {
             &self.config.originator,
         );
         // tau: `headers["accept"] = "application/json"` then drop content-type.
-        headers.retain(|(name, _)| name != "content-type");
-        if let Some(entry) = headers.iter_mut().find(|(name, _)| name == "accept") {
-            entry.1 = "application/json".to_string();
-        } else {
-            headers.push(("accept".to_string(), "application/json".to_string()));
-        }
+        // HTTP header names are case-insensitive, so drop any configured
+        // `content-type`/`accept` regardless of case (a mis-cased configured
+        // header would otherwise be sent alongside ours), then set the single
+        // JSON accept header.
+        headers.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("content-type") && !name.eq_ignore_ascii_case("accept")
+        });
+        headers.push(("accept".to_string(), "application/json".to_string()));
+
+        // `model_catalog_timeout_seconds` is public; reject negative, non-finite,
+        // or oversized values (which would panic `Duration::from_secs_f64`)
+        // before the request rather than crash.
+        let timeout = Duration::try_from_secs_f64(self.config.model_catalog_timeout_seconds)
+            .map_err(|err| FetchError {
+                message: format!("invalid model_catalog_timeout_seconds: {err}"),
+                retryable: false,
+            })?;
 
         let url = resolve_codex_models_url(&self.config.base_url);
         let mut request = self
             .client
             .get(&url)
             .query(&[("client_version", self.config.client_version.as_str())])
-            .timeout(Duration::from_secs_f64(
-                self.config.model_catalog_timeout_seconds,
-            ));
+            .timeout(timeout);
         for (name, value) in &headers {
             request = request.header(name, value);
         }
@@ -188,6 +180,30 @@ impl ModelProvider for OpenAICodexProvider {
             CodexParser::new,
             is_retryable_status,
         )
+    }
+
+    /// Discover live limits for `model` from the authenticated Codex model
+    /// catalog (tau `OpenAICodexProvider.discover_model_limits`). Returns `None`
+    /// when the model is not advertised; surfaces the fetch error so the session
+    /// falls back to the static catalog and records the diagnostic.
+    ///
+    /// Unlike tau this does not memoize the fetched catalog on the provider (tau
+    /// caches `_discovered_model_limits`); rho's provider is shared behind an
+    /// `Arc` without interior mutability, and the caching is not observable in
+    /// the wire/session format. The session caches the resolved
+    /// `RuntimeModelLimits` per (provider, model) instead.
+    fn discover_model_limits(
+        &self,
+        model: &str,
+    ) -> BoxFuture<'static, Result<Option<RuntimeModelLimits>, String>> {
+        let provider = self.clone();
+        let model = model.to_string();
+        Box::pin(async move {
+            match provider.fetch_model_limits().await {
+                Ok(limits) => Ok(limits.get(&model).cloned()),
+                Err(err) => Err(err.message),
+            }
+        })
     }
 }
 

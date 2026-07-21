@@ -71,17 +71,23 @@ impl RuntimeModelLimits {
     }
 
     /// The provider's usable window after its requested headroom (tau
-    /// `effective_context_window`).
+    /// `effective_context_window`). Uses a widened intermediate so a
+    /// `context_window` near `i64::MAX` cannot overflow the multiply.
     #[must_use]
     pub fn effective_context_window(&self) -> i64 {
-        (self.context_window * self.effective_context_window_percent / 100).max(1)
+        let scaled = i128::from(self.context_window)
+            * i128::from(self.effective_context_window_percent)
+            / 100;
+        i64::try_from(scaled).unwrap_or(i64::MAX).max(1)
     }
 
     /// An explicit auto-compaction limit or the Codex-compatible 90% default,
     /// clamped to the effective window (tau `effective_auto_compact_token_limit`).
+    /// The 90% default is computed in a widened intermediate to avoid overflow.
     #[must_use]
     pub fn effective_auto_compact_token_limit(&self) -> i64 {
-        let default_limit = (self.context_window * 9 / 10).max(1);
+        let default_scaled = i128::from(self.context_window) * 9 / 10;
+        let default_limit = i64::try_from(default_scaled).unwrap_or(i64::MAX).max(1);
         match self.auto_compact_token_limit {
             None => default_limit.min(self.effective_context_window()),
             Some(limit) => limit.min(self.effective_context_window()),
@@ -147,6 +153,21 @@ mod tests {
         // Effective window smaller than the 90% default clamps down.
         let limits = RuntimeModelLimits::new(200_000, None, 50, None).unwrap();
         assert_eq!(limits.effective_auto_compact_token_limit(), 100_000);
+    }
+
+    #[test]
+    fn max_context_window_does_not_overflow() {
+        // A context window at the i64 boundary must not panic the multiplies.
+        let limits = RuntimeModelLimits::new(i64::MAX, None, 100, None).unwrap();
+        assert_eq!(limits.effective_context_window(), i64::MAX);
+        // 90% of i64::MAX, clamped to the effective window.
+        let expected = i64::try_from(i128::from(i64::MAX) * 9 / 10).unwrap();
+        assert_eq!(limits.effective_auto_compact_token_limit(), expected);
+
+        // A sub-100 percent at the boundary also stays in range.
+        let limits = RuntimeModelLimits::new(i64::MAX, None, 90, None).unwrap();
+        let expected_window = i64::try_from(i128::from(i64::MAX) * 90 / 100).unwrap();
+        assert_eq!(limits.effective_context_window(), expected_window);
     }
 
     #[test]

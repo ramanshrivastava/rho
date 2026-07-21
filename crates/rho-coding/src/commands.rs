@@ -81,6 +81,16 @@ pub trait CommandSession {
     fn auto_compact_token_threshold(&self) -> Option<i64>;
     /// Context-window size in tokens (tau `context_window_tokens`).
     fn context_window_tokens(&self) -> i64;
+    /// Where the active context-window limit came from (tau
+    /// `context_window_source`). Defaults to the configured catalog.
+    fn context_window_source(&self) -> &'static str {
+        "configured catalog"
+    }
+    /// The last non-fatal live model-limit discovery error, if any (tau
+    /// `model_limits_discovery_error`).
+    fn model_limits_discovery_error(&self) -> Option<&str> {
+        None
+    }
     /// Active thinking level (tau `thinking_level`).
     fn thinking_level(&self) -> &str;
     /// Thinking levels available for the active model (tau `available_thinking_levels`).
@@ -594,7 +604,13 @@ pub fn status_command(context: CommandContext<'_>) -> CommandResult {
             session.context_token_estimate()
         ),
         format!("Context window: {}", session.context_window_tokens()),
+        format!("Context window source: {}", session.context_window_source()),
     ];
+    if let Some(discovery_error) = session.model_limits_discovery_error() {
+        lines.push(format!(
+            "Model limit discovery: unavailable ({discovery_error})"
+        ));
+    }
     if let Some((system_tokens, message_tokens, tool_tokens)) = context_usage {
         lines.push(format!(
             "Context token breakdown: system={system_tokens}, messages={message_tokens}, tools={tool_tokens}"
