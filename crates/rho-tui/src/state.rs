@@ -16,7 +16,7 @@ use std::path::{Component, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use rho_agent::messages::{AgentMessage, ToolCall};
+use rho_agent::messages::{AgentMessage, AssistantMessage, StopReason, ToolCall};
 use rho_agent::tools::AgentToolResult;
 use rho_agent::types::{JsonMap, JsonValue};
 use rho_coding::skills::{Skill, parse_skill_invocation};
@@ -687,6 +687,28 @@ impl TuiState {
 
     /// Populate the transcript from restored canonical messages (tau
     /// `load_messages`).
+    /// Project any partial response followed by its terminal error (tau
+    /// `add_assistant_error`). Used when a failed/aborted assistant turn is
+    /// rebuilt from durable history so the error is never dropped.
+    pub fn add_assistant_error(&mut self, message: &AssistantMessage) {
+        let thinking = message.thinking_text();
+        if !thinking.is_empty() {
+            self.add_item(ChatItemRole::Thinking, thinking);
+        }
+        let text = message.text();
+        if !text.is_empty() {
+            self.add_item(ChatItemRole::Assistant, text);
+        }
+        let error = message
+            .error_message
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Error")
+            .to_string();
+        self.error = Some(error.clone());
+        self.add_item(ChatItemRole::Error, format!("Error: {error}"));
+    }
+
     pub fn load_messages<'a>(&mut self, messages: impl IntoIterator<Item = &'a AgentMessage>) {
         for message in messages {
             match message {
@@ -697,6 +719,13 @@ impl TuiState {
                         _ => None,
                     };
                     self.add_user_message(&m.text(), Some(&m.custom_type), details);
+                }
+                AgentMessage::Assistant(m)
+                    if matches!(m.stop_reason, StopReason::Error | StopReason::Aborted) =>
+                {
+                    // A failed/aborted turn shows its partial response + error,
+                    // matching the live adapter path (tau `add_assistant_error`).
+                    self.add_assistant_error(m);
                 }
                 AgentMessage::Assistant(m) => {
                     let thinking = m.thinking_text();
@@ -1184,5 +1213,31 @@ mod scroll_tests {
         state.clear();
         assert!(state.transcript_scroll.get().following);
         assert_eq!(state.transcript_scroll.get().offset, 0);
+    }
+
+    #[test]
+    fn load_messages_projects_failed_turn_error() {
+        // Rebuilding a session that ended in a provider error must show the error
+        // (and any partial content), not silently drop it (tau `add_assistant_error`).
+        let mut message = AssistantMessage::new(vec![rho_agent::messages::AssistantContent::Text(
+            rho_agent::messages::TextContent::new("partial answer"),
+        )]);
+        message.stop_reason = StopReason::Error;
+        message.error_message = Some("stream cut".to_string());
+        let messages = vec![
+            AgentMessage::User(rho_agent::messages::UserMessage::new("hi")),
+            AgentMessage::Assistant(message),
+        ];
+        let mut state = TuiState::new();
+        state.load_messages(&messages);
+
+        let roles: Vec<(ChatItemRole, String)> = state
+            .items
+            .iter()
+            .map(|item| (item.role, item.text.clone()))
+            .collect();
+        assert!(roles.contains(&(ChatItemRole::Assistant, "partial answer".to_string())));
+        assert!(roles.contains(&(ChatItemRole::Error, "Error: stream cut".to_string())));
+        assert_eq!(state.error.as_deref(), Some("stream cut"));
     }
 }

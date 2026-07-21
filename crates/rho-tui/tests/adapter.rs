@@ -279,6 +279,8 @@ fn records_retry_and_queue_status() {
 fn records_assistant_error_and_aborted_message() {
     let mut state = TuiState::new();
     state.running = true;
+    // A partial response streamed before the failure is projected ahead of the
+    // error, instead of being silently dropped (tau `add_assistant_error`).
     state.assistant_buffer = "partial".to_string();
 
     let mut message = AssistantMessage::new(vec![]);
@@ -294,9 +296,13 @@ fn records_assistant_error_and_aborted_message() {
     assert_eq!(state.error.as_deref(), Some("provider failed"));
     assert_eq!(
         roles_and_text(&state),
-        vec![(ChatItemRole::Error, "Error: provider failed".to_string())]
+        vec![
+            (ChatItemRole::Assistant, "partial".to_string()),
+            (ChatItemRole::Error, "Error: provider failed".to_string()),
+        ]
     );
     assert_eq!(state.assistant_buffer, "");
+    assert!(!state.running);
 }
 
 #[test]

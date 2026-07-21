@@ -124,6 +124,19 @@ impl<'a> TuiEventAdapter<'a> {
             }
             AgentMessage::Assistant(m) => {
                 if matches!(m.stop_reason, StopReason::Error | StopReason::Aborted) {
+                    // Project any partial response streamed before the failure
+                    // (the canonical error message often has empty content, so
+                    // fall back to the streamed buffer), then the terminal error
+                    // (tau `add_assistant_error`).
+                    let message_text = m.text();
+                    let partial = if message_text.is_empty() {
+                        self.state.assistant_buffer.clone()
+                    } else {
+                        message_text
+                    };
+                    if !partial.is_empty() {
+                        self.state.add_item(ChatItemRole::Assistant, partial);
+                    }
                     let text = m
                         .error_message
                         .as_deref()
