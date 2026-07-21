@@ -586,7 +586,7 @@ fn build_chrome(session: &mut CodingSession, cwd: &Path) -> ChromeSnapshot {
         auto_compact_token_threshold,
         git_branch: git_branch(cwd),
     };
-    let stats = session.session_stats();
+    let insights = session.session_stats();
     let extension_names = session.extension_names();
     let session_title = CommandSession::session_title(session);
     let sidebar = SidebarInfo {
@@ -596,11 +596,11 @@ fn build_chrome(session: &mut CodingSession, cwd: &Path) -> ChromeSnapshot {
         thinking_display,
         tools_count,
         skills_count,
-        turn_count: stats.turn_count,
-        tool_call_count: stats.tool_call_count,
-        input_tokens: stats.input_tokens,
-        output_tokens: stats.output_tokens,
-        estimated_cost: stats.estimated_cost,
+        turn_count: insights.turn_count,
+        tool_call_count: insights.tool_call_count,
+        input_tokens: insights.input_tokens,
+        output_tokens: insights.output_tokens,
+        estimated_cost: insights.estimated_cost,
         context_labels,
         tool_names,
         skill_names,
@@ -872,14 +872,7 @@ impl App {
     /// Insert pasted text into the composer, normalizing terminal-generated file
     /// drops to clean paths (tau `PromptInput.on_paste` + `_insert_dropped_paths`).
     fn paste_into_composer(&mut self, text: &str) {
-        let insertion = match normalize_dropped_paths(text) {
-            Some(paths) => {
-                let (before, after) = composer_cursor_context(&self.textarea);
-                pad_dropped_insertion(&paths, &before, &after)
-            }
-            None => text.to_string(),
-        };
-        self.textarea.insert_str(insertion);
+        insert_paste(&mut self.textarea, text);
         self.rebuild_completion();
     }
 
@@ -1690,21 +1683,8 @@ impl App {
                                     break;
                                 }
                             }
-                            Some(Ok(Event::Mouse(mouse))) => {
-                                scroll_transcript_on_mouse(state, mouse);
-                            }
-                            Some(Ok(Event::Paste(text))) => {
-                                // Follow-up composer stays live mid-turn: normalize
-                                // a file drop, otherwise insert the raw paste.
-                                let insertion = match normalize_dropped_paths(&text) {
-                                    Some(paths) => {
-                                        let (before, after) = composer_cursor_context(textarea);
-                                        pad_dropped_insertion(&paths, &before, &after)
-                                    }
-                                    None => text,
-                                };
-                                textarea.insert_str(insertion);
-                            }
+                            Some(Ok(Event::Mouse(mouse))) => scroll_transcript_on_mouse(state, mouse),
+                            Some(Ok(Event::Paste(text))) => insert_paste(textarea, &text),
                             Some(Ok(_)) => {}
                             // Input closed / errored mid-turn: cancel the run and
                             // stop draining events so we don't spin on a ready `None`.
@@ -1857,6 +1837,20 @@ fn paste_as_key_events(text: &str) -> Vec<KeyEvent> {
         .filter(|c| !c.is_control())
         .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
         .collect()
+}
+
+/// Insert pasted `text` into `textarea`, normalizing a terminal-generated file
+/// drop to clean, spaced paths and otherwise inserting the raw paste (tau
+/// `PromptInput.on_paste` + `_insert_dropped_paths`).
+fn insert_paste(textarea: &mut TextArea<'static>, text: &str) {
+    let insertion = match normalize_dropped_paths(text) {
+        Some(paths) => {
+            let (before, after) = composer_cursor_context(textarea);
+            pad_dropped_insertion(&paths, &before, &after)
+        }
+        None => text.to_string(),
+    };
+    textarea.insert_str(insertion);
 }
 
 /// The text immediately before and after the composer cursor on its current

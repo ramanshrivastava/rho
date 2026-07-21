@@ -685,8 +685,6 @@ impl TuiState {
         self.skills = skills.into_iter().collect();
     }
 
-    /// Populate the transcript from restored canonical messages (tau
-    /// `load_messages`).
     /// Project any partial response followed by its terminal error (tau
     /// `add_assistant_error`). Used when a failed/aborted assistant turn is
     /// rebuilt from durable history so the error is never dropped.
@@ -709,6 +707,8 @@ impl TuiState {
         self.add_item(ChatItemRole::Error, format!("Error: {error}"));
     }
 
+    /// Populate the transcript from restored canonical messages (tau
+    /// `load_messages`).
     pub fn load_messages<'a>(&mut self, messages: impl IntoIterator<Item = &'a AgentMessage>) {
         for message in messages {
             match message {

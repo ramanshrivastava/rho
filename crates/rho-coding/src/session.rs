@@ -657,9 +657,12 @@ impl CodingSession {
     /// compaction-replaced messages) and estimates cost from catalog pricing.
     #[must_use]
     pub fn session_stats(&self) -> SessionStats {
-        calculate_session_stats(&self.state.entries, &|provider_name, model, input_tokens| {
-            self.pricing_for_response(provider_name, model, input_tokens)
-        })
+        calculate_session_stats(
+            &self.state.entries,
+            &|provider_name, model, input_tokens| {
+                self.pricing_for_response(provider_name, model, input_tokens)
+            },
+        )
     }
 
     /// Resolve per-million-token rates for one response from the configured

@@ -561,7 +561,10 @@ fn resolve_startup_thinking_level_coerces_and_falls_back() {
         default_model: "qwen".into(),
         ..OpenAICompatibleProviderConfig::new("local")
     });
-    assert_eq!(resolve_startup_thinking_level(&plain, "qwen", "medium"), None);
+    assert_eq!(
+        resolve_startup_thinking_level(&plain, "qwen", "medium"),
+        None
+    );
 }
 
 #[test]

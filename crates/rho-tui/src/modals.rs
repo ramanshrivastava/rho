@@ -345,11 +345,7 @@ impl SessionPickerModal {
 
     fn clamp_index(&mut self) {
         let len = self.visible().len();
-        self.index = if len == 0 {
-            0
-        } else {
-            self.index.min(len - 1)
-        };
+        self.index = if len == 0 { 0 } else { self.index.min(len - 1) };
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ModalOutcome {
@@ -1954,7 +1950,12 @@ mod tests {
         assert_eq!(modal.handle_key(key(KeyCode::Esc)), ModalOutcome::Cancelled);
     }
 
-    fn session_record(id: &str, cwd: &str, model: &str, title: Option<&str>) -> CodingSessionRecord {
+    fn session_record(
+        id: &str,
+        cwd: &str,
+        model: &str,
+        title: Option<&str>,
+    ) -> CodingSessionRecord {
         CodingSessionRecord {
             id: id.into(),
             path: format!("{cwd}/{id}.jsonl").into(),

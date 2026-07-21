@@ -110,31 +110,7 @@ pub fn build_sidebar_lines(info: &SidebarInfo, theme: &TuiTheme) -> Vec<Line<'st
     );
     push_rule(&mut lines, rule_style);
 
-    // activity + usage insights (tau `session_stats`)
-    push_section_header(&mut lines, "activity", header_style);
-    let activity = format!(
-        "{} {}, {} tool {}",
-        info.turn_count,
-        plural(info.turn_count, "turn"),
-        info.tool_call_count,
-        plural(info.tool_call_count, "call"),
-    );
-    lines.push(Line::from(Span::styled(format!(" {activity}"), label_style)));
-    push_rule(&mut lines, rule_style);
-
-    push_section_header(&mut lines, "usage", header_style);
-    let cost = match info.estimated_cost {
-        None => "$N/A".to_string(),
-        Some(cost) => format!("~{}", format_cost(cost)),
-    };
-    let usage = format!(
-        "{} in, {} out · {}",
-        compact_usage_count(info.input_tokens),
-        compact_usage_count(info.output_tokens),
-        cost,
-    );
-    lines.push(Line::from(Span::styled(format!(" {usage}"), label_style)));
-    push_rule(&mut lines, rule_style);
+    push_insights(&mut lines, info, header_style, label_style, rule_style);
 
     push_section_header(&mut lines, "context", header_style);
     push_bullets(
@@ -199,6 +175,7 @@ fn plural(count: usize, singular: &str) -> String {
 
 /// tau `_compact_usage_count`: raw under 1k, else `N.Nk`/`N.Nm` with trailing
 /// zeros trimmed.
+#[allow(clippy::cast_precision_loss)] // token counts are far below f64's 2^52 exact-integer bound
 fn compact_usage_count(value: i64) -> String {
     if value < 1_000 {
         return value.to_string();
@@ -228,6 +205,43 @@ fn format_cost(value: f64) -> String {
 
 fn push_section_header(lines: &mut Vec<Line<'static>>, title: &str, style: Style) {
     lines.push(Line::from(Span::styled(format!(" {title}"), style)));
+}
+
+/// Push the `activity` + `usage` session-insight sections (tau `session_stats`).
+fn push_insights(
+    lines: &mut Vec<Line<'static>>,
+    info: &SidebarInfo,
+    header_style: Style,
+    label_style: Style,
+    rule_style: Style,
+) {
+    push_section_header(lines, "activity", header_style);
+    let activity = format!(
+        "{} {}, {} tool {}",
+        info.turn_count,
+        plural(info.turn_count, "turn"),
+        info.tool_call_count,
+        plural(info.tool_call_count, "call"),
+    );
+    lines.push(Line::from(Span::styled(
+        format!(" {activity}"),
+        label_style,
+    )));
+    push_rule(lines, rule_style);
+
+    push_section_header(lines, "usage", header_style);
+    let cost = match info.estimated_cost {
+        None => "$N/A".to_string(),
+        Some(cost) => format!("~{}", format_cost(cost)),
+    };
+    let usage = format!(
+        "{} in, {} out · {}",
+        compact_usage_count(info.input_tokens),
+        compact_usage_count(info.output_tokens),
+        cost,
+    );
+    lines.push(Line::from(Span::styled(format!(" {usage}"), label_style)));
+    push_rule(lines, rule_style);
 }
 
 fn push_metadata(
@@ -327,10 +341,7 @@ mod tests {
         assert!(text.iter().any(|t| t.contains("No skills loaded yet")));
         // Session-insight sections (tau `session_stats`).
         assert!(text.iter().any(|t| t.contains("Port session insights")));
-        assert!(
-            text.iter()
-                .any(|t| t.contains("2 turns, 5 tool calls"))
-        );
+        assert!(text.iter().any(|t| t.contains("2 turns, 5 tool calls")));
         assert!(
             text.iter()
                 .any(|t| t.contains("12.5k in, 800 out") && t.contains("~$0.008"))

@@ -17,8 +17,7 @@ const TOKENS_PER_MILLION: f64 = 1_000_000.0;
 /// Resolves per-million-token rates for one response, keyed by
 /// `input`/`output`/`cacheRead`/`cacheWrite`. Returns `None` when the model has
 /// no known pricing (tau `PricingResolver`).
-pub type PricingResolver<'a> =
-    dyn Fn(&str, &str, i64) -> Option<IndexMap<String, f64>> + 'a;
+pub type PricingResolver<'a> = dyn Fn(&str, &str, i64) -> Option<IndexMap<String, f64>> + 'a;
 
 /// Cumulative activity and billed usage for one active branch (tau
 /// `SessionStats`).
@@ -59,7 +58,6 @@ pub fn calculate_session_stats(
         match message {
             AgentMessage::User(_) | AgentMessage::Custom(_) => {
                 turn_count += 1;
-                continue;
             }
             AgentMessage::Assistant(assistant) => {
                 tool_call_count += assistant.tool_calls().len();
@@ -94,7 +92,7 @@ pub fn calculate_session_stats(
             }
             // ToolResult and any other non-turn message shapes are ignored, as in
             // tau (which only branches on User/Custom/Assistant).
-            _ => continue,
+            _ => {}
         }
     }
 
@@ -113,6 +111,7 @@ pub fn calculate_session_stats(
 
 /// Calculate one response's estimated USD cost from per-million-token rates (tau
 /// `_response_cost`).
+#[allow(clippy::cast_precision_loss)] // token counts are far below f64's 2^52 exact-integer bound
 fn response_cost(
     input_tokens: i64,
     output_tokens: i64,
@@ -142,7 +141,9 @@ mod tests {
     }
 
     fn user_entry(text: &str) -> SessionEntry {
-        SessionEntry::Message(MessageEntry::new(AgentMessage::User(UserMessage::new(text))))
+        SessionEntry::Message(MessageEntry::new(AgentMessage::User(UserMessage::new(
+            text,
+        ))))
     }
 
     fn custom_entry() -> SessionEntry {

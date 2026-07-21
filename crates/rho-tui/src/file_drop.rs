@@ -84,6 +84,7 @@ fn quote_path(path: &str) -> String {
 }
 
 /// Percent-decode a URI path component (minimal `urllib.parse.unquote`).
+#[allow(clippy::cast_possible_truncation)] // hi*16+lo is a byte value in 0..256
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -177,7 +178,11 @@ fn shlex_split(text: &str) -> Option<Vec<String>> {
 #[must_use]
 pub fn pad_dropped_insertion(insertion: &str, before: &str, after: &str) -> String {
     let mut result = insertion.to_string();
-    if before.chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+    if before
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace())
+    {
         result = format!(" {result}");
     }
     if after.chars().next().is_none_or(|c| !c.is_whitespace()) {
@@ -202,7 +207,10 @@ mod tests {
     fn bare_existing_path_is_normalized() {
         let dir = TempDir::new().unwrap();
         let path = touch(dir.path(), "note.md");
-        assert_eq!(normalize_dropped_paths(&path).as_deref(), Some(path.as_str()));
+        assert_eq!(
+            normalize_dropped_paths(&path).as_deref(),
+            Some(path.as_str())
+        );
     }
 
     #[test]
