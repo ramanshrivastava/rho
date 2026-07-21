@@ -2786,6 +2786,37 @@ pub fn provider_default_thinking_level(
     levels.first().cloned()
 }
 
+/// Pick a valid startup thinking level for a provider/model pair (tau
+/// `resolve_startup_thinking_level`).
+///
+/// Startup (TUI and print mode) must never crash just because the remembered
+/// default model does not support the global default level (e.g. a model that
+/// only accepts `xhigh`). The level is resolved with the same precedence used
+/// when switching models mid-session: the remembered per-model preference
+/// wins, then the global `preferred` level, then the provider/catalog default,
+/// then the first available level. Returns `None` when the model has no
+/// configurable thinking levels.
+#[must_use]
+pub fn resolve_startup_thinking_level(
+    provider: &ProviderConfig,
+    model: &str,
+    preferred: &str,
+) -> Option<String> {
+    let levels = provider_thinking_levels(provider, Some(model));
+    if levels.is_empty() {
+        return None;
+    }
+    if let Some(remembered) = provider.thinking_defaults().get(model) {
+        if levels.iter().any(|level| level == remembered) {
+            return Some(remembered.clone());
+        }
+    }
+    if levels.iter().any(|level| level == preferred) {
+        return Some(preferred.to_string());
+    }
+    provider_default_thinking_level(provider, Some(model)).or_else(|| levels.first().cloned())
+}
+
 fn reasoning_effort_from_provider(
     provider: &OpenAICompatibleProviderConfig,
     model: Option<&str>,
