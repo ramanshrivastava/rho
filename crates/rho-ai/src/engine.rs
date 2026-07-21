@@ -437,10 +437,33 @@ pub async fn send_reqwest(
     headers: &crate::types::HeaderList,
     body: &serde_json::Value,
 ) -> Result<HttpResponse, FetchError> {
-    let mut request = client.post(url).json(body);
+    // Apply the header list with dict semantics (last value wins), matching
+    // tau's httpx header dicts. `RequestBuilder::header` appends instead, which
+    // duplicated `content-type` alongside the one `.json()` sets — the ChatGPT
+    // Codex backend rejects that with `400 Unsupported content type`.
+    let mut header_map = reqwest::header::HeaderMap::new();
     for (name, value) in headers {
-        request = request.header(name, value);
+        let name = match reqwest::header::HeaderName::try_from(name.as_str()) {
+            Ok(name) => name,
+            Err(err) => {
+                return Err(FetchError {
+                    message: format!("invalid header name {name:?}: {err}"),
+                    retryable: false,
+                });
+            }
+        };
+        let value = match reqwest::header::HeaderValue::try_from(value.as_str()) {
+            Ok(value) => value,
+            Err(err) => {
+                return Err(FetchError {
+                    message: format!("invalid value for header {name:?}: {err}"),
+                    retryable: false,
+                });
+            }
+        };
+        header_map.insert(name, value);
     }
+    let request = client.post(url).json(body).headers(header_map);
     match request.send().await {
         Ok(response) => {
             let status = response.status().as_u16();
