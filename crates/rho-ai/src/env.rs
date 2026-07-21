@@ -316,6 +316,14 @@ pub struct OpenAICodexConfig {
     pub reasoning_summary: String,
     /// Human-readable provider name.
     pub provider_name: String,
+    /// Codex client compatibility version used to filter the model catalog.
+    /// The catalog filters models by the official client's compatibility
+    /// version; this is the oldest known version that advertises GPT-5.6 (tau
+    /// `OpenAICodexConfig.client_version`).
+    pub client_version: String,
+    /// Timeout (seconds) for the authenticated model-catalog request (tau
+    /// `OpenAICodexConfig.model_catalog_timeout_seconds`).
+    pub model_catalog_timeout_seconds: f64,
 }
 
 impl OpenAICodexConfig {
@@ -333,6 +341,8 @@ impl OpenAICodexConfig {
             reasoning_effort: None,
             reasoning_summary: "auto".to_string(),
             provider_name: "OpenAI Codex".to_string(),
+            client_version: "0.144.3".to_string(),
+            model_catalog_timeout_seconds: 5.0,
         }
     }
 

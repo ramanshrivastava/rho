@@ -10,9 +10,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures::future::BoxFuture;
 use rho_agent::clock::{Clock, system_clock};
 use rho_agent::messages::{AgentMessage, ToolCall, Usage};
+use rho_agent::model_limits::RuntimeModelLimits;
 use rho_agent::provider::{AssistantEventStream, CancellationToken, ModelProvider};
 use rho_agent::tools::AgentTool;
 use serde_json::{Map, Value, json};
@@ -65,6 +68,68 @@ impl OpenAICodexProvider {
             max_retry_delay_seconds: self.config.max_retry_delay_seconds,
         }
     }
+
+    /// GET the authenticated Codex model catalog and parse per-model limits (tau
+    /// `_fetch_model_limits`).
+    async fn fetch_model_limits(&self) -> Result<HashMap<String, RuntimeModelLimits>, FetchError> {
+        let credentials: OpenAICodexCredentials = (self.config.credential_resolver)()
+            .await
+            .map_err(|message| FetchError {
+                message,
+                retryable: false,
+            })?;
+        let mut headers = build_codex_headers(
+            self.config.headers.as_ref(),
+            &credentials.access_token,
+            &credentials.account_id,
+            &self.config.originator,
+        );
+        // tau: `headers["accept"] = "application/json"` then drop content-type.
+        // HTTP header names are case-insensitive, so drop any configured
+        // `content-type`/`accept` regardless of case (a mis-cased configured
+        // header would otherwise be sent alongside ours), then set the single
+        // JSON accept header.
+        headers.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("content-type") && !name.eq_ignore_ascii_case("accept")
+        });
+        headers.push(("accept".to_string(), "application/json".to_string()));
+
+        // `model_catalog_timeout_seconds` is public; reject negative, non-finite,
+        // or oversized values (which would panic `Duration::from_secs_f64`)
+        // before the request rather than crash.
+        let timeout = Duration::try_from_secs_f64(self.config.model_catalog_timeout_seconds)
+            .map_err(|err| FetchError {
+                message: format!("invalid model_catalog_timeout_seconds: {err}"),
+                retryable: false,
+            })?;
+
+        let url = resolve_codex_models_url(&self.config.base_url);
+        let mut request = self
+            .client
+            .get(&url)
+            .query(&[("client_version", self.config.client_version.as_str())])
+            .timeout(timeout);
+        for (name, value) in &headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| FetchError {
+                message: err.to_string(),
+                retryable: false,
+            })?
+            .error_for_status()
+            .map_err(|err| FetchError {
+                message: err.to_string(),
+                retryable: false,
+            })?;
+        let payload: Value = response.json().await.map_err(|err| FetchError {
+            message: err.to_string(),
+            retryable: false,
+        })?;
+        Ok(parse_codex_model_limits(&payload))
+    }
 }
 
 impl ModelProvider for OpenAICodexProvider {
@@ -115,6 +180,30 @@ impl ModelProvider for OpenAICodexProvider {
             CodexParser::new,
             is_retryable_status,
         )
+    }
+
+    /// Discover live limits for `model` from the authenticated Codex model
+    /// catalog (tau `OpenAICodexProvider.discover_model_limits`). Returns `None`
+    /// when the model is not advertised; surfaces the fetch error so the session
+    /// falls back to the static catalog and records the diagnostic.
+    ///
+    /// Unlike tau this does not memoize the fetched catalog on the provider (tau
+    /// caches `_discovered_model_limits`); rho's provider is shared behind an
+    /// `Arc` without interior mutability, and the caching is not observable in
+    /// the wire/session format. The session caches the resolved
+    /// `RuntimeModelLimits` per (provider, model) instead.
+    fn discover_model_limits(
+        &self,
+        model: &str,
+    ) -> BoxFuture<'static, Result<Option<RuntimeModelLimits>, String>> {
+        let provider = self.clone();
+        let model = model.to_string();
+        Box::pin(async move {
+            match provider.fetch_model_limits().await {
+                Ok(limits) => Ok(limits.get(&model).cloned()),
+                Err(err) => Err(err.message),
+            }
+        })
     }
 }
 
@@ -303,6 +392,73 @@ fn resolve_codex_url(base_url: &str) -> String {
     } else {
         format!("{normalized}/codex/responses")
     }
+}
+
+/// Resolve the authenticated model-catalog URL from the responses base URL (tau
+/// `_resolve_codex_models_url`).
+fn resolve_codex_models_url(base_url: &str) -> String {
+    let normalized = base_url.trim_end_matches('/');
+    if normalized.ends_with("/codex/responses") {
+        let prefix = normalized
+            .strip_suffix("/responses")
+            .expect("suffix checked above");
+        format!("{prefix}/models")
+    } else if normalized.ends_with("/codex") {
+        format!("{normalized}/models")
+    } else {
+        format!("{normalized}/codex/models")
+    }
+}
+
+/// Parse the Codex model-catalog payload into per-model runtime limits (tau
+/// `_parse_codex_model_limits`). Malformed or non-positive entries are skipped.
+fn parse_codex_model_limits(payload: &Value) -> HashMap<String, RuntimeModelLimits> {
+    let mut parsed = HashMap::new();
+    let Some(models) = payload.get("models").and_then(Value::as_array) else {
+        return parsed;
+    };
+    for item in models {
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        let Some(model) = item.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if model.is_empty() {
+            continue;
+        }
+        let Some(context_window) = positive_int(item.get("context_window"))
+            .or_else(|| positive_int(item.get("max_context_window")))
+        else {
+            continue;
+        };
+        let effective_percent =
+            positive_int(item.get("effective_context_window_percent")).unwrap_or(100);
+        if effective_percent > 100 {
+            continue;
+        }
+        let Ok(limits) = RuntimeModelLimits::new(
+            context_window,
+            positive_int(item.get("max_output_tokens")),
+            effective_percent,
+            positive_int(item.get("auto_compact_token_limit")),
+        ) else {
+            continue;
+        };
+        parsed.insert(model.to_string(), limits);
+    }
+    parsed
+}
+
+/// Return a strictly-positive JSON integer, else `None` (tau `_positive_int`).
+/// Booleans and floats — including whole-number floats — are rejected, matching
+/// tau's `isinstance(value, int) and not isinstance(value, bool)`.
+fn positive_int(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    if value.is_boolean() {
+        return None;
+    }
+    value.as_i64().filter(|&n| n > 0)
 }
 
 fn split_tool_call_id(value: &str) -> (String, Option<String>) {
@@ -858,5 +1014,63 @@ mod tests {
         assert!(!parser.fatal());
         assert_eq!(deltas.len(), 1);
         assert!(matches!(&deltas[0], Delta::End { .. }));
+    }
+
+    #[test]
+    fn resolve_models_url_handles_each_base_shape() {
+        assert_eq!(
+            resolve_codex_models_url("https://chatgpt.com/backend-api/codex/responses"),
+            "https://chatgpt.com/backend-api/codex/models"
+        );
+        assert_eq!(
+            resolve_codex_models_url("https://chatgpt.com/backend-api/codex/"),
+            "https://chatgpt.com/backend-api/codex/models"
+        );
+        assert_eq!(
+            resolve_codex_models_url("https://example.com/v1"),
+            "https://example.com/v1/codex/models"
+        );
+    }
+
+    #[test]
+    fn positive_int_rejects_bool_float_and_non_positive() {
+        assert_eq!(positive_int(Some(&json!(272_000))), Some(272_000));
+        assert_eq!(positive_int(Some(&json!(true))), None);
+        assert_eq!(positive_int(Some(&json!(0))), None);
+        assert_eq!(positive_int(Some(&json!(-5))), None);
+        // Whole-number floats are floats in JSON; tau's isinstance(int) rejects them.
+        assert_eq!(positive_int(Some(&json!(272_000.0))), None);
+        assert_eq!(positive_int(None), None);
+    }
+
+    #[test]
+    fn parse_model_limits_reads_slug_and_context_window() {
+        let payload = json!({
+            "models": [
+                {"slug": "gpt-5.6", "context_window": 400_000, "max_output_tokens": 128_000},
+                {"slug": "gpt-5.6-luna", "max_context_window": 300_000,
+                 "effective_context_window_percent": 90},
+                {"slug": "", "context_window": 100},
+                {"context_window": 100},
+                {"slug": "bad-percent", "context_window": 100,
+                 "effective_context_window_percent": 150},
+                {"slug": "no-window"},
+            ]
+        });
+        let parsed = parse_codex_model_limits(&payload);
+        assert_eq!(parsed.len(), 2);
+        let gpt = &parsed["gpt-5.6"];
+        assert_eq!(gpt.context_window(), 400_000);
+        assert_eq!(gpt.max_output_tokens(), Some(128_000));
+        // Falls back to max_context_window and applies the headroom percent.
+        let luna = &parsed["gpt-5.6-luna"];
+        assert_eq!(luna.context_window(), 300_000);
+        assert_eq!(luna.effective_context_window(), 270_000);
+    }
+
+    #[test]
+    fn parse_model_limits_empty_on_missing_models() {
+        assert!(parse_codex_model_limits(&json!({})).is_empty());
+        assert!(parse_codex_model_limits(&json!({"models": "nope"})).is_empty());
     }
 }
