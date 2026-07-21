@@ -39,7 +39,7 @@ use ratatui::{Frame, Terminal};
 use tui_textarea::TextArea;
 
 use rho_agent::harness::HarnessControl;
-use rho_coding::commands::{CommandRegistry, create_default_command_registry};
+use rho_coding::commands::{CommandRegistry, CommandSession, create_default_command_registry};
 use rho_coding::credentials::FileCredentialStore;
 use rho_coding::oauth_registry::oauth_provider_ids;
 use rho_coding::provider_catalog::{
@@ -585,16 +585,26 @@ fn build_chrome(session: &mut CodingSession, cwd: &Path) -> ChromeSnapshot {
         auto_compact_token_threshold,
         git_branch: git_branch(cwd),
     };
+    let stats = session.session_stats();
+    let extension_names = session.extension_names();
+    let session_title = CommandSession::session_title(session);
     let sidebar = SidebarInfo {
+        session_title,
         provider_name,
         model,
         thinking_display,
         tools_count,
         skills_count,
+        turn_count: stats.turn_count,
+        tool_call_count: stats.tool_call_count,
+        input_tokens: stats.input_tokens,
+        output_tokens: stats.output_tokens,
+        estimated_cost: stats.estimated_cost,
         context_labels,
         tool_names,
         skill_names,
         prompt_names,
+        extension_names,
     };
     ChromeSnapshot { status, sidebar }
 }
@@ -1963,15 +1973,22 @@ mod tests {
 
     fn test_sidebar() -> SidebarInfo {
         SidebarInfo {
+            session_title: None,
             provider_name: "anthropic".to_string(),
             model: "claude".to_string(),
             thinking_display: "medium".to_string(),
             tools_count: 3,
             skills_count: 0,
+            turn_count: 0,
+            tool_call_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            estimated_cost: None,
             context_labels: Vec::new(),
             tool_names: vec!["read".to_string()],
             skill_names: Vec::new(),
             prompt_names: Vec::new(),
+            extension_names: Vec::new(),
         }
     }
 
