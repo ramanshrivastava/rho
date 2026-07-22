@@ -1049,3 +1049,121 @@ async fn discovered_model_limits_override_static_context_window() {
     assert_eq!(session.context_window_source(), "provider live catalog");
     assert!(session.model_limits_discovery_error().is_none());
 }
+
+/// tau 2027b8c: a tool-only assistant turn (thinking + tool calls, no visible
+/// text) is labeled by its tool names in the session tree. Regression: the label
+/// used to gate on `content.is_empty()`, but `content` is the full block list
+/// (tool calls included), so it was never empty and the turn showed an empty
+/// `assistant:` preview instead of `tool call: read, bash`.
+#[tokio::test]
+async fn tree_choices_label_tool_only_assistant_turn_by_tool_names() {
+    use rho_agent::messages::{AgentMessage, AssistantContent, ThinkingContent, ToolCall};
+    use rho_agent::session::entries::{LeafEntry, MessageEntry};
+    use rho_agent::session::jsonl::entry_to_json_line;
+    use serde_json::{Map, Value};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("tool-only.jsonl");
+
+    let mut read_args = Map::new();
+    read_args.insert("path".into(), Value::String("README.md".into()));
+    let mut bash_args = Map::new();
+    bash_args.insert("command".into(), Value::String("git status".into()));
+
+    let assistant = AssistantMessage::new(vec![
+        AssistantContent::Thinking(ThinkingContent::new(
+            "Inspect the project before answering.",
+        )),
+        AssistantContent::ToolCall(ToolCall::new("call-1", "read", read_args)),
+        AssistantContent::ToolCall(ToolCall::new("call-2", "bash", bash_args)),
+    ]);
+    let mut entry = MessageEntry::new(AgentMessage::Assistant(assistant));
+    entry.id = "assistant".to_string();
+    let mut leaf = LeafEntry::new(Some("assistant".to_string()));
+    leaf.id = "leaf".to_string();
+    leaf.parent_id = Some("assistant".to_string());
+
+    let jsonl: String = [SessionEntry::Message(entry), SessionEntry::Leaf(leaf)]
+        .iter()
+        .map(entry_to_json_line)
+        .collect();
+    std::fs::write(&path, jsonl).unwrap();
+
+    let provider = Arc::new(FakeProvider::new(vec![]));
+    let storage = jsonl_session_storage(&path);
+    let session = CodingSession::load(pinned_config(provider, storage, tmp.path().to_path_buf()))
+        .await
+        .unwrap();
+
+    let choices = session.tree_choices().await.unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].label, "tool call: read, bash");
+    assert!(choices[0].is_tool_call);
+}
+
+/// tau 102482b: session auto-naming is deferred until *after* the confirmed,
+/// expanded prompt event has been yielded to the frontend, so a custom prompt
+/// renders before naming performs its separate provider request. Because the
+/// event stream suspends at each `yield`, the naming (which sets the title) must
+/// not have run at the instant the consumer receives the user `MessageEnd` event;
+/// it lands only once the stream is driven to completion.
+#[tokio::test]
+async fn auto_naming_is_deferred_until_after_the_prompt_event() {
+    use rho_agent::events::AgentEvent;
+    use rho_agent::messages::AgentMessage;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let manager = SessionManager::new(RhoPaths::new(
+        tmp.path().join(".rho"),
+        tmp.path().join(".agents"),
+    ));
+    let record = manager.prepare_session(&cwd, "fake", Some("fake"), None, None);
+
+    // Turn 1: the agent response. Turn 2: the session-naming provider call.
+    let provider = Arc::new(FakeProvider::new(vec![
+        text_turn("done"),
+        text_turn("Review target"),
+    ]));
+    let mut config = pinned_config(provider, jsonl_session_storage(&record.path), cwd.clone());
+    config.session_id = Some(record.id.clone());
+    config.session_manager = Some(manager.clone());
+    config.index_on_first_persist = true;
+
+    let mut session = CodingSession::load(config).await.unwrap();
+
+    let mut named_at_user_event = None;
+    {
+        let stream = session.prompt("review this".to_string(), None);
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if let CodingSessionEvent::Agent(AgentEvent::MessageEnd(ref e)) = event {
+                if matches!(e.message, AgentMessage::User(_)) {
+                    // The naming call runs only after this yield resumes, so the
+                    // title must still be unset at the moment we hold the event.
+                    named_at_user_event = Some(
+                        manager
+                            .get_session(&record.id)
+                            .unwrap()
+                            .and_then(|r| r.title.clone()),
+                    );
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        named_at_user_event,
+        Some(None),
+        "session must not be named before the expanded prompt event is yielded"
+    );
+    let title = manager
+        .get_session(&record.id)
+        .unwrap()
+        .and_then(|r| r.title.clone());
+    assert!(
+        title.is_some_and(|t| !t.is_empty()),
+        "session is auto-named once the stream is fully driven"
+    );
+}

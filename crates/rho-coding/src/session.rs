@@ -1095,6 +1095,10 @@ impl CodingSession {
                 if self.extension_runtime.has_extensions() {
                     self.extension_runtime.on_agent_event(&event).await;
                 }
+                // tau 102482b: defer session auto-naming until after the event is
+                // yielded, so frontends render the confirmed, expanded prompt
+                // before naming performs its separate provider request.
+                let mut auto_name_message: Option<String> = None;
                 if let AgentEvent::MessageEnd(ref e) = event {
                     let Some(count) =
                         self.persist_or_log(persisted_count, &context, "agent_loop").await
@@ -1105,8 +1109,7 @@ impl CodingSession {
                     if !auto_name_attempted {
                         if let AgentMessage::User(ref u) = e.message {
                             auto_name_attempted = true;
-                            let text = u.text();
-                            self.try_auto_name_session(&text, &context).await;
+                            auto_name_message = Some(u.text());
                         }
                     }
                     if let AgentMessage::Assistant(ref a) = e.message {
@@ -1131,6 +1134,11 @@ impl CodingSession {
                         );
                     }
                     other => yield CodingSessionEvent::Agent(other),
+                }
+                // Name the session only after the prompt event reached the
+                // frontend (tau 102482b).
+                if let Some(text) = auto_name_message {
+                    self.try_auto_name_session(&text, &context).await;
                 }
             }
             if self
@@ -2860,7 +2868,11 @@ fn tree_entry_title(entry: &SessionEntry) -> String {
     match entry {
         SessionEntry::Message(m) => {
             if let AgentMessage::Assistant(a) = &m.message {
-                if !a.tool_calls().is_empty() && a.content.is_empty() {
+                // tau 2027b8c: label tool-only assistant turns by their tool
+                // calls. `content` is the full block list (tool calls included), so
+                // it is non-empty whenever calls exist; gate on the *visible text*
+                // being blank instead (`not message.text.strip()`).
+                if !a.tool_calls().is_empty() && a.text().trim().is_empty() {
                     let names: Vec<String> =
                         a.tool_calls().iter().map(|c| c.name.clone()).collect();
                     return format!("tool call: {}", names.join(", "));

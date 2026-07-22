@@ -229,7 +229,10 @@ fn push_insights(
     )));
     push_rule(lines, rule_style);
 
-    push_section_header(lines, "usage", header_style);
+    // tau 7f4be2c: label the sidebar totals as *cumulative* usage — they sum
+    // every provider turn this session, which can exceed the active-context
+    // estimate shown in the footer's context ratio.
+    push_section_header(lines, "cumulative usage", header_style);
     let cost = match info.estimated_cost {
         None => "$N/A".to_string(),
         Some(cost) => format!("~{}", format_cost(cost)),
@@ -339,8 +342,14 @@ mod tests {
         assert!(text.iter().any(|t| t == " • bash"));
         // Empty skills section shows the empty placeholder.
         assert!(text.iter().any(|t| t.contains("No skills loaded yet")));
-        // Session-insight sections (tau `session_stats`).
+        // Session-insight sections (tau `session_stats`). The token totals are
+        // labeled "cumulative usage" (tau 7f4be2c), distinct from the footer's
+        // active-context ratio.
         assert!(text.iter().any(|t| t.contains("Port session insights")));
+        assert!(
+            text.iter().any(|t| t.trim() == "cumulative usage"),
+            "usage section is labeled cumulative: {text:?}"
+        );
         assert!(text.iter().any(|t| t.contains("2 turns, 5 tool calls")));
         assert!(
             text.iter()

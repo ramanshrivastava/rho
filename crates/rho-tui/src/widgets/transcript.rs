@@ -61,12 +61,11 @@ impl TranscriptCache {
 }
 
 /// Hash every input `build_transcript_lines` reads. The per-item fields mirror
-/// the branches in [`build_chat_item_lines`] / [`visible_chat_text`]; the global
-/// `tool_spinner` plus the per-item resolved invocation
-/// (`resolve_tool_invocation`, hashed in the loop) cover the live spinner AND the
+/// the branches in [`build_chat_item_lines`] / [`visible_chat_text`]; the per-item
+/// resolved invocation (`resolve_tool_invocation`, hashed in the loop) covers the
 /// whole-second elapsed timer on a still-executing tool row, so an executing turn
-/// re-renders each tick without the timer ever going stale; `theme.name` stands
-/// in for the whole palette (name ↔ colors 1:1).
+/// re-renders on each timer tick without the timer ever going stale; `theme.name`
+/// stands in for the whole palette (name ↔ colors 1:1).
 fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     width.hash(&mut h);
@@ -74,7 +73,6 @@ fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64
     state.show_tool_results.hash(&mut h);
     state.show_thinking.hash(&mut h);
     state.assistant_buffer.hash(&mut h);
-    state.tool_spinner.hash(&mut h);
     for item in &state.items {
         std::mem::discriminant(&item.role).hash(&mut h);
         item.text.hash(&mut h);
@@ -82,12 +80,10 @@ fn transcript_fingerprint(state: &TuiState, theme: &TuiTheme, width: u16) -> u64
         item.update_text.hash(&mut h);
         item.always_show_tool_result.hash(&mut h);
         // Hash the *resolved* invocation for an executing tool row: it folds in
-        // the live spinner frame AND the whole-second elapsed timer
-        // (`started_at.elapsed()`). The spinner string alone recurs every cycle
-        // (10 frames × 150 ms = 1.5 s) while the timer keeps advancing, so
-        // without the elapsed bucket a fingerprint could collide and freeze the
-        // "(Ns)" timer until some other state changed. `None` for settled/non-tool
-        // rows, so this is cheap for everything but the one running tool.
+        // the whole-second elapsed timer (`started_at.elapsed()`), which advances
+        // the "(Ns)" suffix once per second so a mid-turn redraw reflects the new
+        // value. `None` for settled/non-tool rows, so this is cheap for everything
+        // but the one running tool.
         state.resolve_tool_invocation(item).hash(&mut h);
     }
     // Not hashed: `tool_name` / `tool_arguments` / `custom_type` / `details`.
@@ -577,7 +573,12 @@ fn tool_accent_style(item: &ChatItem, theme: &TuiTheme, body: Style) -> Style {
         return body;
     }
     let Some(result) = &item.tool_result_text else {
-        return body;
+        // A still-executing tool keeps a static, status-colored marker (the tool
+        // role's border color) rather than relying on the removed animated spinner
+        // (tau fd327d0).
+        return theme
+            .role_style("tool")
+            .map_or(body, |r| parse_style(&r.border));
     };
     if result.starts_with('✓') {
         let color = tool_success_color(theme);
@@ -703,7 +704,18 @@ fn visible_chat_text(item: &ChatItem, state: &TuiState) -> String {
     }
 }
 
-/// `_render_tool_invocation`: split `→ name args` / `$ cmd` and color the tail.
+/// `_render_transcript_tool_invocation`: split `→ name args` / `$ cmd` and apply
+/// the status accent to the tool **name and argument tail**, keeping only the
+/// `→ `/`$` marker in the body style.
+///
+/// rho's ratatui transcript is tau's *selectable plain-text* path, so it mirrors
+/// `_render_transcript_tool_invocation` (name → accent), not the mounted-widget
+/// `_render_tool_invocation` (name → body). This matters for a still-executing
+/// tool: `tool_accent_style` returns the tool border color, and — because rho's
+/// tool `border` differs from its `body` (unlike tau-dark, where they coincide)
+/// — the status color must reach the name too, or a pending `→ read README.md`
+/// would leave `→ read` in the plain body and colorize only ` README.md`, which
+/// reads as a half-applied spinner replacement (tau fd327d0).
 fn render_tool_invocation(
     text: &str,
     body_style: Style,
@@ -716,7 +728,7 @@ fn render_tool_invocation(
         spans.push(Span::styled(prefix.to_string(), body_style));
     }
     if !name.is_empty() {
-        spans.push(Span::styled(name.to_string(), body_style));
+        spans.push(Span::styled(name.to_string(), accent_style));
     }
     if !remainder.is_empty() {
         spans.push(Span::styled(remainder.to_string(), accent_style));
@@ -1498,6 +1510,31 @@ mod tests {
     }
 
     #[test]
+    fn code_fence_keeps_theme_background_across_builtin_themes() {
+        // tau f025e1d added cross-theme coverage that fenced code keeps the
+        // configured background — in tau a Textual `MarkdownFence:light` CSS rule
+        // used to strip it in the light theme. rho's ratatui path applies
+        // `markdown_code_block_background` directly, so every built-in theme
+        // (light included) must render the fence with that exact background.
+        for name in crate::theme::BUILTIN_TUI_THEME_NAMES {
+            let theme = crate::theme::get_tui_theme(
+                crate::theme::TuiThemeName::parse(name).expect("built-in theme name"),
+            );
+            let body = s("#d8dee9");
+            let lines = code_block_lines("x = 1", &theme, body, 40);
+            let expected = parse_color(&theme.markdown_code_block_background);
+            assert!(
+                expected.is_some(),
+                "{name}: theme background must be a real color"
+            );
+            assert_eq!(
+                lines[0].style.bg, expected,
+                "{name}: code fence dropped the themed background"
+            );
+        }
+    }
+
+    #[test]
     fn code_block_truncates_overlong_lines() {
         let theme = crate::theme::tau_dark_theme();
         let body = s("#cbd5e1 on #000000");
@@ -1597,6 +1634,85 @@ mod tests {
             rendered.iter().any(|l| l.contains("… running…")),
             "{rendered:?}"
         );
+    }
+
+    #[test]
+    fn pending_tool_accent_uses_tool_border_marker() {
+        // tau fd327d0: a still-executing tool row (no result yet) keeps a static,
+        // status-colored marker — the tool role's border color — instead of the
+        // removed animated spinner. Previously this fell back to the plain body.
+        let theme = crate::theme::tau_dark_theme();
+        let body = s("#d8dee9");
+        let pending = ChatItem::new(ChatItemRole::Tool, "→ read README.md".into());
+        let accent = tool_accent_style(&pending, &theme, body);
+        let expected = parse_style(&theme.role_style("tool").expect("tool role").border);
+        assert_eq!(accent, expected);
+        assert_ne!(
+            accent, body,
+            "pending tool must not fall back to body style"
+        );
+        // Once a result lands the accent switches to success/error coloring.
+        let mut done = ChatItem::new(ChatItemRole::Tool, "→ read README.md".into());
+        done.tool_result_text = Some("✓ read\nok".into());
+        assert_ne!(tool_accent_style(&done, &theme, body), expected);
+    }
+
+    #[test]
+    fn pending_tool_invocation_colors_name_and_args_not_marker() {
+        // tau `test_pending_tool_invocation_uses_tool_accent_color`: in the
+        // selectable transcript path (`_render_transcript_tool_invocation`) the
+        // status accent covers the tool NAME and the argument tail, while the
+        // `→ ` marker stays in the body style. rho's tool border differs from its
+        // body, so this is what makes the whole pending invocation read as
+        // status-colored rather than only the trailing filename.
+        let body = s("#cbd5e1");
+        let accent = s("#8a7a52"); // stand-in for the tool border (pending accent)
+        let lines = render_tool_invocation("→ read README.md", body, accent, 80);
+        let spans = &lines[0].spans;
+        // Reconstruct (content, style) triples for the three segments.
+        let marker = spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == "→ ")
+            .expect("marker span");
+        let name = spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == "read")
+            .expect("name span");
+        let args = spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == " README.md")
+            .expect("args span");
+        assert_eq!(marker.style, body, "marker keeps the body style");
+        assert_eq!(name.style, accent, "tool name carries the status accent");
+        assert_eq!(
+            args.style, accent,
+            "argument tail carries the status accent"
+        );
+        assert_ne!(
+            accent, body,
+            "accent must differ from body for this to matter"
+        );
+    }
+
+    #[test]
+    fn resolve_invocation_appends_timer_without_spinner() {
+        // tau fd327d0: a long-running tool row shows the elapsed timer appended to
+        // its plain invocation — no braille spinner glyph stands in for the marker.
+        let mut item = ChatItem::new(ChatItemRole::Tool, "→ agent · Summarize codebase".into());
+        item.started_at = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(83))
+                .unwrap(),
+        );
+        let state = TuiState::new();
+        let resolved = state
+            .resolve_tool_invocation(&item)
+            .expect("pending tool resolves to a timed invocation");
+        assert_eq!(resolved, "→ agent · Summarize codebase (1m 23s)");
+        // No braille spinner frame leaked into the marker.
+        for frame in ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] {
+            assert!(!resolved.contains(frame), "spinner frame {frame} leaked");
+        }
     }
 
     #[test]

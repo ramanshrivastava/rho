@@ -107,6 +107,40 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// Expand a leading `~` to `$HOME` (tau `Path.expanduser`).
+fn expand_home(path: &Path) -> PathBuf {
+    if let Ok(rest) = path.strip_prefix("~") {
+        if let Some(home) = home_dir() {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// The sidebar display label for a project context file (tau
+/// `_context_file_label`): the path relative to `cwd` when the file lives under
+/// the project, otherwise `~/`-abbreviated for paths under `$HOME` and the full
+/// absolute path only for anything outside home. tau e3fc26d shortened these
+/// external home paths in the sidebar instead of showing the raw absolute path.
+#[must_use]
+pub fn context_file_label(path: &Path, cwd: &Path) -> String {
+    let expanded = expand_home(path);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    };
+    let resolved = absolute.canonicalize().unwrap_or(absolute);
+    let cwd_resolved = {
+        let base = expand_home(cwd);
+        base.canonicalize().unwrap_or(base)
+    };
+    if let Ok(rel) = resolved.strip_prefix(&cwd_resolved) {
+        return rel.display().to_string();
+    }
+    short_path(&resolved)
+}
+
 /// The deadline tau applies to the git-branch lookup (`_git_branch`, `timeout=0.5`).
 const GIT_BRANCH_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -301,5 +335,50 @@ mod tests {
             assert_eq!(short_path(&p), "~/code/x");
             assert_eq!(short_path(&PathBuf::from(h)), "~");
         }
+    }
+
+    #[test]
+    fn context_label_is_cwd_relative_for_project_files() {
+        // A context file under the project renders cwd-relative (tau
+        // `_context_file_label`), not as an absolute path.
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        let file = cwd.join("AGENTS.md");
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(context_file_label(&file, cwd), "AGENTS.md");
+
+        let nested = cwd.join("docs/AGENTS.md");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, "x").unwrap();
+        // Path separators are platform-native; on unix this is `docs/AGENTS.md`.
+        assert_eq!(
+            context_file_label(&nested, cwd),
+            PathBuf::from("docs")
+                .join("AGENTS.md")
+                .display()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn context_label_shortens_home_paths_outside_cwd() {
+        // tau e3fc26d: a context file under $HOME but outside the project cwd is
+        // shown `~/`-abbreviated rather than as a full absolute path.
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        // A home-relative path (non-existent is fine: the resolve falls back to the
+        // absolute path, which is still under $HOME and gets the ~ prefix).
+        let external = home.join("shared/global/AGENTS.md");
+        assert_eq!(
+            context_file_label(&external, tmp.path()),
+            "~/shared/global/AGENTS.md"
+        );
+        // A `~`-prefixed input is expanded first, then re-abbreviated.
+        assert_eq!(
+            context_file_label(&PathBuf::from("~/shared/global/AGENTS.md"), tmp.path()),
+            "~/shared/global/AGENTS.md"
+        );
     }
 }

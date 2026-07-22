@@ -24,7 +24,9 @@ pub use composer::{
 };
 pub use footer::{FooterMode, footer_hints, render_footer};
 pub use sidebar::{SidebarInfo, render_sidebar};
-pub use status::{StatusInfo, build_compact_session_info, render_compact_session_info};
+pub use status::{
+    StatusInfo, build_compact_session_info, context_file_label, render_compact_session_info,
+};
 pub use style::{RoleStyles, chat_role_styles, parse_color, parse_style, role_styles};
 pub use transcript::{
     TranscriptCache, bench_brag_line, build_transcript_lines, render_splash, render_transcript,

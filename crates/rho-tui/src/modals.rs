@@ -1918,6 +1918,39 @@ mod tests {
     }
 
     #[test]
+    fn selected_picker_row_uses_theme_highlight_contrast() {
+        // tau b2745d8 fixed a Textual `.--highlight`/`.-highlight` class typo that
+        // left focused picker labels without the theme's highlight colors. rho's
+        // picker rows apply the themed `completion_selected` (a high-contrast
+        // fg-on-bg) directly, so every built-in theme must render the selected row
+        // with both an explicit foreground and background — never a low-contrast
+        // fallback — and idle rows must not wear that highlight background.
+        for name in crate::theme::BUILTIN_TUI_THEME_NAMES {
+            let theme = crate::theme::get_tui_theme(
+                crate::theme::TuiThemeName::parse(name).expect("built-in theme name"),
+            );
+            let highlight = crate::widgets::parse_style(&theme.completion_selected);
+            assert!(
+                highlight.fg.is_some() && highlight.bg.is_some(),
+                "{name}: highlight style must set both fg and bg for contrast"
+            );
+            let selected = list_row("Anthropic".into(), true, &theme);
+            for span in &selected.spans {
+                assert_eq!(span.style.fg, highlight.fg, "{name}: selected fg wrong");
+                assert_eq!(span.style.bg, highlight.bg, "{name}: selected bg wrong");
+            }
+            // An unselected row must NOT wear the highlight background.
+            let unselected = list_row("Anthropic".into(), false, &theme);
+            for span in &unselected.spans {
+                assert_ne!(
+                    span.style.bg, highlight.bg,
+                    "{name}: idle row wrongly highlighted"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn session_picker_navigates_and_selects() {
         let records = vec![
             CodingSessionRecord {
