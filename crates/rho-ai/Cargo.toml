@@ -12,7 +12,7 @@ description = "Provider adapters and model streaming layer (Anthropic, OpenAI, C
 workspace = true
 
 [dependencies]
-rho-agent = { path = "../rho-agent", features = ["fake"] }
+rho-agent = { package = "rho-agent-core", path = "../rho-agent", version = "0.1.0", features = ["fake"] }
 serde_json = { workspace = true }
 futures = { workspace = true }
 async-stream = { workspace = true }

@@ -124,26 +124,40 @@ against CPython.*
 **Works today** — install straight from git (the installed command is `rho`):
 
 ```bash
-cargo install --git https://github.com/ramanshrivastava/rho rho
+cargo install --git https://github.com/ramanshrivastava/rho rho-code
 ```
 
-**Once v0.1.0 is published**, the packaged installers land:
+`rho-code` is the workspace *package* name; it builds and installs a binary
+named `rho`.
+
+**Once v0.1.0 is tagged**, the release workflow
+(`.github/workflows/release.yml`) attaches prebuilt binaries to the
+[GitHub Release](https://github.com/ramanshrivastava/rho/releases), and the
+shell installer works immediately:
 
 ```bash
-# Homebrew (macOS / Linux)
-brew install ramanshrivastava/tap/rho
+# Shell installer (macOS / Linux) — fetches the right prebuilt `rho` binary
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/ramanshrivastava/rho/releases/download/v0.1.0/rho-code-installer.sh | sh
+```
 
-# Cargo, from crates.io
+**After the Homebrew tap is set up** (a separate, manual step per release —
+create/update `ramanshrivastava/homebrew-tap` from
+[`packaging/homebrew/rho.rb`](packaging/homebrew/rho.rb) with the release
+checksums; the tag alone does *not* populate the tap):
+
+```bash
+brew install ramanshrivastava/tap/rho
+```
+
+**Once v0.1.0 is published to crates.io:**
+
+```bash
 cargo install rho-code
 ```
 
-Prebuilt binaries for macOS and Linux will be attached to each
-[GitHub Release](https://github.com/ramanshrivastava/rho/releases).
-
-> **On the crate name:** the crates.io package will be published as `rho-code`
-> (the bare `rho` name is squatted), but the installed binary is always `rho`.
-> Until that publish lands, use the `cargo install --git … rho` command above —
-> `rho` there is the workspace *package* name, which is what builds today.
+> **On the crate name:** the crates.io package is `rho-code` (the bare `rho`
+> name is squatted), but the installed binary is always `rho`.
 
 ## Development
 

@@ -13,10 +13,13 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.0.0"
+version = "0.1.0"
 license = "MIT"
 authors = ["The rho authors"]
-repository = "https://github.com/huggingface/tau"
+# Points at rho's own repository (not upstream tau) so crates.io metadata links
+# back to this source tree. rho is a byte-compat Rust port of huggingface/tau.
+repository = "https://github.com/ramanshrivastava/rho"
+homepage = "https://github.com/ramanshrivastava/rho"
 rust-version = "1.85"
 
 # Full-parity Rust port of the `tau` Python coding agent. Every crate below maps
@@ -60,3 +63,8 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

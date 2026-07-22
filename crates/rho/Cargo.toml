@@ -1,12 +1,19 @@
+# crates.io package name is `rho-code` because the bare `rho` name is squatted
+# (crates.io/crates/rho — "Future project", unrelated). The *installed binary*
+# is still `rho` via the [[bin]] rename below, so `cargo install rho-code`
+# yields a `rho` command. The crate directory stays crates/rho.
 [package]
-name = "rho"
+name = "rho-code"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "The rho command-line coding agent (binary)."
+description = "rho — a minimalist Pi-style coding-agent harness (Rust port of tau). Installs the `rho` command."
+keywords = ["cli", "coding-agent", "llm", "ai", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "../../README.md"
 default-run = "rho"
 
 [[bin]]
@@ -29,10 +36,10 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
-rho-agent = { path = "../rho-agent" }
-rho-ai = { path = "../rho-ai" }
-rho-coding = { path = "../rho-coding" }
-rho-tui = { path = "../rho-tui" }
+rho-agent = { package = "rho-agent-core", path = "../rho-agent", version = "0.1.0" }
+rho-ai = { path = "../rho-ai", version = "0.1.0" }
+rho-coding = { path = "../rho-coding", version = "0.1.0" }
+rho-tui = { path = "../rho-tui", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = "3"

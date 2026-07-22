@@ -1,0 +1,29 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# `.github/workflows/release.yml` is intentionally hand-patched (tag passed via
+# quoted env vars to close a shell-injection vector; per-job permission scoping).
+# Without this, `dist plan`/`dist generate --check` treat the workflow as stale
+# and fail the CI `plan` job (exit 255). Exempting "ci" keeps our patched
+# workflow; every other generated artifact is still validated. After any
+# `dist init`/`dist generate`, re-apply the workflow patches (see release.yml
+# header) — dist will otherwise regenerate the vulnerable version.
+allow-dirty = ["ci"]
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax).
+# Scoped to the three targets we ship for v0.1.0: Apple Silicon + Intel macOS,
+# and x86_64 Linux (gnu). Add more (e.g. aarch64 Linux, Windows) in a later release.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Where to host releases
+hosting = "github"
+# Whether to install an updater program
+install-updater = false

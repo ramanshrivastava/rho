@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "mock-provider"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -2197,24 +2197,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rho"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "rho-agent",
- "rho-ai",
- "rho-coding",
- "rho-tui",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "rho-agent"
-version = "0.0.0"
+name = "rho-agent-core"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2231,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "rho-ai"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "bytes",
@@ -2239,14 +2223,30 @@ dependencies = [
  "futures",
  "mock-provider",
  "reqwest",
- "rho-agent",
+ "rho-agent-core",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
+name = "rho-code"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "rho-agent-core",
+ "rho-ai",
+ "rho-coding",
+ "rho-tui",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rho-coding"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2260,7 +2260,7 @@ dependencies = [
  "os_pipe",
  "regex",
  "reqwest",
- "rho-agent",
+ "rho-agent-core",
  "rho-ai",
  "rho-ext-host",
  "serde",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "rho-ext-api"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2286,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "rho-ext-host"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "rho-tui"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "criterion",
  "crossterm",
@@ -2308,7 +2308,7 @@ dependencies = [
  "indexmap",
  "insta",
  "ratatui",
- "rho-agent",
+ "rho-agent-core",
  "rho-coding",
  "serde",
  "serde_json",

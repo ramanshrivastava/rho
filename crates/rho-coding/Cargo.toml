@@ -19,9 +19,9 @@ default = []
 wasmtime = ["rho-ext-host/wasmtime"]
 
 [dependencies]
-rho-agent = { path = "../rho-agent" }
-rho-ai = { path = "../rho-ai" }
-rho-ext-host = { path = "../rho-ext-host" }
+rho-agent = { package = "rho-agent-core", path = "../rho-agent", version = "0.1.0" }
+rho-ai = { path = "../rho-ai", version = "0.1.0" }
+rho-ext-host = { path = "../rho-ext-host", version = "0.1.0" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

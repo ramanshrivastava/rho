@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - pending
+## [0.1.0] - 2026-07-22
 
 First public release: a complete, byte-compatible Rust port of
 [tau](https://github.com/huggingface/tau). A session started in tau resumes
