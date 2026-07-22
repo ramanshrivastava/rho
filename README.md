@@ -47,11 +47,11 @@ resumes in rho and vice versa. This is enforced, not aspirational: the
 serialization code (pinned at [`fixtures/TAU_REV`](fixtures/TAU_REV)), and every
 wire type must round-trip **byte-identically** in CI.
 
-This compatibility is delivered **milestone by milestone** — see [Status](#status)
-below for exactly what is covered today. The wire types (M1) and the agent
-loop / session state (M2) are byte-golden now; provider I/O, the coding tools,
-and the full CLI land in later milestones, so end-to-end tau session resume is
-not yet available from the `rho` binary.
+This compatibility was delivered **milestone by milestone** and the port is now
+complete (M0–M7 — see [Status](#status)). The wire types, agent loop, session
+state, all six providers, the coding tools, the full CLI, and the ratatui TUI
+are byte-golden against tau in CI: a session started in tau resumes end-to-end
+in the `rho` binary and vice versa, today.
 
 ## Architecture
 
@@ -73,18 +73,71 @@ rho (bin) → rho-tui → rho-coding → rho-ai → rho-agent
 
 ## Status
 
-Ported milestone by milestone, gated on golden-fixture parity with tau:
+Ported milestone by milestone, gated on golden-fixture parity with tau. **All
+milestones are complete** — each links to its dev-notes journal entry:
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M0 | Workspace scaffold + golden fixtures extracted from tau | ✅ |
-| M1 | Wire types with byte-identical serde | ✅ |
-| M2 | Agent loop, harness, session tree, fake provider | 🚧 |
-| M3 | All six providers (anthropic, openai-compatible, codex, google, mistral, fake) | ⏳ |
-| M4 | Coding tools, print-mode CLI, full `CodingSession` | ⏳ |
-| M5 | ratatui TUI (parity with tau's Textual TUI) | ⏳ |
-| M6 | Benchmarks: rho vs tau (cold start, replay, streaming, memory) | ⏳ |
-| M7 | WASM extensions | ⏳ |
+| [M0](dev-notes/phase-0.md) | Workspace scaffold + golden fixtures extracted from tau | ✅ |
+| [M1](dev-notes/phase-1.md) | Wire types with byte-identical serde | ✅ |
+| [M2](dev-notes/phase-2.md) | Agent loop, harness, session tree, fake provider | ✅ |
+| [M3](dev-notes/phase-3.md) | All six providers (anthropic, openai-compatible, codex, google, mistral, fake) | ✅ |
+| [M4](dev-notes/phase-4a.md) | Coding tools, print-mode CLI, full `CodingSession` | ✅ |
+| [M5](dev-notes/phase-5.md) | ratatui TUI (parity with tau's Textual TUI) | ✅ |
+| [M6](dev-notes/phase-6.md) | Benchmarks: rho vs tau vs pi (cold start, replay, streaming, memory) | ✅ |
+| [M7](dev-notes/phase-7.md) | WASM extensions (wasmtime host + guest API) | ✅ |
+
+## Providers & sign-in
+
+rho talks to six providers over raw HTTP/SSE (no vendor SDKs): `anthropic`,
+`openai-compatible`, `codex`, `google`, `mistral`, and the scripted `fake`. Set
+an API key the usual way, or sign in with an existing **subscription** through
+OAuth from inside the TUI with `/login [provider]`:
+
+- **OpenAI Codex** (ChatGPT subscription) — browser authorization-code + PKCE
+- **Anthropic** (Claude Pro/Max) — browser authorization-code + PKCE
+- **GitHub Copilot** — device-code flow (enter the code at github.com)
+
+Credentials are stored in `~/.rho/credentials.json` (mode `0600`, same on-disk
+format tau writes), refreshed automatically, and removed with `/logout`.
+
+## Benchmarks
+
+Three implementations of the same agent, one per runtime model — **pi**
+(TypeScript/Node), **tau** (Python), **rho** (Rust) — measured on one machine.
+rho wins decisively where a *native binary* wins; the full tables, methodology,
+and honest caveats (including where a warmed JIT beats compiled Rust) are in
+[dev-notes/benchmarks.md](dev-notes/benchmarks.md).
+
+| Metric | rho | tau | pi |
+|---|--:|--:|--:|
+| Cold start (`--version`, direct entry) | **6.5 ms** | 1971 ms | 2177 ms |
+| Peak RSS, baseline (1 turn) | **1.98 MiB** | 41.47 MiB | 79.98 MiB |
+| SSE canonicalization (per-delta) | **40× faster than τ** | 1× | — |
+
+*A native binary vs two interpreter runtimes is the whole story on cold start
+and baseline memory — a ~300× and ~20× gap that holds against Node as firmly as
+against CPython.*
+
+## Install
+
+> Available from **v0.1.0**.
+
+```bash
+# Homebrew (macOS / Linux)
+brew install ramanshrivastava/tap/rho
+
+# Cargo — the crate is `rho-code`; it installs a binary named `rho`
+cargo install rho-code
+
+# Cargo, straight from git
+cargo install --git https://github.com/ramanshrivastava/rho rho-code
+```
+
+Prebuilt binaries for macOS and Linux are attached to each
+[GitHub Release](https://github.com/ramanshrivastava/rho/releases). (The bare
+`rho` name on crates.io is squatted, hence the `rho-code` crate — the installed
+command is still `rho`.)
 
 ## Development
 

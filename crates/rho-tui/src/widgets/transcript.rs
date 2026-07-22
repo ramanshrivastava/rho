@@ -194,14 +194,15 @@ const LINEAGE: [(&str, &str); 3] = [
 /// The name "rho", written across scripts for the splash: Greek, Japanese
 /// (katakana), Hindi (Devanagari). A quiet, cool multi-script flourish under the
 /// mark.
-const NAME_IN_SCRIPTS: [&str; 3] = ["ρο", "ロー", "रो"];
+const NAME_IN_SCRIPTS: [&str; 3] = ["ρω", "ロー", "रो"];
 
 /// Rotating "did you know" heritage facts (task #45 welcome tips).
-const DID_YOU_KNOW: [&str; 4] = [
+const DID_YOU_KNOW: [&str; 5] = [
     "ρ reads and writes τ's exact session files",
     "π is TypeScript, τ is Python, ρ is Rust",
     "ρ cold-starts in a few ms — no interpreter to boot",
     "the rho theme is rust-oxide over warm parchment",
+    "ロー・コード is rho-code in katakana — the crates.io name",
 ];
 
 /// The one-line hints row (Claude-Code-style getting-started), built from the
@@ -1408,6 +1409,85 @@ mod tests {
         state.items.clear();
         state.assistant_buffer = "streaming…".to_string();
         assert!(!should_show_splash(&state));
+    }
+
+    /// Ghost-block investigation: the owner reported a stray filled cell painted
+    /// immediately after the Devanagari name रो on the splash's names line. This
+    /// renders the splash into a `TestBackend` buffer and proves rho paints
+    /// nothing to the right of रो on that row — the rightmost non-blank cell on
+    /// the names line MUST be part of the रो cluster (Devanagari U+0930 / matra
+    /// U+094B), and every cell after it must be blank. If this fails, rho is the
+    /// source (suspect: a styled write past a spacing-combining cluster, or span
+    /// width arithmetic). If it passes, rho's buffer is clean and the artifact is
+    /// terminal-side (Ghostty's Devanagari matra rendering).
+    #[test]
+    fn splash_paints_no_ghost_cell_after_devanagari_name() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = crate::theme::get_tui_theme(crate::theme::TuiThemeName::Rho);
+        let backend = TestBackend::new(80, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_splash(
+                    frame,
+                    area,
+                    &theme,
+                    &crate::theme::TuiKeybindings::default(),
+                    0,
+                    MotionCaps::plain(),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let (w, h) = (buffer.area.width, buffer.area.height);
+
+        // The names line is the unique row that renders र (Devanagari U+0930).
+        let names_y = (0..h)
+            .find(|&y| {
+                (0..w).any(|x| {
+                    buffer
+                        .cell((x, y))
+                        .is_some_and(|c| c.symbol().contains('\u{0930}'))
+                })
+            })
+            .expect("names line rendering रो must be present");
+
+        // The rightmost non-blank cell on the names line.
+        let rightmost = (0..w)
+            .rev()
+            .find(|&x| {
+                buffer.cell((x, names_y)).is_some_and(|c| {
+                    let sym = c.symbol();
+                    !sym.is_empty() && sym != " "
+                })
+            })
+            .expect("names line must have painted glyphs");
+        let sym = buffer
+            .cell((rightmost, names_y))
+            .expect("cell in bounds")
+            .symbol()
+            .to_string();
+
+        // That rightmost painted glyph must BE the Devanagari name — anything
+        // painted to its right is the reported ghost cell.
+        assert!(
+            sym.contains('\u{0930}') || sym.contains('\u{094b}'),
+            "ghost glyph {sym:?} painted after रो at column {rightmost} on the names line \
+             — rho is the source of the ghost block"
+        );
+
+        // Belt-and-suspenders: every cell strictly after रो is blank.
+        for x in (rightmost + 1)..w {
+            let cell = buffer.cell((x, names_y)).expect("cell in bounds");
+            let s = cell.symbol();
+            assert!(
+                s.is_empty() || s == " ",
+                "non-blank cell {s:?} at column {x} after रो on the names line"
+            );
+        }
     }
 
     #[test]

@@ -28,3 +28,6 @@ __pycache__/
 
 # Private cargo target dir (AGENTS.md: CARGO_TARGET_DIR=target-private)
 /target-private
+
+# Shared cross-worktree cargo target dir (large; never committed)
+/target-shared
