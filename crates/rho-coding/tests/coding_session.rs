@@ -1057,9 +1057,7 @@ async fn discovered_model_limits_override_static_context_window() {
 /// `assistant:` preview instead of `tool call: read, bash`.
 #[tokio::test]
 async fn tree_choices_label_tool_only_assistant_turn_by_tool_names() {
-    use rho_agent::messages::{
-        AgentMessage, AssistantContent, ThinkingContent, ToolCall,
-    };
+    use rho_agent::messages::{AgentMessage, AssistantContent, ThinkingContent, ToolCall};
     use rho_agent::session::entries::{LeafEntry, MessageEntry};
     use rho_agent::session::jsonl::entry_to_json_line;
     use serde_json::{Map, Value};
@@ -1073,7 +1071,9 @@ async fn tree_choices_label_tool_only_assistant_turn_by_tool_names() {
     bash_args.insert("command".into(), Value::String("git status".into()));
 
     let assistant = AssistantMessage::new(vec![
-        AssistantContent::Thinking(ThinkingContent::new("Inspect the project before answering.")),
+        AssistantContent::Thinking(ThinkingContent::new(
+            "Inspect the project before answering.",
+        )),
         AssistantContent::ToolCall(ToolCall::new("call-1", "read", read_args)),
         AssistantContent::ToolCall(ToolCall::new("call-2", "bash", bash_args)),
     ]);
@@ -1105,7 +1105,7 @@ async fn tree_choices_label_tool_only_assistant_turn_by_tool_names() {
 /// expanded prompt event has been yielded to the frontend, so a custom prompt
 /// renders before naming performs its separate provider request. Because the
 /// event stream suspends at each `yield`, the naming (which sets the title) must
-/// not have run at the instant the consumer receives the user MessageEnd event;
+/// not have run at the instant the consumer receives the user `MessageEnd` event;
 /// it lands only once the stream is driven to completion.
 #[tokio::test]
 async fn auto_naming_is_deferred_until_after_the_prompt_event() {

@@ -1636,7 +1636,10 @@ mod tests {
         let accent = tool_accent_style(&pending, &theme, body);
         let expected = parse_style(&theme.role_style("tool").expect("tool role").border);
         assert_eq!(accent, expected);
-        assert_ne!(accent, body, "pending tool must not fall back to body style");
+        assert_ne!(
+            accent, body,
+            "pending tool must not fall back to body style"
+        );
         // Once a result lands the accent switches to success/error coloring.
         let mut done = ChatItem::new(ChatItemRole::Tool, "→ read README.md".into());
         done.tool_result_text = Some("✓ read\nok".into());
@@ -1648,7 +1651,11 @@ mod tests {
         // tau fd327d0: a long-running tool row shows the elapsed timer appended to
         // its plain invocation — no braille spinner glyph stands in for the marker.
         let mut item = ChatItem::new(ChatItemRole::Tool, "→ agent · Summarize codebase".into());
-        item.started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(83));
+        item.started_at = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(83))
+                .unwrap(),
+        );
         let state = TuiState::new();
         let resolved = state
             .resolve_tool_invocation(&item)

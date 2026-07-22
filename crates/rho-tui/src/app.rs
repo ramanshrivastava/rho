@@ -308,7 +308,7 @@ struct RenderCtx<'a> {
 /// Render one frame from a [`RenderCtx`] (immediate-mode; called every tick).
 fn render(frame: &mut Frame, ctx: &RenderCtx) {
     let area = frame.area();
-    let show_sidebar = area.width >= 80;
+    let show_sidebar = area.width >= 80 && ctx.sidebar_position != SidebarPosition::Off;
     // Vertical split: workspace (flex) + footer (1).
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -317,12 +317,22 @@ fn render(frame: &mut Frame, ctx: &RenderCtx) {
     let workspace = outer[0];
     let footer_area = outer[1];
 
+    // tau dd49d9d: honor the configured sidebar side (right by default), or hide
+    // it entirely when `off`/too narrow.
     let (sidebar_area, main_area) = if show_sidebar {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(32), Constraint::Min(1)])
-            .split(workspace);
-        (Some(cols[0]), cols[1])
+        if ctx.sidebar_position == SidebarPosition::Right {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(1), Constraint::Length(32)])
+                .split(workspace);
+            (Some(cols[1]), cols[0])
+        } else {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(32), Constraint::Min(1)])
+                .split(workspace);
+            (Some(cols[0]), cols[1])
+        }
     } else {
         (None, workspace)
     };
@@ -1618,6 +1628,7 @@ impl App {
                         theme,
                         status: &chrome.status,
                         sidebar: &chrome.sidebar,
+                        sidebar_position: settings.sidebar_position,
                         keybindings: &settings.keybindings,
                         modal: None,
                         activity_frame: *activity_frame,
@@ -2145,6 +2156,7 @@ mod tests {
             theme: &theme,
             status: &status,
             sidebar: &sidebar,
+            sidebar_position: TuiSettings::default().sidebar_position,
             keybindings: &keybindings,
             modal: None,
             activity_frame: 0,

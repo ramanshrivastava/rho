@@ -347,7 +347,7 @@ mod tests {
         // active-context ratio.
         assert!(text.iter().any(|t| t.contains("Port session insights")));
         assert!(
-            text.iter().any(|t| t == "cumulative usage"),
+            text.iter().any(|t| t.trim() == "cumulative usage"),
             "usage section is labeled cumulative: {text:?}"
         );
         assert!(text.iter().any(|t| t.contains("2 turns, 5 tool calls")));

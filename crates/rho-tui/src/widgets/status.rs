@@ -353,7 +353,10 @@ mod tests {
         // Path separators are platform-native; on unix this is `docs/AGENTS.md`.
         assert_eq!(
             context_file_label(&nested, cwd),
-            PathBuf::from("docs").join("AGENTS.md").display().to_string()
+            PathBuf::from("docs")
+                .join("AGENTS.md")
+                .display()
+                .to_string()
         );
     }
 
