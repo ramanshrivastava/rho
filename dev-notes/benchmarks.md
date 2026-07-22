@@ -109,4 +109,4 @@ And it bought essentially **nothing for the latency a human feels in an interact
 
 ---
 
-_Regenerate with `just bench` (runs every family, then this generator). Machine-readable records: `dev-notes/benchmarks.json`._
+_Regenerate with `just bench` (runs every family, then this generator). Machine-readable records: `crates/rho-tui/data/benchmarks.json`._

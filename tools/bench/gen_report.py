@@ -10,7 +10,7 @@ Inputs (all optional — missing families render as "not collected"):
   * tools/bench/results/memory_rss.json
 
 Outputs:
-  * dev-notes/benchmarks.json  — the normalized record set (the machine-readable
+  * crates/rho-tui/data/benchmarks.json — the normalized record set (machine-readable,
     deliverable)
   * dev-notes/benchmarks.md    — methodology + tables + honest narrative
 
@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CRITERION = REPO_ROOT / "target" / "criterion"
 RESULTS = REPO_ROOT / "tools" / "bench" / "results"
 OUT_MD = REPO_ROOT / "dev-notes" / "benchmarks.md"
-OUT_JSON = REPO_ROOT / "dev-notes" / "benchmarks.json"
+OUT_JSON = REPO_ROOT / "crates" / "rho-tui" / "data" / "benchmarks.json"
 
 
 # ---------------------------------------------------------------- helpers
@@ -658,7 +658,7 @@ def render_md(records: list[dict], meta: dict) -> str:
 
     a("---\n")
     a("_Regenerate with `just bench` (runs every family, then this generator). "
-      "Machine-readable records: `dev-notes/benchmarks.json`._")
+      "Machine-readable records: `crates/rho-tui/data/benchmarks.json`._")
     return "\n".join(L) + "\n"
 
 
