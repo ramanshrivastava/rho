@@ -997,6 +997,10 @@ impl App {
             ModalOutcome::Theme(name) => {
                 self.settings.theme = name;
                 self.theme = self.settings.resolved_theme();
+                // Keep the terminal's default background in lockstep with the
+                // theme (see sync_terminal_default_bg) — this is the picker
+                // path; the `/theme <name>` command path syncs separately.
+                sync_terminal_default_bg(&self.theme);
                 self.modal = None;
             }
             ModalOutcome::Model(choice) => match self.session.set_model_choice(&choice) {
