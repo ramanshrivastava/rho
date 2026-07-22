@@ -7,6 +7,10 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Axum test server replaying recorded provider SSE bodies byte-for-byte (golden tests + M6 benchmarks)."
+# Internal test/bench tool only — never published to crates.io. It is a
+# dev-dependency of rho-ai, and dev-dependencies are stripped from published
+# crates, so no version spec on its path dep is required.
+publish = false
 
 [lints]
 workspace = true

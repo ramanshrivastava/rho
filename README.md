@@ -124,26 +124,33 @@ against CPython.*
 **Works today** — install straight from git (the installed command is `rho`):
 
 ```bash
-cargo install --git https://github.com/ramanshrivastava/rho rho
+cargo install --git https://github.com/ramanshrivastava/rho rho-code
 ```
 
-**Once v0.1.0 is published**, the packaged installers land:
+`rho-code` is the workspace *package* name; it builds and installs a binary
+named `rho`.
+
+**Once v0.1.0 is tagged**, prebuilt installers land with each
+[GitHub Release](https://github.com/ramanshrivastava/rho/releases) (built by
+`.github/workflows/release.yml`):
 
 ```bash
+# Shell installer (macOS / Linux) — fetches the right prebuilt `rho` binary
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/ramanshrivastava/rho/releases/download/v0.1.0/rho-code-installer.sh | sh
+
 # Homebrew (macOS / Linux)
 brew install ramanshrivastava/tap/rho
+```
 
-# Cargo, from crates.io
+**Once v0.1.0 is published to crates.io:**
+
+```bash
 cargo install rho-code
 ```
 
-Prebuilt binaries for macOS and Linux will be attached to each
-[GitHub Release](https://github.com/ramanshrivastava/rho/releases).
-
-> **On the crate name:** the crates.io package will be published as `rho-code`
-> (the bare `rho` name is squatted), but the installed binary is always `rho`.
-> Until that publish lands, use the `cargo install --git … rho` command above —
-> `rho` there is the workspace *package* name, which is what builds today.
+> **On the crate name:** the crates.io package is `rho-code` (the bare `rho`
+> name is squatted), but the installed binary is always `rho`.
 
 ## Development
 
