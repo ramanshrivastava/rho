@@ -704,7 +704,18 @@ fn visible_chat_text(item: &ChatItem, state: &TuiState) -> String {
     }
 }
 
-/// `_render_tool_invocation`: split `→ name args` / `$ cmd` and color the tail.
+/// `_render_transcript_tool_invocation`: split `→ name args` / `$ cmd` and apply
+/// the status accent to the tool **name and argument tail**, keeping only the
+/// `→ `/`$` marker in the body style.
+///
+/// rho's ratatui transcript is tau's *selectable plain-text* path, so it mirrors
+/// `_render_transcript_tool_invocation` (name → accent), not the mounted-widget
+/// `_render_tool_invocation` (name → body). This matters for a still-executing
+/// tool: `tool_accent_style` returns the tool border color, and — because rho's
+/// tool `border` differs from its `body` (unlike tau-dark, where they coincide)
+/// — the status color must reach the name too, or a pending `→ read README.md`
+/// would leave `→ read` in the plain body and colorize only ` README.md`, which
+/// reads as a half-applied spinner replacement (tau fd327d0).
 fn render_tool_invocation(
     text: &str,
     body_style: Style,
@@ -717,7 +728,7 @@ fn render_tool_invocation(
         spans.push(Span::styled(prefix.to_string(), body_style));
     }
     if !name.is_empty() {
-        spans.push(Span::styled(name.to_string(), body_style));
+        spans.push(Span::styled(name.to_string(), accent_style));
     }
     if !remainder.is_empty() {
         spans.push(Span::styled(remainder.to_string(), accent_style));
@@ -1644,6 +1655,43 @@ mod tests {
         let mut done = ChatItem::new(ChatItemRole::Tool, "→ read README.md".into());
         done.tool_result_text = Some("✓ read\nok".into());
         assert_ne!(tool_accent_style(&done, &theme, body), expected);
+    }
+
+    #[test]
+    fn pending_tool_invocation_colors_name_and_args_not_marker() {
+        // tau `test_pending_tool_invocation_uses_tool_accent_color`: in the
+        // selectable transcript path (`_render_transcript_tool_invocation`) the
+        // status accent covers the tool NAME and the argument tail, while the
+        // `→ ` marker stays in the body style. rho's tool border differs from its
+        // body, so this is what makes the whole pending invocation read as
+        // status-colored rather than only the trailing filename.
+        let body = s("#cbd5e1");
+        let accent = s("#8a7a52"); // stand-in for the tool border (pending accent)
+        let lines = render_tool_invocation("→ read README.md", body, accent, 80);
+        let spans = &lines[0].spans;
+        // Reconstruct (content, style) triples for the three segments.
+        let marker = spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == "→ ")
+            .expect("marker span");
+        let name = spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == "read")
+            .expect("name span");
+        let args = spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == " README.md")
+            .expect("args span");
+        assert_eq!(marker.style, body, "marker keeps the body style");
+        assert_eq!(name.style, accent, "tool name carries the status accent");
+        assert_eq!(
+            args.style, accent,
+            "argument tail carries the status accent"
+        );
+        assert_ne!(
+            accent, body,
+            "accent must differ from body for this to matter"
+        );
     }
 
     #[test]
