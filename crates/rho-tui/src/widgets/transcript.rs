@@ -318,6 +318,17 @@ pub fn render_splash(
             .style(bg),
         inner,
     );
+
+    // KNOWN one-cell artifact, fixed at the terminal layer (not here):
+    // unicode-width counts the Devanagari spacing matra in रो as its own
+    // column, so ratatui models the cluster as two columns and its diff NEVER
+    // emits the covered cell (`to_skip`) — nothing written to that buffer cell
+    // can reach the wire. Real terminals advance only one column for रो, so
+    // that column renders in the terminal's DEFAULT background (a lone
+    // `\e[49m`-colored cell, confirmed via `tmux capture-pane -e`). The fix is
+    // `sync_terminal_default_bg` (app.rs): OSC 11 pins the terminal default
+    // background to the theme background for the app's lifetime, making every
+    // never-emitted cell render theme-colored.
 }
 
 /// The name "rho" across scripts (Greek · Japanese · Hindi) as a quiet, sleek
@@ -1511,6 +1522,14 @@ mod tests {
             "ghost glyph {sym:?} painted after रो at column {rightmost} on the names line \
              — rho is the source of the ghost block"
         );
+
+        // NOTE the known limit of this buffer-level test: unicode-width models
+        // रो as two columns, ratatui's diff never emits the covered column, so
+        // the terminal renders it in the DEFAULT background regardless of what
+        // this buffer holds (the live ghost was confirmed on the wire via
+        // `tmux capture-pane -e`). The production fix is OSC 11 default-bg
+        // syncing (`sync_terminal_default_bg` in app.rs, unit-tested there) —
+        // buffer assertions here cover only what the buffer can express.
 
         // Belt-and-suspenders: every cell strictly after रो is blank.
         for x in (rightmost + 1)..w {
