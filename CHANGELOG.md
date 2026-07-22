@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-22
+
+### Changed
+- Splash brand refresh: the name row is now `ρω · r h o · रो` (bold Latin
+  wordmark center); the benchmark brag is three aligned branch-marker bullets
+  (cold start, weight, stream canonicalization), all computed from the
+  committed benchmark records (#31).
+- README beautified: badges, hero splash, headline benchmark table, install
+  up top; MIT LICENSE file added carrying upstream tau/pi notices (#32).
+
+### Fixed
+- Ghost default-background cell after the Devanagari name in the splash:
+  rho now pins the terminal default background to the theme background via
+  OSC 11 (reset via OSC 111 on exit), fixing the class of cells ratatui's
+  diff can never emit for width-disagreeing clusters (#33).
+
 ## [0.1.0] - 2026-07-22
 
 First public release: a complete, byte-compatible Rust port of

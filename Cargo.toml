@@ -13,7 +13,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.1.1"
 license = "MIT"
 authors = ["The rho authors"]
 # Points at rho's own repository (not upstream tau) so crates.io metadata links

@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "mock-provider"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "rho-agent-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "rho-ai"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -2230,7 +2230,7 @@ dependencies = [
 
 [[package]]
 name = "rho-code"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "rho-coding"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "rho-ext-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2286,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "rho-ext-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "rho-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "crossterm",
