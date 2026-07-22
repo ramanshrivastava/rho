@@ -182,7 +182,9 @@ pub fn should_show_splash(state: &TuiState) -> bool {
 /// benchmark brag cites the same numbers the repo committed (there is no
 /// `dev-notes/` beside an installed binary to read at runtime). Parsed lazily by
 /// [`bench_brag_line`]; a malformed/edited file degrades to no brag line.
-const BENCHMARKS_JSON: &str = include_str!("../../../../dev-notes/benchmarks.json");
+// Lives inside the crate (not dev-notes/) so `cargo publish` can package it —
+// include_str! paths outside the crate root break tarball verification.
+const BENCHMARKS_JSON: &str = include_str!("../../data/benchmarks.json");
 
 /// The heritage lineage stages: glyph + language label, in ancestry order.
 const LINEAGE: [(&str, &str); 3] = [
