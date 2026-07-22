@@ -181,7 +181,7 @@ pub fn should_show_splash(state: &TuiState) -> bool {
 /// The committed benchmark record set, baked in at build time so the splash's
 /// benchmark brag cites the same numbers the repo committed (there is no
 /// `dev-notes/` beside an installed binary to read at runtime). Parsed lazily by
-/// [`bench_brag_line`]; a malformed/edited file degrades to no brag line.
+/// [`bench_brag_bullets`]; a malformed/edited file degrades to no brag block.
 // Lives inside the crate (not dev-notes/) so `cargo publish` can package it —
 // include_str! paths outside the crate root break tarball verification.
 const BENCHMARKS_JSON: &str = include_str!("../../data/benchmarks.json");
@@ -193,10 +193,10 @@ const LINEAGE: [(&str, &str); 3] = [
     ("ρ", "rho·Rust"),
 ];
 
-/// The name "rho", written across scripts for the splash: Greek, Japanese
-/// (katakana), Hindi (Devanagari). A quiet, cool multi-script flourish under the
-/// mark.
-const NAME_IN_SCRIPTS: [&str; 3] = ["ρω", "ロー", "रो"];
+/// The name "rho", written across scripts for the splash: Greek, Latin
+/// (the wordmark, center), Hindi (Devanagari). A quiet multi-script flourish
+/// under the mark; the Latin wordmark carries the emphasis.
+const NAME_IN_SCRIPTS: [&str; 3] = ["ρω", "rho", "रो"];
 
 /// Rotating "did you know" heritage facts (task #45 welcome tips).
 const DID_YOU_KNOW: [&str; 5] = [
@@ -264,7 +264,7 @@ pub fn render_splash(
         accent
     };
 
-    let bench = bench_brag_line();
+    let bench = bench_brag_bullets();
     // Rotate the fact only when motion is allowed; a reduced-motion / non-truecolor
     // splash holds on the first fact so nothing shifts under the user.
     let fact_index = if caps.animated() {
@@ -282,8 +282,15 @@ pub fn render_splash(
         Line::default(),
         Line::from(Span::styled("a Rust coding agent, oxidized", heading)),
     ];
-    if let Some(bench) = bench {
-        lines.push(Line::from(bench_brag_spans(&bench, theme)));
+    // Pad every bullet to the widest one so the centered Paragraph gives all
+    // lines the same left edge — the branch markers then align like a tree
+    // instead of zigzagging with each line's own centering.
+    let brag_width = bench.iter().map(|b| b.chars().count()).max().unwrap_or(0);
+    let last = bench.len().saturating_sub(1);
+    for (i, bullet) in bench.iter().enumerate() {
+        let marker = if i == last { "└─" } else { "├─" };
+        let padded = format!("{bullet:<brag_width$}");
+        lines.push(Line::from(bench_brag_spans(marker, &padded, theme)));
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
@@ -328,20 +335,31 @@ fn name_scripts_spans(frame_idx: usize, caps: MotionCaps, theme: &TuiTheme) -> V
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, script) in NAME_IN_SCRIPTS.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("  ·  ", muted));
+            spans.push(Span::styled("   ·   ", muted));
         }
-        // Cool → hot across the three scripts (Greek dim, Japanese mid, Hindi hot).
+        // The Latin wordmark (center) burns hottest and bold, letter-spaced so
+        // it reads larger; the Greek/Devanagari flanks sit cooler on the ramp.
+        let center = i == 1;
         #[allow(clippy::cast_precision_loss)]
-        let base = 0.35 + 0.25 * (i as f32);
+        let base = if center { 0.9 } else { 0.4 + 0.2 * (i as f32) };
         let color = if caps.truecolor {
             motion::oxide_ramp(base + lift)
         } else {
             ratatui::style::Color::Red
         };
-        spans.push(Span::styled(
-            (*script).to_string(),
-            Style::default().fg(color),
-        ));
+        let mut style = Style::default().fg(color);
+        let text = if center {
+            style = style.add_modifier(ratatui::style::Modifier::BOLD);
+            script
+                .chars()
+                .flat_map(|c| [c, ' '])
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        } else {
+            (*script).to_string()
+        };
+        spans.push(Span::styled(text, style));
     }
     spans
 }
@@ -387,42 +405,41 @@ fn lineage_spans(frame_idx: usize, caps: MotionCaps, theme: &TuiTheme) -> Vec<Sp
     spans
 }
 
-/// Style the benchmark brag line: the `ρ` and the `×N` ratios in accent, the
-/// prose muted.
-fn bench_brag_spans(text: &str, theme: &TuiTheme) -> Vec<Span<'static>> {
-    // The whole line is short and cited from real data; keep it a single muted
-    // span with the leading ρ in accent so the brag stays quiet, not shouty.
+/// Style one benchmark brag bullet: the branch marker in accent, the cited
+/// prose muted — quiet, not shouty.
+fn bench_brag_spans(marker: &str, text: &str, theme: &TuiTheme) -> Vec<Span<'static>> {
     let accent = parse_style(&theme.accent);
     let muted = parse_style(&theme.muted_text);
-    if let Some(rest) = text.strip_prefix("ρ ") {
-        vec![
-            Span::styled("ρ ", accent),
-            Span::styled(rest.to_string(), muted),
-        ]
-    } else {
-        vec![Span::styled(text.to_string(), muted)]
-    }
+    vec![
+        Span::styled(format!("{marker} "), accent),
+        Span::styled(text.to_string(), muted),
+    ]
 }
 
-/// Build the benchmark brag line from the committed benchmark records, e.g.
-/// `ρ · ~302× faster cold start than τ · ~21× lighter`. Returns `None` if the
-/// baked-in JSON can't be parsed or lacks the records to compute a ratio (so the
-/// splash simply omits the line — graceful degradation).
+/// Build the benchmark brag bullets from the committed benchmark records, e.g.
+/// `["~302× faster cold start than τ", "~21× lighter", "~40× faster stream
+/// canonicalization"]`. Ratios that can't be computed from the baked-in JSON are
+/// simply omitted (graceful degradation; an empty vec drops the block).
 #[must_use]
-pub fn bench_brag_line() -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(BENCHMARKS_JSON).ok()?;
-    let records = value.get("records")?.as_array()?;
+pub fn bench_brag_bullets() -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(BENCHMARKS_JSON) else {
+        return Vec::new();
+    };
+    let Some(records) = value.get("records").and_then(|r| r.as_array()) else {
+        return Vec::new();
+    };
 
-    let cold = cold_start_ratio(records);
-    let mem = memory_ratio(records);
-    match (cold, mem) {
-        (Some(cold), Some(mem)) => Some(format!(
-            "ρ · ~{cold}× faster cold start than τ · ~{mem}× lighter"
-        )),
-        (Some(cold), None) => Some(format!("ρ · ~{cold}× faster cold start than τ")),
-        (None, Some(mem)) => Some(format!("ρ · ~{mem}× lighter than τ")),
-        (None, None) => None,
+    let mut bullets = Vec::new();
+    if let Some(cold) = cold_start_ratio(records) {
+        bullets.push(format!("~{cold}× faster cold start than τ"));
     }
+    if let Some(mem) = memory_ratio(records) {
+        bullets.push(format!("~{mem}× lighter"));
+    }
+    if let Some(sse) = sse_ratio(records) {
+        bullets.push(format!("~{sse}× faster stream canonicalization"));
+    }
+    bullets
 }
 
 /// The rho-vs-tau cold-start speedup, preferring the purest launch variant.
@@ -430,6 +447,20 @@ fn cold_start_ratio(records: &[serde_json::Value]) -> Option<u64> {
     for variant in ["version-direct", "version", "0ms"] {
         let rho = bench_mean(records, "cold_start", "rho", variant);
         let tau = bench_mean(records, "cold_start", "tau", variant);
+        if let (Some(rho), Some(tau)) = (rho, tau) {
+            if rho > 0.0 {
+                return Some(ratio_round(tau / rho));
+            }
+        }
+    }
+    None
+}
+
+/// The rho-vs-tau SSE canonicalization speedup, preferring the largest run.
+fn sse_ratio(records: &[serde_json::Value]) -> Option<u64> {
+    for variant in ["10000", "1000", "100"] {
+        let rho = bench_mean(records, "sse_canonicalize", "rho", variant);
+        let tau = bench_mean(records, "sse_canonicalize", "tau", variant);
         if let (Some(rho), Some(tau)) = (rho, tau) {
             if rho > 0.0 {
                 return Some(ratio_round(tau / rho));

@@ -317,12 +317,22 @@ fn snapshot_working_status_line() {
 
 #[test]
 fn bench_brag_cites_real_committed_numbers() {
-    // The brag is computed from the committed benchmarks.json (baked in), not
-    // hardcoded, and reads as the expected shape.
-    let brag = rho_tui::widgets::bench_brag_line().expect("brag");
-    assert!(brag.starts_with("ρ · ~"), "{brag}");
-    assert!(brag.contains("× faster cold start than τ"), "{brag}");
-    assert!(brag.contains("× lighter"), "{brag}");
+    // The brag bullets are computed from the committed benchmarks.json (baked
+    // in), not hardcoded, and cover all three cited families.
+    let bullets = rho_tui::widgets::bench_brag_bullets();
+    assert_eq!(bullets.len(), 3, "{bullets:?}");
+    assert!(
+        bullets[0].contains("× faster cold start than τ"),
+        "{bullets:?}"
+    );
+    assert!(bullets[1].contains("× lighter"), "{bullets:?}");
+    assert!(
+        bullets[2].contains("× faster stream canonicalization"),
+        "{bullets:?}"
+    );
+    for bullet in &bullets {
+        assert!(bullet.starts_with('~'), "{bullets:?}");
+    }
 }
 
 #[test]

@@ -29,6 +29,6 @@ pub use status::{
 };
 pub use style::{RoleStyles, chat_role_styles, parse_color, parse_style, role_styles};
 pub use transcript::{
-    TranscriptCache, bench_brag_line, build_transcript_lines, render_splash, render_transcript,
+    TranscriptCache, bench_brag_bullets, build_transcript_lines, render_splash, render_transcript,
     should_show_splash, transcript_is_empty,
 };
