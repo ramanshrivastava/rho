@@ -1,17 +1,19 @@
 ---
 source: crates/rho-tui/tests/snapshots.rs
+assertion_line: 250
 expression: rendered
 ---
 
 
-
                                         ρ
-                               ρω  ·  ロ ー   ·  रो
+                             ρω   ·   r h o   ·   रो
 
                π Pi·TypeScript   →   τ tau·Python   →   ρ rho·Rust
 
                           a Rust coding agent, oxidized
-                ρ · ~302× faster cold start than τ · ~21× lighter
+                     ├─ ~302× faster cold start than τ
+                     ├─ ~21× lighter
+                     └─ ~40× faster stream canonicalization
 
  / commands  ·  Ctrl+P model  ·  Ctrl+R sessions  ·  !cmd shell  ·  Ctrl+D quit
 
