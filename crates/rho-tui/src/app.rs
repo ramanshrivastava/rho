@@ -639,6 +639,34 @@ fn thinking_display(session: &CodingSession) -> String {
 
 type Backend = CrosstermBackend<Stdout>;
 
+/// The OSC 11 sequence pinning the terminal's default background to `color`,
+/// or `None` for non-RGB colors. Cells ratatui can never emit — a column
+/// "covered" by a cluster whose unicode-width disagrees with the terminal's
+/// (e.g. रो: crate says 2 columns, terminals advance 1) — render in the
+/// terminal DEFAULT background; pinning it to the theme background makes that
+/// artifact class invisible. OSC 111 (see `restore_terminal_stdout`) resets.
+fn osc11_set_bg(color: ratatui::style::Color) -> Option<String> {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => Some(format!("\x1b]11;#{r:02x}{g:02x}{b:02x}\x07")),
+        _ => None,
+    }
+}
+
+/// Emit OSC 11 for the theme's transcript background (best-effort; terminals
+/// without OSC 11 support ignore it).
+fn sync_terminal_default_bg(theme: &crate::theme::TuiTheme) {
+    use io::Write as _;
+    let Some(color) = crate::widgets::style::parse_color(&theme.transcript_background) else {
+        return;
+    };
+    let Some(seq) = osc11_set_bg(color) else {
+        return;
+    };
+    let mut out = io::stdout();
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+}
+
 fn init_terminal() -> io::Result<Terminal<Backend>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -658,6 +686,12 @@ fn init_terminal() -> io::Result<Terminal<Backend>> {
 /// handle), so both the panic hook and the RAII guard can call it.
 fn restore_terminal_stdout() -> io::Result<()> {
     disable_raw_mode()?;
+    // OSC 111: reset the default background pinned by `sync_terminal_default_bg`
+    // so the user's shell gets its own colors back (no-op where unsupported).
+    {
+        use io::Write as _;
+        let _ = io::stdout().write_all(b"\x1b]111\x07");
+    }
     execute!(
         io::stdout(),
         DisableBracketedPaste,
@@ -686,6 +720,7 @@ pub async fn run_tui(
 ) -> io::Result<()> {
     let mut app = App::new(session, settings, startup_message);
     let mut terminal = init_terminal()?;
+    sync_terminal_default_bg(&app.theme);
 
     // Chain a panic hook that restores the terminal FIRST (so the panic message
     // is legible on a cooked terminal), then defers to the previous hook.
@@ -962,6 +997,10 @@ impl App {
             ModalOutcome::Theme(name) => {
                 self.settings.theme = name;
                 self.theme = self.settings.resolved_theme();
+                // Keep the terminal's default background in lockstep with the
+                // theme (see sync_terminal_default_bg) — this is the picker
+                // path; the `/theme <name>` command path syncs separately.
+                sync_terminal_default_bg(&self.theme);
                 self.modal = None;
             }
             ModalOutcome::Model(choice) => match self.session.set_model_choice(&choice) {
@@ -1271,6 +1310,9 @@ impl App {
             if let Some(name) = crate::theme::TuiThemeName::parse(theme_name) {
                 self.settings.theme = name;
                 self.theme = self.settings.resolved_theme();
+                // Keep the terminal's default background in lockstep with the
+                // theme (see sync_terminal_default_bg).
+                sync_terminal_default_bg(&self.theme);
             }
         }
         if result.login_picker_requested {
@@ -2058,6 +2100,20 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    /// OSC 11 pins the terminal default background to the theme background so
+    /// columns ratatui's diff can never emit (the रो width-disagreement cell)
+    /// render theme-colored instead of terminal-default. RGB themes produce the
+    /// exact hex sequence; non-RGB colors produce nothing (never emit garbage).
+    #[test]
+    fn osc11_sequence_pins_theme_background() {
+        assert_eq!(
+            osc11_set_bg(ratatui::style::Color::Rgb(14, 12, 11)).as_deref(),
+            Some("\x1b]11;#0e0c0b\x07")
+        );
+        assert_eq!(osc11_set_bg(ratatui::style::Color::Reset), None);
+        assert_eq!(osc11_set_bg(ratatui::style::Color::Red), None);
     }
 
     #[test]
