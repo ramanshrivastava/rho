@@ -1,5 +1,9 @@
+# Published to crates.io as `rho-agent-core` — the bare `rho-agent` name is
+# already taken by an unrelated crate. The crate DIRECTORY stays crates/rho-agent
+# and the compiled library stays `rho_agent` (see [lib] below), so every
+# `use rho_agent::…` import and internal example/bench keeps working unchanged.
 [package]
-name = "rho-agent"
+name = "rho-agent-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +11,9 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Portable agent core: messages, events, provider trait, tools, loop, harness, session."
+
+[lib]
+name = "rho_agent"
 
 [lints]
 workspace = true

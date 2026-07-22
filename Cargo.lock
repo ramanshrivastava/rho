@@ -2197,7 +2197,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rho-agent"
+name = "rho-agent-core"
 version = "0.1.0"
 dependencies = [
  "async-stream",
@@ -2223,7 +2223,7 @@ dependencies = [
  "futures",
  "mock-provider",
  "reqwest",
- "rho-agent",
+ "rho-agent-core",
  "serde_json",
  "tokio",
 ]
@@ -2235,7 +2235,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
- "rho-agent",
+ "rho-agent-core",
  "rho-ai",
  "rho-coding",
  "rho-tui",
@@ -2260,7 +2260,7 @@ dependencies = [
  "os_pipe",
  "regex",
  "reqwest",
- "rho-agent",
+ "rho-agent-core",
  "rho-ai",
  "rho-ext-host",
  "serde",
@@ -2308,7 +2308,7 @@ dependencies = [
  "indexmap",
  "insta",
  "ratatui",
- "rho-agent",
+ "rho-agent-core",
  "rho-coding",
  "serde",
  "serde_json",
