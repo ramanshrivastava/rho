@@ -14,8 +14,12 @@
 # title/body based on your changelogs.
 
 name: Release
+# Least privilege by default: only the `host` job (which runs `gh release create`
+# and uploads via `dist host`) needs write access to repo contents; it declares
+# its own `permissions: contents: write` below. plan/build-*/announce only read
+# the repo and exchange workflow artifacts, so the workflow default is read-only.
 permissions:
-  "contents": "write"
+  "contents": "read"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -39,15 +43,19 @@ permissions:
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
 #
-# ┌─ LOCAL SECURITY PATCH (not emitted by dist) ───────────────────────────────┐
-# │ The release tag / ref name is attacker-influenceable (anyone who can push a │
-# │ tag chooses its text). It is therefore passed into every `run:` block via   │
-# │ an `env:` variable and referenced only as a quoted "$TAG" — never spliced   │
-# │ into a shell body with `${{ … }}`, and never turned into a `--tag=…` shell  │
-# │ fragment. This closes a script-injection vector (CodeRabbit, PR #29).       │
+# ┌─ LOCAL SECURITY PATCHES (not emitted by dist) ─────────────────────────────┐
+# │ 1. Tag injection: the release tag / ref name is attacker-influenceable      │
+# │    (anyone who can push a tag chooses its text). It is passed into every     │
+# │    `run:` block via an `env:` variable and referenced only as a quoted       │
+# │    "$TAG" — never spliced into a shell body with `${{ … }}`, and never       │
+# │    turned into a `--tag=…` shell fragment. Closes a script-injection vector. │
+# │ 2. Least-privilege permissions: the workflow default is `contents: read`;    │
+# │    only the `host` job re-grants `contents: write` for `gh release create`.  │
+# │ (Both from CodeRabbit review on PR #29.)                                     │
 # │                                                                             │
-# │ dist regenerates this file from its own templates. After any `dist init` /  │
-# │ `dist generate`, RE-APPLY this pattern (grep for `TAG` and `tag_args`).     │
+# │ dist regenerates this file from its own templates, so `dist-workspace.toml`  │
+# │ sets `allow-dirty = ["ci"]` to keep these patches. After any `dist init` /   │
+# │ `dist generate`, RE-APPLY them (grep for `TAG`, `tag_args`, and `permissions`).│
 # └─────────────────────────────────────────────────────────────────────────────┘
 on:
   pull_request:
@@ -249,6 +257,10 @@ jobs:
       - build-global-artifacts
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    # The only job that needs write access — it creates the GitHub Release and
+    # uploads artifacts (`gh release create` / `dist host --steps=release`).
+    permissions:
+      "contents": "write"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"

@@ -5,6 +5,14 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
+# `.github/workflows/release.yml` is intentionally hand-patched (tag passed via
+# quoted env vars to close a shell-injection vector; per-job permission scoping).
+# Without this, `dist plan`/`dist generate --check` treat the workflow as stale
+# and fail the CI `plan` job (exit 255). Exempting "ci" keeps our patched
+# workflow; every other generated artifact is still validated. After any
+# `dist init`/`dist generate`, re-apply the workflow patches (see release.yml
+# header) — dist will otherwise regenerate the vulnerable version.
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
