@@ -484,9 +484,9 @@ pub fn get_tui_theme(name: TuiThemeName) -> TuiTheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SidebarPosition {
     /// Sidebar on the left.
-    #[default]
     Left,
-    /// Sidebar on the right.
+    /// Sidebar on the right (tau dd49d9d default).
+    #[default]
     Right,
     /// No sidebar.
     Off,
@@ -532,7 +532,8 @@ impl Default for TuiSettings {
             keybindings: TuiKeybindings::default(),
             theme: TuiThemeName::Rho,
             auto_copy_selection: false,
-            sidebar_position: SidebarPosition::Left,
+            // tau dd49d9d: the sidebar appears on the right by default.
+            sidebar_position: SidebarPosition::Right,
         }
     }
 }
@@ -634,7 +635,8 @@ pub fn tui_settings_from_json(data: &Map<String, Value>) -> Result<TuiSettings, 
     let raw_sidebar = data
         .get("sidebar_position")
         .cloned()
-        .unwrap_or_else(|| Value::String("left".into()));
+        // tau dd49d9d: absent config defaults to the right-hand sidebar.
+        .unwrap_or_else(|| Value::String("right".into()));
     let sidebar_position = raw_sidebar
         .as_str()
         .and_then(SidebarPosition::parse)
@@ -767,7 +769,15 @@ mod tests {
     fn defaults_match_tau() {
         let settings = TuiSettings::default();
         assert_eq!(settings.keybindings.quit, "ctrl+d");
-        assert_eq!(settings.sidebar_position, SidebarPosition::Left);
+        // tau dd49d9d: the sidebar defaults to the right, for both the struct
+        // default and an empty JSON config.
+        assert_eq!(settings.sidebar_position, SidebarPosition::Right);
+        assert_eq!(
+            tui_settings_from_json(&obj(serde_json::json!({})))
+                .unwrap()
+                .sidebar_position,
+            SidebarPosition::Right
+        );
     }
 
     #[test]

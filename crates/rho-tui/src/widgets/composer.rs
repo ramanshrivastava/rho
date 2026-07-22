@@ -224,8 +224,9 @@ mod tests {
         // The prefix glyph is always the rho mark; its motion is in the color
         // (throbbing ember while running, static dim when idle), not the glyph.
         assert_eq!(prompt_prefix(), "ρ");
-        // The glyph must NOT be tau's braille transcript tool spinner.
-        assert_ne!(prompt_prefix(), crate::state::TOOL_SPINNER_FRAMES[0]);
+        // The glyph must NOT be a braille spinner frame (tau's old transcript tool
+        // spinner glyphs, removed in fd327d0).
+        assert_ne!(prompt_prefix(), "⠋");
     }
 
     #[test]

@@ -75,10 +75,6 @@ pub const TOOL_PATCH_PREVIEW_LINES: usize = 32;
 pub const TOOL_RESULT_PREVIEW_CHARS: usize = 2_000;
 /// Line cap on an input-bar terminal command's visible output.
 pub const TERMINAL_COMMAND_OUTPUT_PREVIEW_LINES: usize = 120;
-/// Braille spinner frames shown on an executing tool row.
-pub const TOOL_SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-/// Static invocation markers the spinner stands in for while a tool runs.
-const INVOCATION_MARKERS: [&str; 2] = ["→ ", "▸ "];
 /// Show the live elapsed timer once a tool stops being instant.
 pub const TOOL_TIMER_MIN_SECONDS: f64 = 1.0;
 const FALLBACK_INVOCATION_ARGS_CHARS: usize = 160;
@@ -218,8 +214,6 @@ pub struct TuiState {
     pub tool_call_renderer: Option<ToolCallMarkup>,
     /// Extension tool-result resolver (never set before M7).
     pub tool_result_renderer: Option<ToolResultMarkup>,
-    /// The current spinner frame while a tool runs.
-    pub tool_spinner: Option<String>,
     /// When the current turn started, driving the working-state elapsed timer.
     /// `None` while idle.
     pub turn_started_at: Option<Instant>,
@@ -257,7 +251,6 @@ impl std::fmt::Debug for TuiState {
             .field("queued_steering", &self.queued_steering)
             .field("queued_follow_up", &self.queued_follow_up)
             .field("skills", &self.skills)
-            .field("tool_spinner", &self.tool_spinner)
             .finish_non_exhaustive()
     }
 }
@@ -302,8 +295,8 @@ impl TuiState {
         renderer(custom_type, &item.text, item.details.as_ref(), expanded)
     }
 
-    /// Render a tool item's invocation, applying the spinner/timer (tau
-    /// `resolve_tool_invocation`).
+    /// Render a tool item's invocation, appending the elapsed timer once the
+    /// tool stops being instant (tau `resolve_tool_invocation`).
     #[must_use]
     pub fn resolve_tool_invocation(&self, item: &ChatItem) -> Option<String> {
         if item.role != ChatItemRole::Tool {
@@ -316,17 +309,13 @@ impl TuiState {
                 item.tool_arguments.as_ref().unwrap_or(&JsonMap::new()),
             );
         }
-        if let Some(frame) = &self.tool_spinner {
-            if item.tool_result_text.is_none() {
-                let base = line.unwrap_or_else(|| item.text.clone());
-                let mut spun = apply_tool_spinner(&base, frame);
-                if let Some(started) = item.started_at {
-                    let elapsed = started.elapsed().as_secs_f64();
-                    if elapsed >= TOOL_TIMER_MIN_SECONDS {
-                        spun = format!("{spun} ({})", format_elapsed(elapsed));
-                    }
+        if item.tool_result_text.is_none() {
+            if let Some(started) = item.started_at {
+                let elapsed = started.elapsed().as_secs_f64();
+                if elapsed >= TOOL_TIMER_MIN_SECONDS {
+                    let base = line.unwrap_or_else(|| item.text.clone());
+                    return Some(format!("{base} ({})", format_elapsed(elapsed)));
                 }
-                return Some(spun);
             }
         }
         line
@@ -825,18 +814,6 @@ pub fn format_elapsed(seconds: f64) -> String {
     }
     let (hours, minutes) = (minutes / 60, minutes % 60);
     format!("{hours}h {minutes}m")
-}
-
-/// Show the spinner frame in place of a static invocation marker (tau
-/// `apply_tool_spinner`).
-#[must_use]
-pub fn apply_tool_spinner(text: &str, frame: &str) -> String {
-    for marker in INVOCATION_MARKERS {
-        if let Some(rest) = text.strip_prefix(marker) {
-            return format!("{frame} {rest}");
-        }
-    }
-    format!("{frame} {text}")
 }
 
 /// Format a collapsed tool call for live and restored blocks (tau

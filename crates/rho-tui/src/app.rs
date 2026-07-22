@@ -64,7 +64,7 @@ use crate::modals::{
 };
 use crate::motion::{self, MotionCaps};
 use crate::state::TuiState;
-use crate::theme::{TuiKeybindings, TuiSettings, TuiTheme};
+use crate::theme::{SidebarPosition, TuiKeybindings, TuiSettings, TuiTheme};
 use crate::widgets::status::git_branch;
 use crate::widgets::{
     FooterMode, SidebarInfo, StatusInfo, render_compact_session_info, render_completion_popup,
@@ -277,6 +277,7 @@ impl App {
             theme: &self.theme,
             status: &self.chrome.status,
             sidebar: &self.chrome.sidebar,
+            sidebar_position: self.settings.sidebar_position,
             keybindings: &self.settings.keybindings,
             modal: self.modal.as_ref(),
             activity_frame: self.activity_frame,
@@ -295,6 +296,7 @@ struct RenderCtx<'a> {
     theme: &'a TuiTheme,
     status: &'a StatusInfo,
     sidebar: &'a SidebarInfo,
+    sidebar_position: SidebarPosition,
     keybindings: &'a TuiKeybindings,
     modal: Option<&'a Modal>,
     activity_frame: usize,
@@ -573,7 +575,7 @@ fn build_chrome(session: &mut CodingSession, cwd: &Path) -> ChromeSnapshot {
     let context_labels: Vec<String> = session
         .context_files()
         .iter()
-        .map(|f| f.path.clone())
+        .map(|f| crate::widgets::context_file_label(std::path::Path::new(&f.path), cwd))
         .collect();
 
     let status = StatusInfo {
@@ -1666,12 +1668,10 @@ impl App {
                         }
                     }
                     _ = ticker.tick() => {
+                        // Advance the activity frame so the prompt-area ember pulse and
+                        // working-state motion keep animating; a still-executing tool row
+                        // re-renders via the whole-second elapsed timer, not a spinner.
                         *activity_frame = activity_frame.wrapping_add(1);
-                        state.tool_spinner = Some(
-                            crate::state::TOOL_SPINNER_FRAMES
-                                [*activity_frame % crate::state::TOOL_SPINNER_FRAMES.len()]
-                            .to_string(),
-                        );
                     }
                     maybe_key = events.next() => {
                         match maybe_key {
@@ -1702,14 +1702,13 @@ impl App {
         Ok(())
     }
 
-    /// Post-turn cleanup: quit if requested, clear the running/spinner state, and
+    /// Post-turn cleanup: quit if requested, clear the running state, and
     /// surface any run error the session recorded (tau shows the failure in the
     /// transcript after the turn settles).
     fn finish_turn(&mut self, quit_requested: bool) {
         if quit_requested {
             self.should_quit = true;
         }
-        self.state.tool_spinner = None;
         // Clear the running flag we set before the first frame, in case the
         // stream ended without a settle event (the adapter clears it on settle /
         // error, but a bare stream close would otherwise leave it stuck true).

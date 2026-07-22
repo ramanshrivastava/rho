@@ -16,7 +16,7 @@ expression: rendered
  activity
  3 turns, 7 tool calls
 
- usage
+ cumulative usage
  42k in, 1.5k out · ~$0.42
 
  context
