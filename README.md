@@ -85,7 +85,7 @@ milestones are complete** — each links to its dev-notes journal entry:
 | [M4](dev-notes/phase-4a.md) | Coding tools, print-mode CLI, full `CodingSession` | ✅ |
 | [M5](dev-notes/phase-5.md) | ratatui TUI (parity with tau's Textual TUI) | ✅ |
 | [M6](dev-notes/phase-6.md) | Benchmarks: rho vs tau vs pi (cold start, replay, streaming, memory) | ✅ |
-| [M7](dev-notes/phase-7.md) | WASM extensions (wasmtime host + guest API) | ✅ |
+| [M7](dev-notes/phase-7.md) | WASM extensions (wasmtime host + guest API) — off by default; build with `--features wasmtime` | ✅ |
 
 ## Providers & sign-in
 
@@ -121,23 +121,29 @@ against CPython.*
 
 ## Install
 
-> Available from **v0.1.0**.
+**Works today** — install straight from git (the installed command is `rho`):
+
+```bash
+cargo install --git https://github.com/ramanshrivastava/rho rho
+```
+
+**Once v0.1.0 is published**, the packaged installers land:
 
 ```bash
 # Homebrew (macOS / Linux)
 brew install ramanshrivastava/tap/rho
 
-# Cargo — the crate is `rho-code`; it installs a binary named `rho`
+# Cargo, from crates.io
 cargo install rho-code
-
-# Cargo, straight from git
-cargo install --git https://github.com/ramanshrivastava/rho rho-code
 ```
 
-Prebuilt binaries for macOS and Linux are attached to each
-[GitHub Release](https://github.com/ramanshrivastava/rho/releases). (The bare
-`rho` name on crates.io is squatted, hence the `rho-code` crate — the installed
-command is still `rho`.)
+Prebuilt binaries for macOS and Linux will be attached to each
+[GitHub Release](https://github.com/ramanshrivastava/rho/releases).
+
+> **On the crate name:** the crates.io package will be published as `rho-code`
+> (the bare `rho` name is squatted), but the installed binary is always `rho`.
+> Until that publish lands, use the `cargo install --git … rho` command above —
+> `rho` there is the workspace *package* name, which is what builds today.
 
 ## Development
 
