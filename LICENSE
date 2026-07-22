@@ -1,6 +1,12 @@
 MIT License
 
-Copyright (c) 2026 Raman Shrivastava
+Copyright (c) 2026 Raman Shrivastava (rho — Rust port)
+
+Portions derived from tau (https://github.com/huggingface/tau):
+Copyright (c) 2026 Alejandro AO
+
+Portions derived from pi (https://github.com/badlogic/pi-mono):
+Copyright (c) 2025 Mario Zechner
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
