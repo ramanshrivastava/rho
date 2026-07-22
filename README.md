@@ -130,16 +130,23 @@ cargo install --git https://github.com/ramanshrivastava/rho rho-code
 `rho-code` is the workspace *package* name; it builds and installs a binary
 named `rho`.
 
-**Once v0.1.0 is tagged**, prebuilt installers land with each
-[GitHub Release](https://github.com/ramanshrivastava/rho/releases) (built by
-`.github/workflows/release.yml`):
+**Once v0.1.0 is tagged**, the release workflow
+(`.github/workflows/release.yml`) attaches prebuilt binaries to the
+[GitHub Release](https://github.com/ramanshrivastava/rho/releases), and the
+shell installer works immediately:
 
 ```bash
 # Shell installer (macOS / Linux) — fetches the right prebuilt `rho` binary
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/ramanshrivastava/rho/releases/download/v0.1.0/rho-code-installer.sh | sh
+```
 
-# Homebrew (macOS / Linux)
+**After the Homebrew tap is set up** (a separate, manual step per release —
+create/update `ramanshrivastava/homebrew-tap` from
+[`packaging/homebrew/rho.rb`](packaging/homebrew/rho.rb) with the release
+checksums; the tag alone does *not* populate the tap):
+
+```bash
 brew install ramanshrivastava/tap/rho
 ```
 
